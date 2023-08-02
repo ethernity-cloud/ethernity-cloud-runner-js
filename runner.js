@@ -1,5 +1,5 @@
 import * as ipfsClient from './ipfs';
-import { delay, formatDate, generateRandomHexOfSize } from './utils';
+import { delay, formatDate, generateRandomHexOfSize, isNullOrEmpty } from './utils';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto';
 import EtnyContract from './contract/operation/etnyContract';
 import ImageRegistryContract from './contract/operation/imageRegistryContract';
@@ -430,7 +430,7 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   isNodeOperatorAddress = async (nodeAddress) => {
-    if (nodeAddress === '' || !nodeAddress) return true;
+    if (isNullOrEmpty(nodeAddress)) return true;
     if (this.etnyContract.isAddress(nodeAddress)) {
       const isNode = await this.etnyContract.isNodeOperator(nodeAddress);
       if (!isNode) {
@@ -443,7 +443,7 @@ class EthernityCloudRunner extends EventTarget {
     return false;
   };
 
-  async run(runnerType, code, nodeAddress) {
+  async run(runnerType, code, nodeAddress = '') {
     try {
       this.nodeAddress = nodeAddress;
       const isNodeOperatorAddress = await this.isNodeOperatorAddress(nodeAddress);

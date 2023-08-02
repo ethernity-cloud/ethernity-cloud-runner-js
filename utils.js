@@ -35,3 +35,5 @@ export const generateRandomHexOfSize = (size) => {
   }
   return result;
 };
+
+export const isNullOrEmpty = (value) => value === null || value === undefined || value === '';
