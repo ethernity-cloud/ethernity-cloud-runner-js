@@ -1,0 +1,60 @@
+{
+    "root": true,
+    "env": {
+        "browser": true,
+        "es2021": true
+    },
+    "extends": ["airbnb-base", "prettier"],
+    "plugins": ["prettier", "import"],
+    "parser": "@babel/eslint-parser",
+    "settings": {
+        "import/parsers": {
+            "@typescript-eslint/parser": [".ts", ".tsx"]
+        },
+        "import/resolver": {
+            "typescript": {
+                "alwaysTryTypes": true
+            }
+        }
+    },
+    "parserOptions": {
+        "ecmaVersion": 8,
+        "requireConfigFile": false,
+        "ecmaFeatures": {
+            "experimentalObjectRestSpread": true,
+            "impliedStrict": true
+        }
+    },
+    "rules": {
+        "import": 0,
+        "import/no-unresolved": "error",
+        "max-len": 0,
+        "no-alert": 0,
+        "no-shadow": 0,
+        "no-console": 0,
+        "comma-dangle": 0,
+        "import/no-cycle": 0,
+        "no-return-assign": 0,
+        "consistent-return": 1,
+        "no-param-reassign": 0,
+        "no-use-before-define": 0,
+        "no-underscore-dangle": 0,
+        "import/prefer-default-export": 0,
+        "import/no-extraneous-dependencies": 0,
+        "no-unused-vars": [
+            1,
+            {
+                "ignoreRestSiblings": false
+            }
+        ],
+        "prettier/prettier": [
+            2,
+            {
+                "printWidth": 120,
+                "singleQuote": true,
+                "trailingComma": "none",
+                "endOfLine":"auto"
+            }
+        ]
+    }
+}
