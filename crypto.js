@@ -17,20 +17,20 @@ export const sha256 = (value, asHex = false) => {
 };
 
 // eslint-disable-next-line camelcase
-export const ecc_point_to_256_bit_key = async (point) => {
+const ecc_point_to_256_bit_key = async (point) => {
   const value = point.getX().toString() + point.getY().toString();
   const buffer = new TextEncoder().encode(value);
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
   return Array.from(new Uint8Array(hashBuffer));
 };
 
-export const generateRandomBytes = (length) => {
+const generateRandomBytes = (length) => {
   const array = new Uint16Array(length);
   crypto.getRandomValues(array);
   return array;
 };
 
-export const encryptMsg = (msg, secretKey) => {
+const encryptMsg = (msg, secretKey) => {
   if (secretKey.length !== 32) {
     throw new Error('Secret key must be 32 bytes (256 bits) long');
   }
@@ -52,7 +52,7 @@ export const encryptMsg = (msg, secretKey) => {
   };
 };
 
-export const encryptedDataToBase64Json = (encryptedMsg) => {
+const encryptedDataToBase64Json = (encryptedMsg) => {
   const key = curve.keyFromPublic(encryptedMsg.cipherTextPublicKey, 'hex');
   const jsonObj = {
     ciphertext: encryptedMsg.ciphertext,
@@ -66,7 +66,7 @@ export const encryptedDataToBase64Json = (encryptedMsg) => {
 };
 
 // eslint-disable-next-line camelcase
-export const encrypt_ecc = async (msg, publicKey) => {
+const encrypt_ecc = async (msg, publicKey) => {
   const cipherTextPrivateKey = generateRandomBytes(32);
   const sharedEccKey = publicKey.getPublic().mul(cipherTextPrivateKey);
   const secretKey = await ecc_point_to_256_bit_key(sharedEccKey);
@@ -81,7 +81,7 @@ export const encrypt_ecc = async (msg, publicKey) => {
   };
 };
 
-export const encrypt = async (pubKey, message) => {
+const encrypt = async (pubKey, message) => {
   const publicKeyPoint = curve.keyFromPublic(pubKey, 'hex');
   const encryptedMessage = await encrypt_ecc(message, publicKeyPoint);
   return encryptedDataToBase64Json(encryptedMessage);

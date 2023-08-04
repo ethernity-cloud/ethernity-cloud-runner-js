@@ -13,11 +13,11 @@ class EtnyContract {
 
   currentWallet = null;
 
-  constructor() {
+  constructor(networkAddress) {
     this.provider = new ethers.providers.Web3Provider(window.ethereum);
     this.signer = this.provider.getSigner();
-    this.etnyContract = new ethers.Contract(contract.address, contract.abi, this.signer);
-    this.etnyContactWithProvider = new ethers.Contract(contract.address, contract.abi, this.provider);
+    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
+    this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
 
   async initialize() {
@@ -73,7 +73,7 @@ class EtnyContract {
     }
   }
 
-  async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress) {
+  async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, taskPrice) {
     const cpu = 1;
     const memory = 1;
     const storage = 40;
@@ -89,7 +89,7 @@ class EtnyContract {
       bandwidth,
       duration,
       instances,
-      maxPrice,
+      taskPrice,
       imageMetadata,
       payloadMetadata,
       inputMetadata,
