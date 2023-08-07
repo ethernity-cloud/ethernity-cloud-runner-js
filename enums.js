@@ -23,6 +23,17 @@ export const ECOrderTaskStatus = {
   7: 'INPUT_CHECKSUM_ERROR'
 };
 
+export const ECOrderTaskStatusCode = {
+  SUCCESS: 0,
+  SYSTEM_ERROR: 1,
+  KEY_ERROR: 2,
+  SYNTAX_WARNING: 3,
+  BASE_EXCEPTION: 4,
+  PAYLOAD_NOT_DEFINED: 5,
+  PAYLOAD_CHECKSUM_ERROR: 6,
+  INPUT_CHECKSUM_ERROR: 7
+};
+
 export const ECRunner = {
   PYNITHY_RUNNER_TESTNET: 'etny-pynithy-testnet',
   NODENITHY_RUNNER_TESTNET: 'etny-nodenithy-testnet',

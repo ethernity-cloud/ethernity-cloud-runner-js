@@ -70,6 +70,14 @@ const executeTask = async () => {
     const ipfsAddress = 'https://ipfs.ethernity.cloud:5001';
     const code = `___etny_result___("Hello, World!")`;
 
+    const onTaskCreated = (e) => {
+        console.log('Task published.');
+    };
+
+    const onTaskOrderPlaced = () => {
+        console.log('Task order placed and approved, started processing.');
+    };
+
     const onTaskProgress = (e) => {
         if (e.detail.status === ECStatus.ERROR) {
             console.error(e.detail.message);
@@ -78,19 +86,27 @@ const executeTask = async () => {
         }
     };
 
+    const onTaskNotProcessed = (e) => {
+        console.log('Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.');
+    };
+
     const onTaskCompleted = (e) => {
-        console.log(`Task Result: ${e.detail.message.result}`);
+        console.log(`Task Result: ${e.detail.message.result}; Task code: ${e.detail.message.resultTaskCode}`);
     }
 
     const runner = new EthernityCloudRunner();
     runner.initializeStorage(ipfsAddress);
 
+    runner.addEventListener(ECEvent.TASK_CREATED, onTaskCreated);
+    runner.addEventListener(ECEvent.TASK_ORDER_PLACED, onTaskOrderPlaced);
     runner.addEventListener(ECEvent.TASK_PROGRESS, onTaskProgress);
+    runner.addEventListener(ECEvent.TASK_NOT_PROCESSED, onTaskNotProcessed);
     runner.addEventListener(ECEvent.TASK_COMPLETED, onTaskCompleted);
 
+    const resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 };
     // this will execute a new task using Python template and will run the code provided above 
     // the code will run on the TESTNET network
-    await runner.run(ECRunner.PYNITHY_RUNNER_TESTNET, code);
+    await runner.run(ECRunner.PYNITHY_RUNNER_TESTNET, code, '', resources);
 }
 
 await executeTask();
@@ -114,7 +130,55 @@ Ethernity Cloud Runner's functionality.
    during the execution of tasks. By subscribing to these events, developers can monitor the progress and completion
    status of their tasks.
 
-   **1. Task Progress Event (`ECEvent.TASK_PROGRESS`):**
+   **1. Task Created Event (`ECEvent.TASK_CREATED`):**
+   
+   The `ECEvent.TASK_CREATED` event is triggered when a new task is successfully created and published on the network. This event signifies that the task has been registered and is ready for processing. Developers can define a function, such as `onTaskCreated`, to handle this event and execute any actions required upon task creation.
+   
+   In the provided example code:
+   
+   ```javascript
+   const onTaskCreated = (e) => {
+       console.log('Task published.');
+   };
+   
+   runner.addEventListener(ECEvent.TASK_CREATED, onTaskCreated);
+   ```
+   
+   The `onTaskCreated` function simply logs the message "Task published." to the console, indicating that the task has been successfully created and registered on the EthernityCloud network.
+   
+   **2. Task Order Placed Event (`ECEvent.TASK_ORDER_PLACED`):**
+   
+   The `ECEvent.TASK_ORDER_PLACED` event is triggered when an order for task processing is placed and approved by the network. This event indicates that the task execution is about to begin. Developers can define a function, such as `onTaskOrderPlaced`, to handle this event and perform any necessary actions when the task order is placed.
+   
+   In the provided example code:
+   
+   ```javascript
+   const onTaskOrderPlaced = () => {
+       console.log('Task order placed and approved, started processing.');
+   };
+   
+   runner.addEventListener(ECEvent.TASK_ORDER_PLACED, onTaskOrderPlaced);
+   ```
+   
+   The `onTaskOrderPlaced` function logs the message "Task order placed and approved, started processing." to the console, signaling that the task execution process has commenced.
+   
+   **3. Task Not Processed Event (`ECEvent.TASK_NOT_PROCESSED`):**
+   
+   The `ECEvent.TASK_NOT_PROCESSED` event is triggered when a task fails to be processed due to unavailability of nodes or when the network is currently busy or when the resource requirements are not met. This event indicates that the task execution encountered an issue and could not proceed. Developers can define a function, such as `onTaskNotProcessed`, to handle this event and respond appropriately to the failed task processing.
+   
+   In the provided example code:
+   
+   ```javascript
+   const onTaskNotProcessed = (e) => {
+       console.log('Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.');
+   };
+   
+   runner.addEventListener(ECEvent.TASK_NOT_PROCESSED, onTaskNotProcessed);
+   ```
+   
+   The `onTaskNotProcessed` function logs the error message "Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price." to the console, providing information about the reason for the task processing failure. This message can be used to inform the user or perform any necessary error handling.
+   
+   **4. Task Progress Event (`ECEvent.TASK_PROGRESS`):**
 
    The `ECEvent.TASK_PROGRESS` event is triggered when there is progress in the execution of a task. To capture and
    handle this event, developers can define a function, such as `onTaskProgress`, to process the event data. The event
@@ -138,7 +202,7 @@ Ethernity Cloud Runner's functionality.
    task encountered an error or if it is progressing successfully. If an error is detected, the function logs the error
    message to the console using `console.error`, otherwise, it logs the progress message using `console.log`.
 
-   **2. Task Completed Event (`ECEvent.TASK_COMPLETED`):**
+   **5. Task Completed Event (`ECEvent.TASK_COMPLETED`):**
 
    The `ECEvent.TASK_COMPLETED` event is triggered when a task is successfully completed. Similar to the previous event,
    developers can define a function, such as `onTaskCompleted`, to handle the event and access the task result.
@@ -161,3 +225,26 @@ Ethernity Cloud Runner's functionality.
    enabling them to monitor and respond to task executions effectively. The Ethernity Cloud Runner's event system
    enhances the developer experience, allowing for seamless integration and handling of task-related events in
    real-time.
+
+### Task resources
+
+```javascript
+ const resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 };
+```
+The `resources` parameter provided in the `run` method as the last parameter is an object that defines the resource requirements for executing a new task using the Python/Node.js template. It specifies the amount of various resources needed for the task to be processed on the EthernityCloud network. The `resources` object contains the following properties:
+
+1. `taskPrice`: This represents the price in tETNY that a user is willing to pay for the task execution. It determines the priority and readiness of the task for processing.
+
+2. `cpu`: This specifies the amount of CPU (Central Processing Unit) resources required for the task. It indicates the computational power needed to execute the task's code.
+
+3. `memory`: This indicates the amount of RAM memory required for the task's execution. It represents the storage space in RAM memory needed to run the task.
+
+4. `storage`: This property represents the storage space needed for the task's execution. It indicates the amount of disk space required for the task.
+
+5. `bandwidth`: This defines the amount of network bandwidth required for the task's execution. It represents the data transfer capacity needed to perform the task.
+
+6. `duration`: This specifies the time duration or the maximum time allowed for the task's execution. It sets a time limit for how long the task can run.
+
+7. `validators`: This property determines the number of validators required for the task. Validators are nodes on the network responsible for processing and validating tasks.
+
+By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the specified TESTNET network.
