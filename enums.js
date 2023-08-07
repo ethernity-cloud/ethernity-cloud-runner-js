@@ -5,6 +5,9 @@ export const ECStatus = {
 };
 
 export const ECEvent = {
+  TASK_CREATED: 'ecTaskCreated',
+  TASK_ORDER_PLACED: 'ecTaskOrderPlaced',
+  TASK_NOT_PROCESSED: 'ecTaskNotProcessed',
   TASK_PROGRESS: 'ecTaskProgress',
   TASK_COMPLETED: 'ecTaskCompleted'
 };
@@ -22,9 +25,9 @@ export const ECOrderTaskStatus = {
 
 export const ECRunner = {
   PYNITHY_RUNNER_TESTNET: 'etny-pynithy-testnet',
-  NODENITHY_RUNNER_TESTNET: 'etny-nodenithy-testnet'
-  // PYNITHY_RUNNER: 'etny-pynithy',
-  // NODENITHY_RUNNER: 'etny-nodenithy'
+  NODENITHY_RUNNER_TESTNET: 'etny-nodenithy-testnet',
+  PYNITHY_RUNNER: 'etny-pynithy',
+  NODENITHY_RUNNER: 'etny-nodenithy'
 };
 
 export const ZERO_CHECKSUM = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';

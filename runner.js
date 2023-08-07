@@ -4,7 +4,7 @@ import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto'
 import EtnyContract from './contract/operation/etnyContract';
 import ImageRegistryContract from './contract/operation/imageRegistryContract';
 import contract from './contract/abi/etnyAbi';
-import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, MAINNET_ADDRESS } from './enums';
+import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, MAINNET_ADDRESS, TESTNET_ADDRESS } from './enums';
 
 const { Buffer } = require('buffer/');
 
@@ -30,13 +30,17 @@ class EthernityCloudRunner extends EventTarget {
 
   #interval = null;
 
+  #orderPlacedTimer = null;
+
+  #taskHasBeenPickedForApproval = false;
+
   #getResultFromOrderRepeats = 1;
 
   #runnerType = null;
 
   #networkAddress = null;
 
-  #taskPrice = 0;
+  #resource = 0;
 
   #enclaveImageIPFSHash = '';
 
@@ -48,10 +52,9 @@ class EthernityCloudRunner extends EventTarget {
 
   #imageRegistryContract = null;
 
-  constructor(networkAddress = null, taskPrice = 3) {
+  constructor(networkAddress = TESTNET_ADDRESS) {
     super();
     this.#networkAddress = networkAddress;
-    this.#taskPrice = taskPrice;
     this.#etnyContract = new EtnyContract(networkAddress);
     this.#imageRegistryContract = new ImageRegistryContract();
   }
@@ -134,6 +137,11 @@ class EthernityCloudRunner extends EventTarget {
       }
 
       this.#dispatchECEvent(`Order ${this.#orderNumber} was placed and approved.`);
+      this.#dispatchECEvent(
+        `Order ${this.#orderNumber} was placed and approved.`,
+        ECStatus.DEFAULT,
+        ECEvent.TASK_ORDER_PLACED
+      );
       this.#interval = setInterval(messageInterval, 1000);
     };
 
@@ -145,13 +153,39 @@ class EthernityCloudRunner extends EventTarget {
           this.#dispatchECEvent(`Task was picked up and DO Request ${this.#doRequest} was created.`);
           _addDORequestEVPassed = true;
           contract.off('_addDORequestEV', _addDORequestEV);
+          this.#dispatchECEvent(
+            `Task was picked up and DO Request ${this.#doRequest} was created.`,
+            ECStatus.DEFAULT,
+            ECEvent.TASK_CREATED
+          );
 
           // in case _orderPlacedEV was dispatched before _addDORequestEV we have to call the _orderApproved
           if (this.#orderNumber !== -1 && this.#doRequest === this.#doRequestId) {
             await _orderApproved();
           }
+
+          const showErrorAfterTimeout = () => {
+            this.#dispatchECEvent(
+              'Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.',
+              ECStatus.ERROR
+            );
+            this.#dispatchECEvent(
+              'Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.',
+              ECStatus.ERROR,
+              ECEvent.TASK_NOT_PROCESSED
+            );
+          };
+
+          // checking if task was picked for approval and passed resource requirements
+          clearTimeout(this.#orderPlacedTimer);
+          this.#orderPlacedTimer = setTimeout(() => {
+            if (!this.#taskHasBeenPickedForApproval) {
+              showErrorAfterTimeout();
+            }
+            clearTimeout(this.#orderPlacedTimer);
+          }, 60 * 1000);
         } else if (!walletAddress) {
-          this.#dispatchECEvent('Unable to retrieve current wallet address.');
+          this.#dispatchECEvent('Unable to retrieve current wallet address.', ECStatus.ERROR);
         }
       } catch (e) {
         console.log(e);
@@ -160,6 +194,7 @@ class EthernityCloudRunner extends EventTarget {
     };
 
     const _orderPlacedEV = async (orderNumber, doRequestId) => {
+      this.#taskHasBeenPickedForApproval = true;
       // this means that addDPRequestEV was dispatched
       if (doRequestId.toNumber() === this.#doRequest && !_orderPlacedEVPassed && this.#doRequest !== -1) {
         this.#orderNumber = orderNumber.toNumber();
@@ -269,7 +304,7 @@ class EthernityCloudRunner extends EventTarget {
       codeMetadata,
       inputMetadata,
       nodeAddress,
-      this.#taskPrice
+      this.#resource
     );
     const transactionHash = tx.hash;
     this.#doHash = transactionHash;
@@ -397,7 +432,7 @@ class EthernityCloudRunner extends EventTarget {
       };
     } catch (ex) {
       if (ex.name === 'EtnyParseError') {
-        return { success: false, message: 'Ethernity Parsing Error' };
+        return { success: false, message: 'Ethernity parsing transaction error' };
       }
       await delay(5000);
       this.#getResultFromOrderRepeats += 1;
@@ -428,6 +463,7 @@ class EthernityCloudRunner extends EventTarget {
     this.#fileSetHash = '';
     this.#interval = null;
     this.#getResultFromOrderRepeats = 1;
+    this.#taskHasBeenPickedForApproval = false;
   };
 
   #cleanup = async () => {
@@ -455,9 +491,15 @@ class EthernityCloudRunner extends EventTarget {
     ipfsClient.initialize(ipfsAddress, protocol, port, token);
   }
 
-  async run(runnerType, code, nodeAddress = '') {
+  async run(
+    runnerType,
+    code,
+    nodeAddress = '',
+    resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 }
+  ) {
     try {
       this.#nodeAddress = nodeAddress;
+      this.#resource = resources;
       const isNodeOperatorAddress = await this.#isNodeOperatorAddress(nodeAddress);
       if (isNodeOperatorAddress) {
         this.#runnerType = runnerType;

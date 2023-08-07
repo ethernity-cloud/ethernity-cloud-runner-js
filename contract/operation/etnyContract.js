@@ -73,14 +73,14 @@ class EtnyContract {
     }
   }
 
-  async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, taskPrice) {
-    const cpu = 1;
-    const memory = 1;
-    const storage = 40;
-    const bandwidth = 1;
-    const duration = 1;
-    const instances = 1;
-    const maxPrice = 10;
+  async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, resources) {
+    const cpu = resources.cpu || 1;
+    const memory = resources.memory || 1;
+    const storage = resources.storage || 40;
+    const bandwidth = resources.bandwidth || 1;
+    const duration = resources.duration || 1;
+    const validators = resources.validators || 1;
+    const taskPrice = resources.taskPrice || 10;
     // eslint-disable-next-line no-underscore-dangle
     return this.etnyContract._addDORequest(
       cpu,
@@ -88,7 +88,7 @@ class EtnyContract {
       storage,
       bandwidth,
       duration,
-      instances,
+      validators,
       taskPrice,
       imageMetadata,
       payloadMetadata,
