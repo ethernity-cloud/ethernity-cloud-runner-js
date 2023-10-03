@@ -513,7 +513,12 @@ class EthernityCloudRunner extends EventTarget {
         const connected = await this.#handleMetaMaskConnection();
         if (connected) {
           await this.#getEnclaveDetails();
-          if (!this.#isMainnet) await this.#getTokensFromFaucet();
+          if (!this.#isMainnet) {
+            const faucetResult = await this.#getTokensFromFaucet();
+            if (!faucetResult) {
+              this.#dispatchECEvent('Unable to retrieve tETNY from the faucet.', ECStatus.ERROR);
+            }
+          }
 
           await this.#processTask(code);
         } else {
