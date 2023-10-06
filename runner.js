@@ -53,10 +53,16 @@ class EthernityCloudRunner extends EventTarget {
   #imageRegistryContract = null;
 
   constructor(networkAddress = TESTNET_ADDRESS) {
-    super();
-    this.#networkAddress = networkAddress;
-    this.#etnyContract = new EtnyContract(networkAddress);
-    this.#imageRegistryContract = new ImageRegistryContract();
+    if (!EthernityCloudRunner.instance) {
+      super();
+      this.#networkAddress = networkAddress;
+      this.#etnyContract = new EtnyContract(networkAddress);
+      this.#imageRegistryContract = new ImageRegistryContract();
+      EthernityCloudRunner.instance = this;
+    }
+
+    // eslint-disable-next-line no-constructor-return
+    return EthernityCloudRunner.instance;
   }
 
   #isMainnet = () => this.#networkAddress === MAINNET_ADDRESS || contract.address === MAINNET_ADDRESS;
@@ -489,6 +495,11 @@ class EthernityCloudRunner extends EventTarget {
   // eslint-disable-next-line class-methods-use-this
   initializeStorage(ipfsAddress, protocol, port, token) {
     ipfsClient.initialize(ipfsAddress, protocol, port, token);
+  }
+
+  // use this in order to reset the instance and have a new runner
+  static resetInstance() {
+    EthernityCloudRunner.instance = null;
   }
 
   async run(
