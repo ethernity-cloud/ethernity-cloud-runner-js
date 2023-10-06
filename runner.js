@@ -4,7 +4,7 @@ import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto'
 import EtnyContract from './contract/operation/etnyContract';
 import ImageRegistryContract from './contract/operation/imageRegistryContract';
 import contract from './contract/abi/etnyAbi';
-import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, MAINNET_ADDRESS, TESTNET_ADDRESS } from './enums';
+import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, ECAddress } from './enums';
 
 const { Buffer } = require('buffer/');
 
@@ -52,7 +52,7 @@ class EthernityCloudRunner extends EventTarget {
 
   #imageRegistryContract = null;
 
-  constructor(networkAddress = TESTNET_ADDRESS) {
+  constructor(networkAddress = ECAddress.BLOXBERG_TESTNET_ADDRESS) {
     if (!EthernityCloudRunner.instance) {
       super();
       this.#networkAddress = networkAddress;
@@ -65,7 +65,11 @@ class EthernityCloudRunner extends EventTarget {
     return EthernityCloudRunner.instance;
   }
 
-  #isMainnet = () => this.#networkAddress === MAINNET_ADDRESS || contract.address === MAINNET_ADDRESS;
+  #isMainnet = () =>
+    this.#networkAddress === ECAddress.BLOXBERG_MAINNET_ADDRESS ||
+    this.#networkAddress === ECAddress.POLYGON_MAINNET_ADDRESS ||
+    contract.address === ECAddress.BLOXBERG_MAINNET_ADDRESS ||
+    contract.address === ECAddress.POLYGON_MAINNET_ADDRESS;
 
   #dispatchECEvent = (message, status = ECStatus.DEFAULT, type = ECEvent.TASK_PROGRESS) => {
     // Create a new custom event with a custom event name, and pass any data as the event detail
