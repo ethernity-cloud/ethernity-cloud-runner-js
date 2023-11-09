@@ -1,5 +1,6 @@
 import { create } from 'ipfs-http-client';
-import { delay } from './utils';
+import { delay, getRetryDelay } from './utils';
+import { ECError } from './enums';
 
 let ipfs = null;
 
@@ -38,18 +39,45 @@ export const uploadToIPFS = async (code) => {
   }
 };
 
-export const getFromIPFS = async (hash) => {
-  let res = '';
-  try {
-    // eslint-disable-next-line no-restricted-syntax
-    for await (const file of ipfs.cat(hash)) {
-      res += new TextDecoder().decode(file.buffer);
-    }
+// export const getFromIPFS = async (hash) => {
+//   let res = '';
+//   try {
+//     // eslint-disable-next-line no-restricted-syntax
+//     for await (const file of ipfs.cat(hash)) {
+//       res += new TextDecoder().decode(file.buffer);
+//     }
+//
+//     return res;
+//   } catch (error) {
+//     console.error(error.message);
+//     await delay(2000);
+//     return getFromIPFS(hash);
+//   }
+// };
 
-    return res;
-  } catch (error) {
-    console.error(error.message);
-    await delay(2000);
-    return getFromIPFS(hash);
+export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_RETRIES || 5) => {
+  let res = '';
+  let retryCount = 0;
+
+  while (retryCount < maxRetries) {
+    try {
+      // eslint-disable-next-line no-restricted-syntax,no-await-in-loop
+      for await (const file of ipfs.cat(hash)) {
+        res += new TextDecoder().decode(file.buffer);
+      }
+
+      return res;
+    } catch (error) {
+      console.error(error.message);
+      retryCount += 1;
+
+      if (retryCount < maxRetries) {
+        // eslint-disable-next-line no-await-in-loop
+        await delay(getRetryDelay(retryCount));
+        continue;
+      } else {
+        throw new Error(ECError.IPFS_DOWNLOAD_ERROR);
+      }
+    }
   }
 };

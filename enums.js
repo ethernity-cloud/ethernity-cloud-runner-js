@@ -56,3 +56,8 @@ export const ECAddress = {
 };
 
 export const ZERO_CHECKSUM = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+export const ECError = {
+  PARSE_ERROR: 'EtnyParseError',
+  IPFS_DOWNLOAD_ERROR: 'ECIPFSDownloadError'
+};

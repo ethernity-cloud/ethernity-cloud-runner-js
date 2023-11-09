@@ -4,7 +4,7 @@ import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto'
 import EtnyContract from './contract/operation/etnyContract';
 import ImageRegistryContract from './contract/operation/imageRegistryContract';
 import contract from './contract/abi/etnyAbi';
-import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, ECAddress } from './enums';
+import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, ECAddress, ECError } from './enums';
 
 const { Buffer } = require('buffer/');
 
@@ -339,7 +339,7 @@ class EthernityCloudRunner extends EventTarget {
         resultIPFSHash: arr[2]
       };
     } catch (e) {
-      throw new Error('EtnyParseError');
+      throw new Error(ECError.PARSE_ERROR);
     }
   };
 
@@ -356,7 +356,7 @@ class EthernityCloudRunner extends EventTarget {
         enclaveChallenge: arr[3]
       };
     } catch (e) {
-      throw new Error('EtnyParseError');
+      throw new Error(ECError.PARSE_ERROR);
     }
   }
 
@@ -441,8 +441,11 @@ class EthernityCloudRunner extends EventTarget {
         result: decryptedData.data
       };
     } catch (ex) {
-      if (ex.name === 'EtnyParseError') {
-        return { success: false, message: 'Ethernity parsing transaction error' };
+      if (ex.name === ECError.PARSE_ERROR) {
+        return { success: false, message: 'Ethernity parsing transaction error.' };
+      }
+      if (ex.name === ECError.IPFS_DOWNLOAD_ERROR) {
+        return { success: false, message: 'Ethernity IPFS download result error.' };
       }
       await delay(5000);
       this.#getResultFromOrderRepeats += 1;
