@@ -1,5 +1,8 @@
 const contract = {
-  address: process.env.REACT_APP_ETNY_IMAGE_REGISTRY_CONTRACT_ADDRESS || '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31',
+  address_bloxberg:
+    process.env.REACT_APP_ETNY_IMAGE_REGISTRY_CONTRACT_ADDRESS || '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31',
+  address_polygon:
+    process.env.REACT_APP_ECLD_IMAGE_REGISTRY_CONTRACT_ADDRESS || '0x689f3806874d3c8A973f419a4eB24e6fBA7E830F',
   abi: [
     { inputs: [], stateMutability: 'nonpayable', type: 'constructor' },
     {

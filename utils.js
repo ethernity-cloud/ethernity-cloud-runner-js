@@ -1,4 +1,8 @@
 // eslint-disable-next-line no-promise-executor-return
+import { ethers } from 'ethers';
+import { sha256 } from './crypto';
+
+// eslint-disable-next-line no-promise-executor-return
 export const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 export const getCurrentTime = () => {
   const today = new Date();
@@ -9,6 +13,7 @@ export const getCurrentTime = () => {
   return `${mm}/${dd}/${yyyy}`;
 };
 
+export const getRetryDelay = (retryCount, baseDelay = 1) => baseDelay * 2 ** retryCount;
 export const formatDate = (dt) => {
   // eslint-disable-next-line no-param-reassign
   if (!dt) dt = new Date();
@@ -22,6 +27,7 @@ export const formatDate = (dt) => {
 
 export const generateRandomDigitsHexOfSize = (size) =>
   [...Array(size)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
+
 export const generateRandomHexOfSize = (size) => {
   let result = '';
   // eslint-disable-next-line no-plusplus
@@ -37,3 +43,34 @@ export const generateRandomHexOfSize = (size) => {
 };
 
 export const isNullOrEmpty = (value) => value === null || value === undefined || value === '';
+
+export const generateWallet = (clientChallenge, enclaveChallenge) => {
+  try {
+    const encoded = clientChallenge + enclaveChallenge;
+    const hash = sha256(sha256(encoded, true), true);
+    const wallet = new ethers.Wallet(`${hash}`);
+    return wallet.address;
+  } catch (e) {
+    console.log(e);
+    return false;
+  }
+};
+
+export const isAddress = (address) => {
+  try {
+    ethers.utils.getAddress(address);
+  } catch (e) {
+    return false;
+  }
+  return true;
+};
+
+export const parseTransactionBytes = (contract, bytesInput) => {
+  const parsedTransaction = ethers.utils.parseTransaction(bytesInput);
+  const iface = new ethers.utils.Interface(contract.abi);
+  const decodedData = iface.parseTransaction({ data: parsedTransaction.data, value: parsedTransaction.value });
+  return {
+    from: parsedTransaction.from,
+    result: decodedData.args[1]
+  };
+};
