@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
-import contract from '../abi/etnyAbi';
+import contract from '../abi/ecldAbi';
 
-class EtnyContract {
-  etnyContract = null;
+class EcldContract {
+  ecldContract = null;
 
-  etnyContactWithProvider = null;
+  ecldContactWithProvider = null;
 
   provider = null;
 
@@ -15,8 +15,8 @@ class EtnyContract {
   constructor(networkAddress) {
     this.provider = new ethers.providers.Web3Provider(window.ethereum);
     this.signer = this.provider.getSigner();
-    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
-    this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
+    this.ecldContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
+    this.ecldContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
 
   async initialize() {
@@ -31,7 +31,7 @@ class EtnyContract {
   }
 
   getContract() {
-    return this.etnyContract;
+    return this.ecldContract;
   }
 
   getProvider() {
@@ -54,7 +54,7 @@ class EtnyContract {
 
   async getBalance(account) {
     try {
-      const balance = await this.etnyContract.balanceOf(account);
+      const balance = await this.ecldContract.balanceOf(account);
       // convert a currency unit from wei to ether
       return ethers.utils.formatEther(balance);
     } catch (ex) {
@@ -68,4 +68,4 @@ class EtnyContract {
   }
 }
 
-export default EtnyContract;
+export default EcldContract;

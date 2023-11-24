@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import contract from '../abi/imageRegistryAbi';
+import { ECAddress } from '../../enums';
 
 class ImageRegistryContract {
   contract = null;
@@ -10,17 +11,21 @@ class ImageRegistryContract {
 
   signer = null;
 
-  currentWallet = null;
-
-  constructor() {
+  constructor(networkAddress = ECAddress.BLOXBERG_TESTNET_ADDRESS) {
     this.ethereum = window.ethereum;
     this.provider = new ethers.providers.Web3Provider(window.ethereum);
     this.signer = this.provider.getSigner();
-    this.contract = new ethers.Contract(contract.address, contract.abi, this.signer);
-  }
-
-  async initialize() {
-    this.currentWallet = await this._getCurrentWallet();
+    switch (networkAddress) {
+      case ECAddress.BLOXBERG_TESTNET_ADDRESS:
+      case ECAddress.BLOXBERG_MAINNET_ADDRESS:
+        this.contract = new ethers.Contract(contract.address_bloxberg, contract.abi, this.signer);
+        break;
+      case ECAddress.POLYGON_MAINNET_ADDRESS:
+      case ECAddress.POLYGON_TESTNET_ADDRESS:
+        this.contract = new ethers.Contract(contract.address_polygon, contract.abi, this.signer);
+        break;
+      default:
+    }
   }
 
   getSigner() {
@@ -33,19 +38,6 @@ class ImageRegistryContract {
 
   getProvider() {
     return this.provider;
-  }
-
-  getCurrentWallet() {
-    return this.currentWallet;
-  }
-
-  async _getCurrentWallet() {
-    try {
-      const accounts = await this.provider.listAccounts();
-      return accounts[0];
-    } catch (e) {
-      return null;
-    }
   }
 
   async getEnclaveDetailsV3(imageName, version) {
