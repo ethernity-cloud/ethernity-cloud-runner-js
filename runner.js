@@ -1,3 +1,4 @@
+import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs';
 import {
   delay,
@@ -14,7 +15,17 @@ import EcldContract from './contract/operation/ecldContract';
 import ImageRegistryContract from './contract/operation/imageRegistryContract';
 import contractBloxberg from './contract/abi/etnyAbi';
 import protocolContractPolygon from './contract/abi/polygonProtocolAbi';
-import { ECEvent, ECStatus, ECOrderTaskStatus, ZERO_CHECKSUM, ECAddress, ECError } from './enums';
+import {
+  ECEvent,
+  ECStatus,
+  ECOrderTaskStatus,
+  ZERO_CHECKSUM,
+  ECAddress,
+  ECError,
+  ECNetworkName,
+  ECNetworkNameDictionary,
+  ECNetworkName1Dictionary
+} from './enums';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract';
 
@@ -60,7 +71,7 @@ class EthernityCloudRunner extends EventTarget {
 
   #enclaveDockerComposeIPFSHash = '';
 
-  #contract = null;
+  #tokenContract = null;
 
   #protocolContract = null;
 
@@ -68,28 +79,31 @@ class EthernityCloudRunner extends EventTarget {
 
   #imageRegistryContract = null;
 
-  constructor(networkAddress = ECAddress.BLOXBERG_TESTNET_ADDRESS) {
+  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS) {
     if (!EthernityCloudRunner.instance) {
       super();
 
       this.#networkAddress = networkAddress;
       switch (networkAddress) {
-        case ECAddress.BLOXBERG_TESTNET_ADDRESS:
-        case ECAddress.BLOXBERG_MAINNET_ADDRESS:
-          this.#contract = new EtnyContract(networkAddress);
+        case ECAddress.BLOXBERG.TESTNET_ADDRESS:
+        case ECAddress.BLOXBERG.MAINNET_ADDRESS:
+          this.#tokenContract = new EtnyContract(networkAddress);
           this.#protocolContract = new BloxbergProtocolContract(networkAddress);
           this.#protocolAbi = contractBloxberg.abi;
           break;
-        case ECAddress.POLYGON_MAINNET_ADDRESS:
-        case ECAddress.POLYGON_TESTNET_ADDRESS:
-          this.#contract = new EcldContract(networkAddress);
-          this.#protocolContract = new PolygonProtocolContract(networkAddress);
+        case ECAddress.POLYGON.MAINNET_ADDRESS:
+          this.#tokenContract = new EcldContract(networkAddress);
+          this.#protocolContract = new PolygonProtocolContract(ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS);
+          this.#protocolAbi = protocolContractPolygon.abi;
+          break;
+        case ECAddress.POLYGON.TESTNET_ADDRESS:
+          this.#tokenContract = new EcldContract(networkAddress);
+          console.log(ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS);
+          this.#protocolContract = new PolygonProtocolContract(ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS);
           this.#protocolAbi = protocolContractPolygon.abi;
           break;
         default:
       }
-
-      this.#imageRegistryContract = new ImageRegistryContract(networkAddress);
 
       EthernityCloudRunner.instance = this;
     }
@@ -99,8 +113,8 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   #isMainnet = () =>
-    this.#networkAddress === ECAddress.BLOXBERG_MAINNET_ADDRESS ||
-    this.#networkAddress === ECAddress.POLYGON_MAINNET_ADDRESS;
+    this.#networkAddress === ECAddress.BLOXBERG.MAINNET_ADDRESS ||
+    this.#networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS;
 
   #dispatchECEvent = (message, status = ECStatus.DEFAULT, type = ECEvent.TASK_PROGRESS) => {
     // Create a new custom event with a custom event name, and pass any data as the event detail
@@ -121,12 +135,12 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   #getTokensFromFaucet = async () => {
-    const account = this.#contract.getCurrentWallet();
-    const balance = await this.#contract.getBalance(account);
+    const account = this.#tokenContract.getCurrentWallet();
+    const balance = await this.#tokenContract.getBalance(account);
     if (parseInt(balance, 10) <= 100) {
-      const tx = await this.#contract.getFaucetTokens(account);
+      const tx = await this.#tokenContract.getFaucetTokens(account);
       const transactionHash = tx.hash;
-      const isProcessed = await this.#waitForTransactionToBeProcessed(this.#contract, transactionHash);
+      const isProcessed = await this.#waitForTransactionToBeProcessed(this.#tokenContract, transactionHash);
       if (!isProcessed) {
         return { success: false, message: 'Unable to create request, please check connectivity with Bloxberg node.' };
       }
@@ -136,16 +150,31 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   // eslint-disable-next-line class-methods-use-this
+  async #getReason(contract, txHash) {
+    const tx = await contract.getProvider().getTransaction(txHash);
+    if (!tx) {
+      console.log('tx not found');
+      return 'Transaction hash not found';
+    }
+    delete tx.gasPrice;
+    const code = await contract.getProvider().call(tx, tx.blockNumber);
+    const reason = ethers.utils.toUtf8String(`0x${code.substring(138)}`);
+    console.log(reason);
+    return reason.trim();
+  }
+
+  // eslint-disable-next-line class-methods-use-this
   async #waitForTransactionToBeProcessed(contract, transactionHash) {
     await contract.getProvider().waitForTransaction(transactionHash);
     const txReceipt = await contract.getProvider().getTransactionReceipt(transactionHash);
+    console.log(txReceipt);
     return !(!txReceipt && txReceipt.status === 0);
   }
 
   async #handleMetaMaskConnection() {
     try {
-      await this.#contract.getProvider().send('eth_requestAccounts', []);
-      const walletAddress = this.#contract.getCurrentWallet();
+      await this.#tokenContract.getProvider().send('eth_requestAccounts', []);
+      const walletAddress = this.#tokenContract.getCurrentWallet();
       return walletAddress !== null && walletAddress !== undefined;
     } catch (e) {
       return false;
@@ -188,7 +217,7 @@ class EthernityCloudRunner extends EventTarget {
     };
 
     const _addDORequestEV = async (_from, _doRequest) => {
-      const walletAddress = (await this.#contract.getProvider().send('eth_requestAccounts', []))[0];
+      const walletAddress = (await this.#tokenContract.getProvider().send('eth_requestAccounts', []))[0];
       try {
         if (walletAddress && _from.toLowerCase() === walletAddress.toLowerCase() && !_addDORequestEVPassed) {
           this.#doRequest = _doRequest.toNumber();
@@ -287,7 +316,8 @@ class EthernityCloudRunner extends EventTarget {
     const tx = await this.#protocolContract.approveOrder(orderId);
     const isProcessed = await this.#waitForTransactionToBeProcessed(this.#protocolContract, tx.hash);
     if (!isProcessed) {
-      this.#dispatchECEvent('Unable to approve order, please check connectivity with Bloxberg node.', ECStatus.ERROR);
+      const reason = await this.#getReason(this.#protocolContract, tx.hash);
+      this.#dispatchECEvent(`Unable to approve order. ${reason}`, ECStatus.ERROR);
       return;
     }
 
@@ -298,7 +328,7 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async #getCurrentWalletPublicKey() {
-    const account = this.#contract.getCurrentWallet();
+    const account = this.#tokenContract.getCurrentWallet();
     const keyB64 = await window.ethereum.request({
       method: 'eth_getEncryptionPublicKey',
       params: [account]
@@ -327,37 +357,50 @@ class EthernityCloudRunner extends EventTarget {
     const base64EncryptedScript = await encryptWithCertificate(code, this.#enclavePublicKey);
     this.#scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
 
-    scriptChecksum = await this.#contract.signMessage(scriptChecksum);
+    scriptChecksum = await this.#tokenContract.signMessage(scriptChecksum);
     // v3:code_ipfs_hash:code_checksum
     return `${VERSION}:${this.#scriptHash}:${scriptChecksum}`;
   }
 
   async #getV3InputMedata() {
-    const fileSetChecksum = await this.#contract.signMessage(ZERO_CHECKSUM);
+    const fileSetChecksum = await this.#tokenContract.signMessage(ZERO_CHECKSUM);
     // v3::filesetchecksum
     return `${VERSION}::${fileSetChecksum}`;
   }
 
-  async #createDORequest(imageMetadata, codeMetadata, inputMetadata, nodeAddress) {
-    this.#dispatchECEvent(`Submitting transaction for DO request on ${formatDate()}.`);
-    // add here call to SC(smart contract)
-    const tx = await this.#protocolContract.addDORequest(
-      imageMetadata,
-      codeMetadata,
-      inputMetadata,
-      nodeAddress,
-      this.#resource
-    );
-    const transactionHash = tx.hash;
-    this.#doHash = transactionHash;
+  async #createDORequest(imageMetadata, codeMetadata, inputMetadata, nodeAddress, gasLimit) {
+    try {
+      this.#dispatchECEvent(`Submitting transaction for DO request on ${formatDate()}.`);
+      // add here call to SC(smart contract)
+      const tx = await this.#protocolContract.addDORequest(
+        imageMetadata,
+        codeMetadata,
+        inputMetadata,
+        nodeAddress,
+        this.#resource,
+        gasLimit
+      );
+      const transactionHash = tx.hash;
+      this.#doHash = transactionHash;
 
-    this.#dispatchECEvent(`Waiting for transaction ${transactionHash} to be processed...`);
-    const isProcessed = await this.#waitForTransactionToBeProcessed(this.#protocolContract, transactionHash);
-    if (!isProcessed) {
-      this.#dispatchECEvent('Unable to create request, please check connectivity with Bloxberg node.');
-      return;
+      this.#dispatchECEvent(`Waiting for transaction ${transactionHash} to be processed...`);
+      const isProcessed = await this.#waitForTransactionToBeProcessed(this.#protocolContract, transactionHash);
+      if (!isProcessed) {
+        const reason = await this.#getReason(this.#protocolContract, transactionHash);
+        this.#dispatchECEvent(`Unable to create DO request. ${reason}`);
+        return false;
+      }
+      this.#dispatchECEvent(`Transaction ${transactionHash} was confirmed.`);
+
+      return true;
+    } catch (e) {
+      console.log(e);
+      if (e.message.search('cannot estimate gas; transaction may fail or may require manual gas limit') !== -1) {
+        // eslint-disable-next-line no-return-await
+        return this.#createDORequest(imageMetadata, codeMetadata, inputMetadata, nodeAddress, 5000000);
+      }
+      return false;
     }
-    this.#dispatchECEvent(`Transaction ${transactionHash} was confirmed.`);
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -414,7 +457,7 @@ class EthernityCloudRunner extends EventTarget {
       // get the result value from IPFS using the `parsedOrderResult.resultIPFSHash`
       const ipfsResult = await ipfsClient.getFromIPFS(parsedOrderResult.resultIPFSHash);
       // decrypt data
-      const currentWalletAddress = this.#contract.getCurrentWallet();
+      const currentWalletAddress = this.#tokenContract.getCurrentWallet();
       const decryptedData = await decryptWithPrivateKey(ipfsResult, currentWalletAddress);
 
       if (!decryptedData.success) {
@@ -458,7 +501,7 @@ class EthernityCloudRunner extends EventTarget {
 
       return {
         success: true,
-        contractAddress: this.#contract.contractAddress(),
+        contractAddress: this.#tokenContract.contractAddress(),
         inputTransactionHash: this.#doHash,
         outputTransactionHash: resultTransactionHash,
         orderId,
@@ -473,6 +516,7 @@ class EthernityCloudRunner extends EventTarget {
         result: decryptedData.data
       };
     } catch (ex) {
+      console.log(ex);
       if (ex.name === ECError.PARSE_ERROR) {
         return { success: false, message: 'Ethernity parsing transaction error.' };
       }
@@ -496,7 +540,7 @@ class EthernityCloudRunner extends EventTarget {
     // // getting input metadata
     const inputMetadata = await this.#getV3InputMedata();
     // // create new DO Request
-    await this.#createDORequest(imageMetadata, codeMetadata, inputMetadata, this.#nodeAddress);
+    return this.#createDORequest(imageMetadata, codeMetadata, inputMetadata, this.#nodeAddress);
   }
 
   #reset = () => {
@@ -541,6 +585,42 @@ class EthernityCloudRunner extends EventTarget {
     EthernityCloudRunner.instance = null;
   }
 
+  async #checkNetwork() {
+    try {
+      // checking network
+      const networkName = await this.#tokenContract.getNetworkName();
+      console.log(networkName);
+      // eslint-disable-next-line default-case
+      switch (this.#networkAddress) {
+        case ECAddress.BLOXBERG.MAINNET_ADDRESS:
+        case ECAddress.BLOXBERG.TESTNET_ADDRESS:
+          if (networkName !== ECNetworkName.BLOXBERG) {
+            this.#dispatchECEvent(`Please switch Metamask network and use Bloxberg!`, ECStatus.ERROR);
+          }
+          break;
+        case ECAddress.POLYGON.MAINNET_ADDRESS:
+          if (networkName !== ECNetworkName.POLYGON) {
+            this.#dispatchECEvent(`Please switch Metamask network and use Polygon!`, ECStatus.ERROR);
+          }
+          break;
+        case ECAddress.POLYGON.TESTNET_ADDRESS:
+          if (networkName !== ECNetworkName.MUMBAI) {
+            this.#dispatchECEvent(`Please switch Metamask network and use Mumbai!`, ECStatus.ERROR);
+          }
+          break;
+      }
+
+      const runnerNetworkName = ECNetworkNameDictionary[this.#networkAddress];
+      return networkName === runnerNetworkName;
+    } catch (e) {
+      this.#dispatchECEvent(
+        `Please switch Metamask network and use ${ECNetworkName1Dictionary[this.#networkAddress]}!`,
+        ECStatus.ERROR
+      );
+      return false;
+    }
+  }
+
   async run(
     runnerType,
     code,
@@ -548,9 +628,12 @@ class EthernityCloudRunner extends EventTarget {
     resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 }
   ) {
     try {
+      const isCorrectNetwork = await this.#checkNetwork();
+      if (!isCorrectNetwork) {
+        return;
+      }
       // checking if the balance of the wallet is higher or equal than the price we agreed to pay for task execution
-      const account = this.#contract.getCurrentWallet();
-      let balance = await this.#contract.getBalance(account);
+      let balance = await this.#tokenContract.getBalance();
       balance = parseInt(balance, 10);
       if (balance < resources.taskPrice) {
         this.#dispatchECEvent(
@@ -564,23 +647,42 @@ class EthernityCloudRunner extends EventTarget {
       const isNodeOperatorAddress = await this.#isNodeOperatorAddress(nodeAddress);
       if (isNodeOperatorAddress) {
         this.#runnerType = runnerType;
-
+        this.#imageRegistryContract = new ImageRegistryContract(this.#networkAddress, runnerType);
         await this.#cleanup();
         this.#dispatchECEvent('Started processing task...');
 
-        await this.#contract.initialize();
+        await this.#tokenContract.initialize();
 
         const connected = await this.#handleMetaMaskConnection();
         if (connected) {
           await this.#getEnclaveDetails();
-          if (!this.#isMainnet) {
-            const faucetResult = await this.#getTokensFromFaucet();
-            if (!faucetResult) {
-              this.#dispatchECEvent('Unable to retrieve tETNY from the faucet.', ECStatus.ERROR);
-            }
-          }
+          // if (!this.#isMainnet) {
+          //   const faucetResult = await this.#getTokensFromFaucet();
+          //   if (!faucetResult) {
+          //     this.#dispatchECEvent('Unable to retrieve tETNY from the faucet.', ECStatus.ERROR);
+          //   }
+          // }
 
-          await this.#processTask(code);
+          if (
+            this.#networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS ||
+            this.#networkAddress === ECAddress.POLYGON.TESTNET_ADDRESS
+          ) {
+            this.#dispatchECEvent('Checking for the allowance on the current wallet...');
+            const passedAllowance = await this.#tokenContract.checkAndSetAllowance(
+              this.#protocolContract.contractAddress(),
+              '100',
+              resources.taskPrice.toString()
+            );
+            if (!passedAllowance) {
+              this.#dispatchECEvent('Unable to set allowance.', ECStatus.ERROR);
+              return;
+            }
+            this.#dispatchECEvent('Allowance checking completed.');
+          }
+          const canProcessTask = await this.#processTask(code);
+          if (!canProcessTask) {
+            this.#dispatchECEvent('Unable to proceed with the task; exiting.', ECStatus.ERROR);
+          }
         } else {
           this.#dispatchECEvent('Unable to connect to MetaMask', ECStatus.ERROR);
         }

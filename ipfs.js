@@ -74,6 +74,7 @@ export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_
       if (retryCount < maxRetries) {
         // eslint-disable-next-line no-await-in-loop
         await delay(getRetryDelay(retryCount));
+        // eslint-disable-next-line no-continue
         continue;
       } else {
         throw new Error(ECError.IPFS_DOWNLOAD_ERROR);

@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import contract from '../abi/imageRegistryAbi';
-import { ECAddress } from '../../enums';
+import { ECAddress, ECRunner } from '../../enums';
 
 class ImageRegistryContract {
   contract = null;
@@ -11,18 +11,82 @@ class ImageRegistryContract {
 
   signer = null;
 
-  constructor(networkAddress = ECAddress.BLOXBERG_TESTNET_ADDRESS) {
+  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, runnerType = ECRunner.BLOXBERG.NODENITHY_RUNNER) {
     this.ethereum = window.ethereum;
     this.provider = new ethers.providers.Web3Provider(window.ethereum);
     this.signer = this.provider.getSigner();
+    console.log('Token address: ', networkAddress);
     switch (networkAddress) {
-      case ECAddress.BLOXBERG_TESTNET_ADDRESS:
-      case ECAddress.BLOXBERG_MAINNET_ADDRESS:
-        this.contract = new ethers.Contract(contract.address_bloxberg, contract.abi, this.signer);
+      case ECAddress.BLOXBERG.TESTNET_ADDRESS:
+        if (runnerType === ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET) {
+          this.contract = new ethers.Contract(
+            ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+
+        if (runnerType === ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET) {
+          this.contract = new ethers.Contract(
+            ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
         break;
-      case ECAddress.POLYGON_MAINNET_ADDRESS:
-      case ECAddress.POLYGON_TESTNET_ADDRESS:
-        this.contract = new ethers.Contract(contract.address_polygon, contract.abi, this.signer);
+      case ECAddress.BLOXBERG.MAINNET_ADDRESS:
+        if (runnerType === ECRunner.BLOXBERG.NODENITHY_RUNNER) {
+          this.contract = new ethers.Contract(
+            ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+
+        if (runnerType === ECRunner.BLOXBERG.PYNITHY_RUNNER) {
+          this.contract = new ethers.Contract(
+            ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+        break;
+      case ECAddress.POLYGON.MAINNET_ADDRESS:
+        if (runnerType === ECRunner.POLYGON.NODENITHY_RUNNER) {
+          this.contract = new ethers.Contract(
+            ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+
+        if (runnerType === ECRunner.POLYGON.PYNITHY_RUNNER) {
+          this.contract = new ethers.Contract(
+            ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+        break;
+      case ECAddress.POLYGON.TESTNET_ADDRESS:
+        console.log('POLYGON.TESTNET_ADDRESS');
+        if (runnerType === ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET) {
+          console.log('POLYGON.NODENITHY_RUNNER_TESTNET');
+          this.contract = new ethers.Contract(
+            ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
+
+        if (runnerType === ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET) {
+          console.log('POLYGON.PYNITHY_RUNNER_TESTNET');
+          this.contract = new ethers.Contract(
+            ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
+            contract.abi,
+            this.signer
+          );
+        }
         break;
       default:
     }

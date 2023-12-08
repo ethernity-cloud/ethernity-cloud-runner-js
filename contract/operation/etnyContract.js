@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import contract from '../abi/etnyAbi';
+import { ECNetworkByChainIdDictionary } from '../../enums';
 
 class EtnyContract {
   etnyContract = null;
@@ -52,14 +53,29 @@ class EtnyContract {
     }
   }
 
-  async getBalance(account) {
+  async getBalance() {
     try {
-      const balance = await this.etnyContract.balanceOf(account);
+      const address = await this.signer.getAddress();
+      const balance = await this.etnyContract.balanceOf(address);
       // convert a currency unit from wei to ether
       return ethers.utils.formatEther(balance);
     } catch (ex) {
-      return ex.message;
+      console.log(ex);
+      return 0;
     }
+  }
+
+  async getNetworkName() {
+    // Connect to an Ethereum provider
+
+    // Get the network information
+    const network = await this.provider.getNetwork();
+
+    // Access the network name
+    const networkName = network.name;
+
+    console.log('Current network:', networkName);
+    return ECNetworkByChainIdDictionary[network.chainId];
   }
 
   async signMessage(message) {
