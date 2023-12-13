@@ -628,10 +628,6 @@ class EthernityCloudRunner extends EventTarget {
     resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 }
   ) {
     try {
-      const isCorrectNetwork = await this.#checkNetwork();
-      if (!isCorrectNetwork) {
-        return;
-      }
       // checking if the balance of the wallet is higher or equal than the price we agreed to pay for task execution
       let balance = await this.#tokenContract.getBalance();
       balance = parseInt(balance, 10);
