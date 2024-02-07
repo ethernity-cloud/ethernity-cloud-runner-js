@@ -70,8 +70,8 @@ export const ECRunner = {
     NODENITHY_RUNNER: 'etny-nodenithy'
   },
   POLYGON: {
-    PYNITHY_RUNNER_TESTNET: 'etny-pynithy-mumbai',
-    NODENITHY_RUNNER_TESTNET: 'etny-nodenithy-testnet',
+    PYNITHY_RUNNER_TESTNET: 'ecld-pynithy-mumbai',
+    NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-testnet',
     PYNITHY_RUNNER: 'ecld-pynithy',
     NODENITHY_RUNNER: 'ecld-nodenithy'
   }
