@@ -1,6 +1,6 @@
 {
   "name": "@ethernity-cloud/runner",
-  "version": "0.0.26",
+  "version": "0.1.0",
   "description": "Ethernity Cloud Runner",
   "homepage": "https://github.com/ethernity-cloud/ethernity-cloud-runner-js#readme",
   "repository": {
@@ -27,9 +27,11 @@
   "license": "AGPL-3.0",
   "dependencies": {
     "buffer": "^6.0.3",
+    "dag-jose": "^5.1.1",
     "elliptic": "^6.5.4",
     "ethers": "^5.5.4",
     "ipfs-http-client": "^60.0.1",
+    "is-ip": "^5.0.1",
     "js-sha256": "^0.9.0",
     "jsrsasign": "^10.8.6",
     "node-forge": "^1.3.1"

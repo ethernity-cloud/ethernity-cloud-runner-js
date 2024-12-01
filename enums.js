@@ -1,15 +1,18 @@
 export const ECStatus = {
-  ERROR: 'error',
-  SUCCESS: 'success',
-  DEFAULT: ''
+  ERROR: 'Error',
+  SUCCESS: 'Success',
+  DEFAULT: 'Running'
 };
 
 export const ECEvent = {
-  TASK_CREATED: 'ecTaskCreated',
-  TASK_ORDER_PLACED: 'ecTaskOrderPlaced',
-  TASK_NOT_PROCESSED: 'ecTaskNotProcessed',
-  TASK_PROGRESS: 'ecTaskProgress',
-  TASK_COMPLETED: 'ecTaskCompleted'
+  INIT: 'Encrypting task',
+  SENDING: "Sending task",
+  CREATED: 'Waiting for network',
+  ORDER_PLACED: 'Approving',
+  IN_PROGRESS: 'In Progress',
+  DOWNLOADING: 'Downloading result',
+  VERIFYING: 'Decrypting result',
+  FINISHED: 'Finished'
 };
 
 export const ECOrderTaskStatus = {
@@ -138,4 +141,12 @@ export const ZERO_CHECKSUM = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4
 export const ECError = {
   PARSE_ERROR: 'EtnyParseError',
   IPFS_DOWNLOAD_ERROR: 'ECIPFSDownloadError'
+};
+
+
+export const  ECLog = {
+    ERROR: 1,
+    WARNING: 2,
+    INFO: 3,
+    DEBUG: 4,
 };

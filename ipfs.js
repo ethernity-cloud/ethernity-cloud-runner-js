@@ -55,7 +55,7 @@ export const uploadToIPFS = async (code) => {
 //   }
 // };
 
-export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_RETRIES || 5) => {
+export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_RETRIES || 100) => {
   let res = '';
   let retryCount = 0;
 
@@ -73,7 +73,7 @@ export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_
 
       if (retryCount < maxRetries) {
         // eslint-disable-next-line no-await-in-loop
-        await delay(getRetryDelay(retryCount));
+        await delay(1000);
         // eslint-disable-next-line no-continue
         continue;
       } else {

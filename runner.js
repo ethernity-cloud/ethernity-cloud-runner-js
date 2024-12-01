@@ -18,129 +18,207 @@ import protocolContractPolygon from './contract/abi/polygonProtocolAbi';
 import {
   ECEvent,
   ECStatus,
+  ECLog,
   ECOrderTaskStatus,
   ZERO_CHECKSUM,
   ECAddress,
   ECError,
-  ECNetworkName,
-  ECNetworkNameDictionary,
-  ECNetworkName1Dictionary
+  ECRunner,
+  ECNetworkName
 } from './enums';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract';
 
 const { Buffer } = require('buffer/');
+const util = require('util');
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
 
 class EthernityCloudRunner extends EventTarget {
-  #nodeAddress = '';
-
-  #challengeHash = '';
-
-  #orderNumber = -1;
-
-  #doHash = null;
-
-  #doRequestId = -1;
-
-  #doRequest = -1;
-
-  #scriptHash = '';
-
-  #fileSetHash = '';
-
-  #interval = null;
-
-  #orderPlacedTimer = null;
-
-  #taskHasBeenPickedForApproval = false;
-
-  #getResultFromOrderRepeats = 1;
-
-  #runnerType = null;
-
-  #networkAddress = null;
-
-  #resource = 0;
-
-  #enclaveImageIPFSHash = '';
-
-  #enclavePublicKey = '';
-
-  #enclaveDockerComposeIPFSHash = '';
-
-  #tokenContract = null;
-
-  #protocolContract = null;
-
-  #protocolAbi = null;
-
-  #imageRegistryContract = null;
-
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS) {
-    if (!EthernityCloudRunner.instance) {
-      super();
-
-      this.#networkAddress = networkAddress;
-      switch (networkAddress) {
-        case ECAddress.BLOXBERG.TESTNET_ADDRESS:
-        case ECAddress.BLOXBERG.MAINNET_ADDRESS:
-          this.#tokenContract = new EtnyContract(networkAddress);
-          this.#protocolContract = new BloxbergProtocolContract(networkAddress);
-          this.#protocolAbi = contractBloxberg.abi;
-          break;
-        case ECAddress.POLYGON.MAINNET_ADDRESS:
-          this.#tokenContract = new EcldContract(networkAddress);
-          this.#protocolContract = new PolygonProtocolContract(ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS);
-          this.#protocolAbi = protocolContractPolygon.abi;
-          break;
-        case ECAddress.POLYGON.TESTNET_ADDRESS:
-          this.#tokenContract = new EcldContract(networkAddress);
-          console.log(ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS);
-          this.#protocolContract = new PolygonProtocolContract(ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS);
-          this.#protocolAbi = protocolContractPolygon.abi;
-          break;
-        default:
-      }
-
-      EthernityCloudRunner.instance = this;
-    }
-
-    // eslint-disable-next-line no-constructor-return
-    return EthernityCloudRunner.instance;
+    super();
+    this.networkAddress = networkAddress;
+    this.initializeContracts();
+    this.resetState();
   }
 
-  #isMainnet = () =>
-    this.#networkAddress === ECAddress.BLOXBERG.MAINNET_ADDRESS ||
-    this.#networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS;
+  initializeContracts() {
+    switch (this.networkAddress) {
+      case ECAddress.BLOXBERG.TESTNET_ADDRESS:
+      case ECAddress.BLOXBERG.MAINNET_ADDRESS:
+        this.tokenContract = new EtnyContract(this.networkAddress);
+        this.protocolContract = new BloxbergProtocolContract(this.networkAddress);
+        this.protocolAbi = contractBloxberg.abi;
+        break;
+      case ECAddress.POLYGON.MAINNET_ADDRESS:
+      case ECAddress.POLYGON.TESTNET_ADDRESS:
+        this.tokenContract = new EcldContract(this.networkAddress);
+        this.protocolContract = new PolygonProtocolContract(
+          this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS
+            ? ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS
+            : ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS
+        );
+        this.protocolAbi = protocolContractPolygon.abi;
+        break;
+      default:
+        throw new Error('Invalid network address');
+    }
+  }
 
-  #dispatchECEvent = (message, status = ECStatus.DEFAULT, type = ECEvent.TASK_PROGRESS) => {
+  resetState() {
+    this.nodeAddress = '';
+    this.challengeHash = '';
+    this.publicKey = '';
+    this.orderId = -1;
+    this.order = null;
+    this.ordersOffset = -1;
+    this.doHash = null;
+    this.doRequest = -1;
+    this.scriptHash = '';
+    this.fileSetHash = '';
+    this.taskHasBeenPickedForApproval = false;
+    this.getResultFromOrderRepeats = 1;
+    this.secureLockEnclave = null;
+    this.trustedZoneImage = null;
+    this.resources = null;
+    this.enclaveImageIPFSHash = '';
+    this.enclavePublicKey = '';
+    this.enclaveDockerComposeIPFSHash = '';
+    this.imageRegistryContract = null;
+    this.status = ECStatus.DEFAULT;
+    this.progress = ECEvent.INIT;
+    this.lastError = null;
+    this.log = [];
+    this.result = null;
+    this.logLevel = ECLog.INFO;
+    this.running = false;
+    this.network = "Bloxberg_Testnet";
+  }
+
+  logAppend(message, logLevel = ECLog.INFO) {
+    const logLevelKey = Object.keys(ECLog).find((key) => ECLog[key] === logLevel);
+    const logEntry = `[${logLevelKey}] ${formatDate()} ${message}`;
+    if (this.logLevel >= logLevel) {
+      this.log.push(logEntry);
+    }
+  }
+
+  setLogLevel(logLevel) {
+    this.logLevel = logLevel;
+  }
+
+
+  async checkWalletBalance(taskPrice) {
+    this.dispatchECEvent('Checking wallet balance....');
+    const balance = await this.tokenContract.getBalance();
+    if (parseInt(balance, 10) < taskPrice) {
+      throw new Error(`Insufficient wallet balance (${balance}/${taskPrice})`);
+    }
+  }
+
+  async verifyNodeAddress(nodeAddress) {
+    this.dispatchECEvent('Verifying node address...');
+    if (!await this.isNodeOperatorAddress(nodeAddress)) {
+      throw new Error('Invalid node operator address');
+    }
+    this.nodeAddress = nodeAddress;
+  }
+
+  async initializeImageRegistry(secureLockEnclave) {
+    this.dispatchECEvent('Checking image registry...');
+    this.secureLockEnclave = secureLockEnclave;
+    this.imageRegistryContract = new ImageRegistryContract(this.networkAddress, 'etny-pynithy-testnet');
+    await this.getEnclaveDetails();
+  }
+
+  async initializeWeb3Connection() {
+    await this.tokenContract.initialize();
+    if (!await this.handleWeb3Connection()) {
+      throw new Error('Unable to connect to Web3');
+    }
+  }
+
+  async checkAllowance(taskPrice) {
+    if (this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS ||
+        this.networkAddress === ECAddress.POLYGON.TESTNET_ADDRESS) {
+      this.dispatchECEvent('Checking for the allowance on the current wallet...');
+      if (!await this.tokenContract.checkAndSetAllowance(
+        this.protocolContract.contractAddress(),
+        '100',
+        taskPrice.toString()
+      )) {
+        throw new Error('Unable to set allowance');
+      }
+      this.dispatchECEvent('Allowance checking completed.');
+    }
+  }
+
+  async processTask(code) {
+    this.challengeHash = generateRandomHexOfSize(20);
+    const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
+    const codeMetadata = await this.getV3CodeMetadata(code);
+    const inputMetadata = await this.getV3InputMedata();
+    await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
+    await this.findOrder();
+    if (!this.nodeAddress) {
+      await this.approveOrder();
+    }
+    await this.waitforTaskToBeProcessed();
+    await this.getOrderResult();
+    return this.result != null;
+  }
+
+  handleError(error) {
+    this.status = ECStatus.ERROR;
+    this.dispatchECEvent(error.message);
+    throw error;
+  }
+
+  // ... (other methods remain the same)
+
+  isMainnet = () =>
+    this.networkAddress === ECAddress.BLOXBERG.MAINNET_ADDRESS ||
+    this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS;
+
+  getLog = () => {
+    return this.log;
+  }
+
+  getStatus = () => {
+    return this.status;
+  }
+
+
+  dispatchECEvent = (message, log_level) => {
+    this.logAppend(message, log_level);
+
+    const status=this.status;
+    const progress=this.progress;
     // Create a new custom event with a custom event name, and pass any data as the event detail
-    const customEvent = new CustomEvent(type, { detail: { message, status } });
+    const customEvent = new CustomEvent(status, { detail: { message, status, progress } });
 
     // Dispatch the custom event on the current instance of the class (or any DOM element)
     this.dispatchEvent(customEvent);
   };
 
-  async #getEnclaveDetails() {
-    const details = await this.#imageRegistryContract.getEnclaveDetailsV3(this.#runnerType, VERSION);
+  async getEnclaveDetails() {
+    const details = await this.imageRegistryContract.getEnclaveDetailsV3(this.secureLockEnclave, VERSION);
     if (details) {
-      [this.#enclaveImageIPFSHash, this.#enclavePublicKey, this.#enclaveDockerComposeIPFSHash] = details;
-      this.#dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.#enclaveImageIPFSHash}`);
-      this.#dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.#enclavePublicKey}`);
-      this.#dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.#enclaveDockerComposeIPFSHash}`);
+      [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
+      this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
+      this.dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.enclavePublicKey}`, ECLog.DEBUG);
+      this.dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.enclaveDockerComposeIPFSHash}`, ECLog.DEBUG);
     }
   }
 
-  #getTokensFromFaucet = async () => {
-    const account = this.#tokenContract.getCurrentWallet();
-    const balance = await this.#tokenContract.getBalance(account);
+  getTokensFromFaucet = async () => {
+    const account = this.tokenContract.getCurrentWallet();
+    const balance = await this.tokenContract.getBalance(account);
     if (parseInt(balance, 10) <= 100) {
-      const tx = await this.#tokenContract.getFaucetTokens(account);
+      const tx = await this.tokenContract.getFaucetTokens(account);
       const transactionHash = tx.hash;
-      const isProcessed = await this.#waitForTransactionToBeProcessed(this.#tokenContract, transactionHash);
+      const isProcessed = await this.waitForTransactionToBeProcessed(this.tokenContract, transactionHash);
       if (!isProcessed) {
         return { success: false, message: 'Unable to create request, please check connectivity with Bloxberg node.' };
       }
@@ -150,261 +228,244 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   // eslint-disable-next-line class-methods-use-this
-  async #getReason(contract, txHash) {
+  async getReason(contract, txHash) {
     const tx = await contract.getProvider().getTransaction(txHash);
     if (!tx) {
-      console.log('tx not found');
+      //console.log('tx not found');
       return 'Transaction hash not found';
     }
     delete tx.gasPrice;
     const code = await contract.getProvider().call(tx, tx.blockNumber);
     const reason = ethers.utils.toUtf8String(`0x${code.substring(138)}`);
-    console.log(reason);
+    //console.log(reason);
     return reason.trim();
   }
 
   // eslint-disable-next-line class-methods-use-this
-  async #waitForTransactionToBeProcessed(contract, transactionHash) {
-    await contract.getProvider().waitForTransaction(transactionHash);
-    const txReceipt = await contract.getProvider().getTransactionReceipt(transactionHash);
-    console.log(txReceipt);
-    return !(!txReceipt && txReceipt.status === 0);
+  async waitForTransactionToBeProcessed(tx, protocolEvent) {
+    while (true) {
+      try {
+        this.dispatchECEvent(`TX:` + util.inspect(tx, {depth: null}), ECLog.DEBUG);
+        const txReceipt = await tx.wait();
+        this.dispatchECEvent(`RECEIPT:` + util.inspect(txReceipt, {depth: null}), ECLog.DEBUG);
+  
+        const events = txReceipt.events.find(event => event.event === protocolEvent);
+        this.dispatchECEvent(`EVENTS:` + util.inspect(events, {depth: null}), ECLog.DEBUG);
+        txReceipt.result = events.args;
+
+        return txReceipt;
+      }
+      catch (e) {
+        if (e.message.includes('transaction failed')) {
+          throw new Error(e.message);
+        }
+        this.dispatchECEvent('Transaction not confirmed yet: ' + e.message, ECLog.WARNING);
+        await delay(1000);
+      }
+    }
   }
 
-  async #handleMetaMaskConnection() {
+
+  async handleWeb3Connection() {
     try {
-      await this.#tokenContract.getProvider().send('eth_requestAccounts', []);
-      const walletAddress = this.#tokenContract.getCurrentWallet();
+      await this.tokenContract.getProvider().send('eth_requestAccounts', []);
+      const walletAddress = this.tokenContract.getCurrentWallet();
       return walletAddress !== null && walletAddress !== undefined;
     } catch (e) {
       return false;
     }
   }
 
-  async #listenForAddDORequestEvent() {
-    let intervalRepeats = 0;
-    let _addDORequestEVPassed = false;
-    let _orderPlacedEVPassed = false;
-    let _orderClosedEVPassed = false;
-
-    const protocolContract = this.#protocolContract.getContract();
-    const messageInterval = () => {
-      if (intervalRepeats % 2 === 0) {
-        this.#dispatchECEvent(`\\ Waiting for the task to be processed by ${this.#nodeAddress} ...`);
-      } else {
-        this.#dispatchECEvent(`/ Waiting for the task to be processed by ${this.#nodeAddress} ...`);
-      }
-      // eslint-disable-next-line no-plusplus
-      intervalRepeats++;
-    };
-
-    const _orderApproved = async () => {
-      _orderPlacedEVPassed = true;
-      protocolContract.off('_orderPlacedEV', _orderPlacedEV);
-
-      // approve order in case we are not providing a node address as metadata4 parameter
-      if (!this.#nodeAddress) {
-        await this.#approveOrder(this.#orderNumber);
-      }
-
-      this.#dispatchECEvent(`Order ${this.#orderNumber} was placed and approved.`);
-      this.#dispatchECEvent(
-        `Order ${this.#orderNumber} was placed and approved.`,
-        ECStatus.DEFAULT,
-        ECEvent.TASK_ORDER_PLACED
-      );
-      this.#interval = setInterval(messageInterval, 1000);
-    };
-
-    const _addDORequestEV = async (_from, _doRequest) => {
-      const walletAddress = (await this.#tokenContract.getProvider().send('eth_requestAccounts', []))[0];
+  async approveOrder() {
+    while (true) {
       try {
-        if (walletAddress && _from.toLowerCase() === walletAddress.toLowerCase() && !_addDORequestEVPassed) {
-          this.#doRequest = _doRequest.toNumber();
-          this.#dispatchECEvent(`Task was picked up and DO Request ${this.#doRequest} was created.`);
-          _addDORequestEVPassed = true;
-          protocolContract.off('_addDORequestEV', _addDORequestEV);
-          this.#dispatchECEvent(
-            `Task was picked up and DO Request ${this.#doRequest} was created.`,
-            ECStatus.DEFAULT,
-            ECEvent.TASK_CREATED
-          );
+        this.dispatchECEvent(`Approving task ${this.orderId}`);
 
-          // in case _orderPlacedEV was dispatched before _addDORequestEV we have to call the _orderApproved
-          if (this.#orderNumber !== -1 && this.#doRequest === this.#doRequestId) {
-            await _orderApproved();
-          }
-
-          const showErrorAfterTimeout = () => {
-            this.#dispatchECEvent(
-              'Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.',
-              ECStatus.ERROR
-            );
-            this.#dispatchECEvent(
-              'Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.',
-              ECStatus.ERROR,
-              ECEvent.TASK_NOT_PROCESSED
-            );
-          };
-
-          // checking if task was picked for approval and passed resource requirements
-          clearTimeout(this.#orderPlacedTimer);
-          this.#orderPlacedTimer = setTimeout(() => {
-            if (!this.#taskHasBeenPickedForApproval) {
-              showErrorAfterTimeout();
-            }
-            clearTimeout(this.#orderPlacedTimer);
-          }, 60 * 1000);
-        } else if (!walletAddress) {
-          this.#dispatchECEvent('Unable to retrieve current wallet address.', ECStatus.ERROR);
-        }
-      } catch (e) {
-        console.log(e);
-        this.#dispatchECEvent('Unable to retrieve current wallet address.', ECStatus.ERROR);
+        const tx = await this.protocolContract.approveOrder(this.orderId);
+        this.dispatchECEvent(`${tx.hash} is pending...`)
+        await this.waitForTransactionToBeProcessed(tx, '_orderApprovedEV');
+        this.dispatchECEvent(`Task ${this.orderId} approved successfully!`);
+        break;
       }
-    };
-
-    const _orderPlacedEV = async (orderNumber, doRequestId) => {
-      this.#taskHasBeenPickedForApproval = true;
-      // this means that addDPRequestEV was dispatched
-      if (doRequestId.toNumber() === this.#doRequest && !_orderPlacedEVPassed && this.#doRequest !== -1) {
-        this.#orderNumber = orderNumber.toNumber();
-        this.#doRequestId = doRequestId.toNumber();
-        await _orderApproved();
-      } else {
-        // otherwise keep track of the result of this event and call the function _orderApproved in addDPRequestEV
-        // eslint-disable-next-line no-lonely-if
-        if (this.#doRequest === -1) {
-          this.#orderNumber = orderNumber.toNumber();
-          this.#doRequestId = doRequestId.toNumber();
-        }
+      catch (e) {
+        this.dispatchECEvent(`Failed to approve task ${this.orderId}: ${e.message}`,ECLog.WARNING);
+        await delay(1000);
       }
-    };
-
-    const _orderClosedEV = async (orderNumber) => {
-      if (this.#orderNumber === orderNumber.toNumber() && !_orderClosedEVPassed && this.#orderNumber !== -1) {
-        clearInterval(this.#interval);
-        _orderClosedEVPassed = true;
-        protocolContract.off('_orderClosedEV', _orderClosedEV);
-
-        // get processed result from the order and create a certificate
-        const parsedOrderResult = await this.#getResultFromOrder(orderNumber);
-        if (parsedOrderResult.success === false) {
-          this.#dispatchECEvent(parsedOrderResult.message, ECStatus.ERROR);
-        } else {
-          this.#dispatchECEvent(
-            {
-              result: parsedOrderResult.result,
-              resultHash: parsedOrderResult.resultHash,
-              resultValue: parsedOrderResult.resultValue,
-              resultValueTimestamp: parsedOrderResult.resultTimestamp,
-              resultTaskCode: parsedOrderResult.resultTaskCode
-            },
-            ECStatus.SUCCESS,
-            ECEvent.TASK_COMPLETED
-          );
-        }
-      }
-    };
-
-    protocolContract.on('_addDORequestEV', _addDORequestEV);
-    protocolContract.on('_orderPlacedEV', _orderPlacedEV);
-    protocolContract.on('_orderClosedEV', _orderClosedEV);
-  }
-
-  async #approveOrder(orderId) {
-    const tx = await this.#protocolContract.approveOrder(orderId);
-    const isProcessed = await this.#waitForTransactionToBeProcessed(this.#protocolContract, tx.hash);
-    if (!isProcessed) {
-      const reason = await this.#getReason(this.#protocolContract, tx.hash);
-      this.#dispatchECEvent(`Unable to approve order. ${reason}`, ECStatus.ERROR);
-      return;
     }
-
-    this.#dispatchECEvent(`Order successfully approved!`, ECStatus.SUCCESS);
-    this.#dispatchECEvent(`TX hash: ${tx.hash}`);
-
-    this.#nodeAddress = (await this.#protocolContract.getOrder(orderId)).dproc;
+    while (true) {
+      try {
+        const order = await this.protocolContract.getOrder(this.orderId);
+        this.nodeAddress = order.dproc;
+        break;
+      }
+      catch (e) {
+        this.dispatchECEvent(`Failed to get nodeAddress for task ${this.orderId}: ${e.message}`,ECLog.WARNING);
+        await delay(1000);
+      }
+    }
+    return true;
   }
 
-  async #getCurrentWalletPublicKey() {
-    const account = this.#tokenContract.getCurrentWallet();
+  waitforTaskToBeProcessed = async () => {
+    this.progress = ECEvent.IN_PROGRESS
+    this.dispatchECEvent(`Operator ${this.nodeAddress} is processing task ${this.orderId}`);
+    while (true) {
+      try {
+        const order = await this.protocolContract.getOrder(this.orderId);
+        this.dispatchECEvent(`Order:` + util.inspect(order,{depth: null}), ECLog.DEBUG);
+        if (parseInt(order.status) == 1) {
+          this.dispatchECEvent(`Task ${this.orderId} is still processing...`, ECLog.DEBUG);
+          await delay(5000);
+        } else {
+          this.dispatchECEvent(`Task ${this.orderId} status is ${order.status}, continuing`, ECLog.DEBUG);
+          return true;
+        }
+      }
+      catch (e) {
+        this.dispatchECEvent(`Error while waiting for task to be processed: ${e.message}`, ECLog.WARNING);
+        await delay(1000);
+      }
+    }
+  }
+
+  getOrderResult = async () => {
+    this.dispatchECEvent(`Task ${this.orderId} was successfully processed.`);
+    const parsedOrderResult = await this.getResultFromOrder();
+    if (parsedOrderResult.success === false) {
+      this.status = ECStatus.ERROR;
+      this.progress = ECEvent.FINISHED;
+      this.dispatchECEvent(parsedOrderResult.message);
+      throw new Error(parsedOrderResult.message);
+    } else {
+      this.result = parsedOrderResult.result;
+      this.status = ECStatus.SUCCESS;
+      this.progress = ECEvent.FINISHED;
+      this.dispatchECEvent(`Task completed successfully.`);
+    }
+  }
+
+  async getWalletPublicKey() {
+    await this.tokenContract.initialize();
+    const account = this.tokenContract.getCurrentWallet();
     const keyB64 = await window.ethereum.request({
       method: 'eth_getEncryptionPublicKey',
       params: [account]
     });
     return Buffer.from(keyB64, 'base64').toString('hex');
   }
+  async setPublicKey(publicKey){
+    this.publicKey = publicKey;
+  }
 
-  async #getV3ImageMetadata(challengeHash) {
+  async getV3ImageMetadata(challengeHash) {
     // generating encrypted base64 hash of the challenge
-    const base64EncryptedChallenge = await encryptWithCertificate(challengeHash, this.#enclavePublicKey);
+    const base64EncryptedChallenge = await encryptWithCertificate(challengeHash, this.enclavePublicKey);
 
     // uploading to IPFS the base64 encrypted challenge
     const challengeIPFSHash = await ipfsClient.uploadToIPFS(base64EncryptedChallenge);
 
-    const publicKey = await this.#getCurrentWalletPublicKey();
+    this.dispatchECEvent(`Uploaded challenge to IPFS: ${challengeIPFSHash}`);
+
+    const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
     // image metadata for v3 format v3:image_ipfs_hash:image_name:docker_compose_ipfs_hash:client_challenge_ipfs_hash:public_key
-    return `${VERSION}:${this.#enclaveImageIPFSHash}:${this.#runnerType}:${
-      this.#enclaveDockerComposeIPFSHash
+    return `${VERSION}:${this.enclaveImageIPFSHash}:etny-pynithy-testnet:${
+      this.enclaveDockerComposeIPFSHash
     }:${challengeIPFSHash}:${publicKey}`;
   }
 
-  async #getV3CodeMetadata(code) {
+  async getV3CodeMetadata(code) {
     // extracting code from all the code cells
     let scriptChecksum = sha256(code);
     // uploading all node js code to IPFS and received hash of transaction
-    const base64EncryptedScript = await encryptWithCertificate(code, this.#enclavePublicKey);
-    this.#scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
+    const base64EncryptedScript = await encryptWithCertificate(code, this.enclavePublicKey);
+    this.scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
 
-    scriptChecksum = await this.#tokenContract.signMessage(scriptChecksum);
+    this.dispatchECEvent(`Uploaded encrypted code to IPFS: ${this.scriptHash}`);
+
+    // scriptChecksum = await this.tokenContract.signMessage(scriptChecksum);
     // v3:code_ipfs_hash:code_checksum
-    return `${VERSION}:${this.#scriptHash}:${scriptChecksum}`;
+    return `${VERSION}:${this.scriptHash}:${scriptChecksum}`;
   }
 
-  async #getV3InputMedata() {
-    const fileSetChecksum = await this.#tokenContract.signMessage(ZERO_CHECKSUM);
+  async getV3InputMedata() {
+    let  fileSetChecksum = sha256(ZERO_CHECKSUM);
+    // fileSetChecksum = await this.tokenContract.signMessage(fileSetChecksum);
     // v3::filesetchecksum
     return `${VERSION}::${fileSetChecksum}`;
   }
 
-  async #createDORequest(imageMetadata, codeMetadata, inputMetadata, nodeAddress, gasLimit) {
+
+  createDORequest = async (imageMetadata, codeMetadata, inputMetadata) => {
     try {
-      this.#dispatchECEvent(`Submitting transaction for DO request on ${formatDate()}.`);
+      this.ordersOffset = await this.protocolContract.getContract()._getOrdersCount();
+      
+      this.progress = ECEvent.SENDING;
+
+      this.dispatchECEvent(`Submitting transaction for DO request`);
       // add here call to SC(smart contract)
-      const tx = await this.#protocolContract.addDORequest(
+      const tx = await this.protocolContract.addDORequest(
         imageMetadata,
         codeMetadata,
         inputMetadata,
-        nodeAddress,
-        this.#resource,
-        gasLimit
+        this.nodeAddress,
+        this.resources,
       );
-      const transactionHash = tx.hash;
-      this.#doHash = transactionHash;
 
-      this.#dispatchECEvent(`Waiting for transaction ${transactionHash} to be processed...`);
-      const isProcessed = await this.#waitForTransactionToBeProcessed(this.#protocolContract, transactionHash);
-      if (!isProcessed) {
-        const reason = await this.#getReason(this.#protocolContract, transactionHash);
-        this.#dispatchECEvent(`Unable to create DO request. ${reason}`);
-        return false;
-      }
-      this.#dispatchECEvent(`Transaction ${transactionHash} was confirmed.`);
+      this.doHash = tx.hash;
+
+      this.dispatchECEvent(`${this.doHash} is pending...`);
+
+      const isProcessed = await this.waitForTransactionToBeProcessed(tx, '_addDORequestEV');
+      this.dispatchECEvent(`${this.doHash} confirmed!`);
+
+      const [ txFrom, requestId ] = isProcessed.result;
+      this.doRequest = requestId;
+
+      this.dispatchECEvent(`Request ${this.doRequest} was created successfully.`);
 
       return true;
     } catch (e) {
-      console.log(e);
-      if (e.message.search('cannot estimate gas; transaction may fail or may require manual gas limit') !== -1) {
-        // eslint-disable-next-line no-return-await
-        return this.#createDORequest(imageMetadata, codeMetadata, inputMetadata, nodeAddress, 5000000);
+      this.status = ECStatus.ERROR;
+      this.dispatchECEvent(`Transaction failed: ${e.message}`);
+      throw new Error(`Transaction failed: ${e.message}`);
+    }
+  }
+
+  findOrder = async () => {
+    this.progress = ECEvent.CREATED;
+    this.dispatchECEvent(`Waiting for Ethernity CLOUD network... `);
+    while (true) {
+      try {
+        const protocolContract = this.protocolContract.getContract();
+        const ordersCount = await protocolContract._getOrdersCount();
+        this.dispatchECEvent(`Orders count: ${ordersCount}`, ECLog.DEBUG);
+
+        for (let i = ordersCount - 1; i >= this.ordersOffset; i--) {
+          const order = await protocolContract._getOrder(i);
+          this.dispatchECEvent(`Checking order: ` + util.inspect(order, {depth: null}), ECLog.DEBUG);
+          this.dispatchECEvent(`Checking if: ${order.doRequest} == ${this.doRequest}`, ECLog.DEBUG);
+          if (parseInt(order.doRequest) === parseInt(this.doRequest)) {
+            this.dispatchECEvent(`Found order with orderId: ${i}`, ECLog.DEBUG);
+            this.orderId = i;
+            this.order = order;
+            this.progress = ECEvent.ORDER_PLACED;
+            this.dispatchECEvent(`Connected!`);
+            return true;
+          }
+          await delay(200);
+        }
+        await delay(1000);
+        continue;
       }
-      return false;
+      catch(e){
+        this.dispatchECEvent(`Failed to find order: ` + e.message, ECLog.WARNING);
+        await delay(1000);
+      }
     }
   }
 
   // eslint-disable-next-line class-methods-use-this
-  #parseOrderResult = (result) => {
+  parseOrderResult = (result) => {
     try {
       const arr = result.split(':');
       const tBytes = arr[1].startsWith('0x') ? arr[1] : `0x${arr[1]}`;
@@ -418,9 +479,9 @@ class EthernityCloudRunner extends EventTarget {
     }
   };
 
-  #parseTransactionBytes(bytes) {
+  parseTransactionBytes(bytes) {
     try {
-      const result = parseTransactionBytes(this.#protocolAbi, bytes);
+      const result = parseTransactionBytes(this.protocolAbi, bytes);
       const arr = result.result.split(':');
       return {
         version: arr[0],
@@ -435,20 +496,26 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
-  async #getResultFromOrder(orderId) {
+  async getResultFromOrder() {
     try {
       // get the result of the order using the `etnyContract` object
-      const orderResult = await this.#protocolContract.getResultFromOrder(orderId);
-      this.#dispatchECEvent(`Task with order number ${orderId} was successfully processed at ${formatDate()}.`);
+      this.progress = ECEvent.DOWNLOADING;
+      this.dispatchECEvent(`Downloading result...`);
+      const orderResult = await this.protocolContract.getResultFromOrder(this.orderId);
 
       // parse the order result
-      const parsedOrderResult = this.#parseOrderResult(orderResult);
-      this.#dispatchECEvent(`Result IPFS hash: ${parsedOrderResult.resultIPFSHash}`);
+      const parsedOrderResult = this.parseOrderResult(orderResult);
+      if(parsedOrderResult.resultIPFSHash === undefined) {
+        return { success: false, message: 'Task processing failed, no IPFS hash returned' };
+      }
+
+      this.dispatchECEvent(`Downloading: ${parsedOrderResult.resultIPFSHash}`);
+      this.progress = ECEvent.VERIFYING;
       // parse the transaction bytes of the order result
-      const transactionResult = this.#parseTransactionBytes(parsedOrderResult.transactionBytes);
+      const transactionResult = this.parseTransactionBytes(parsedOrderResult.transactionBytes);
 
       // generate a wallet address using the `challengeHash` and `transactionResult.enclaveChallenge`
-      const wallet = generateWallet(this.#challengeHash, transactionResult.enclaveChallenge);
+      const wallet = generateWallet(this.challengeHash, transactionResult.enclaveChallenge);
       // check if the generated wallet address matches the `transactionResult.from` address
       if (!wallet || wallet !== transactionResult.from) {
         return { success: false, message: 'Integrity check failed, signer wallet address is wrong.' };
@@ -457,7 +524,8 @@ class EthernityCloudRunner extends EventTarget {
       // get the result value from IPFS using the `parsedOrderResult.resultIPFSHash`
       const ipfsResult = await ipfsClient.getFromIPFS(parsedOrderResult.resultIPFSHash);
       // decrypt data
-      const currentWalletAddress = this.#tokenContract.getCurrentWallet();
+      this.dispatchECEvent(`Validating proof...`);
+      const currentWalletAddress = this.tokenContract.getCurrentWallet();
       const decryptedData = await decryptWithPrivateKey(ipfsResult, currentWalletAddress);
 
       if (!decryptedData.success) {
@@ -465,7 +533,7 @@ class EthernityCloudRunner extends EventTarget {
       }
 
       // update the loading message to show the result value
-      this.#dispatchECEvent(`Result value: ${decryptedData.data}`);
+      //this.dispatchECEvent(`Result value: ${decryptedData.data}`);
       // calculate the SHA-256 checksum of the result value
       const ipfsResultChecksum = sha256(decryptedData.data);
       // check if the calculated checksum matches the `transactionResult.checksum`
@@ -473,50 +541,22 @@ class EthernityCloudRunner extends EventTarget {
         return { success: false, message: 'Integrity check failed, checksum of the order result is wrong.' };
       }
 
-      // get the original input transaction hash and the output transaction hash for the order
-      const transaction = await this.#protocolContract.getProvider().getTransaction(this.#doHash);
-      const block = await this.#protocolContract.getProvider().getBlock(transaction.blockNumber);
-      const blockTimestamp = block.timestamp;
-      const endBlockNumber = await this.#protocolContract.getProvider().getBlockNumber();
-      const startBlockNumber = endBlockNumber - LAST_BLOCKS;
-      //
-      let resultTransactionHash;
-      let resultBlockTimestamp;
-
-      // eslint-disable-next-line no-plusplus
-      for (let i = endBlockNumber; i >= startBlockNumber; i--) {
-        // eslint-disable-next-line no-await-in-loop
-        const block = await this.#protocolContract.getProvider().getBlockWithTransactions(i);
-        // eslint-disable-next-line no-continue
-        if (!block || !block.transactions) continue;
-
-        // eslint-disable-next-line no-restricted-syntax
-        for (const transaction of block.transactions) {
-          if (transaction.to === this.#protocolContract.contractAddress() && transaction.data) {
-            resultTransactionHash = transaction.hash;
-            resultBlockTimestamp = block.timestamp;
-          }
-        }
-      }
-
+      
       return {
         success: true,
-        contractAddress: this.#tokenContract.contractAddress(),
-        inputTransactionHash: this.#doHash,
-        outputTransactionHash: resultTransactionHash,
-        orderId,
-        imageHash: `${this.#enclaveImageIPFSHash}:${this.#runnerType}`,
-        scriptHash: this.#scriptHash,
-        fileSetHash: this.#fileSetHash,
-        publicTimestamp: blockTimestamp,
+        contractAddress: this.tokenContract.contractAddress(),
+        inputTransactionHash: this.doHash,
+        orderId: this.orderId,
+        imageHash: `${this.enclaveImageIPFSHash}:${this.secureLockEnclave}`,
+        scriptHash: this.scriptHash,
+        fileSetHash: this.fileSetHash,
         resultHash: parsedOrderResult.resultIPFSHash,
         resultTaskCode: transactionResult.taskCodeString,
         resultValue: ipfsResult,
-        resultTimestamp: resultBlockTimestamp,
         result: decryptedData.data
       };
     } catch (ex) {
-      console.log(ex);
+      //console.log(ex);
       if (ex.name === ECError.PARSE_ERROR) {
         return { success: false, message: 'Ethernity parsing transaction error.' };
       }
@@ -524,55 +564,83 @@ class EthernityCloudRunner extends EventTarget {
         return { success: false, message: 'Ethernity IPFS download result error.' };
       }
       await delay(5000);
-      this.#getResultFromOrderRepeats += 1;
+      this.getResultFromOrderRepeats += 1;
       // eslint-disable-next-line no-return-await
-      return await this.#getResultFromOrder(orderId);
+      return await this.getResultFromOrder();
     }
   }
 
-  async #processTask(code) {
-    await this.#listenForAddDORequestEvent();
-    this.#challengeHash = generateRandomHexOfSize(20);
-    // getting image metadata
-    const imageMetadata = await this.#getV3ImageMetadata(this.#challengeHash);
-    // // getting script metadata
-    const codeMetadata = await this.#getV3CodeMetadata(code);
-    // // getting input metadata
-    const inputMetadata = await this.#getV3InputMedata();
-    // // create new DO Request
-    return this.#createDORequest(imageMetadata, codeMetadata, inputMetadata, this.#nodeAddress);
-  }
+  async getProofDetails(endBlockNumber = this.protocolContract.getProvider().getBlockNumber()) {
+      // get the original input transaction hash and the output transaction hash for the order
+      const transaction = await this.protocolContract.getProvider().getTransaction(this.doHash);
+      const startBlockNumber = await this.protocolContract.getProvider().getBlock(transaction.blockNumber);
+      const startblockTimestamp = startBlockNumber.timestamp;
 
-  #reset = () => {
-    this.#orderNumber = -1;
-    this.#doHash = null;
-    this.#doRequestId = -1;
-    this.#doRequest = -1;
-    this.#scriptHash = '';
-    this.#fileSetHash = '';
-    this.#interval = null;
-    this.#getResultFromOrderRepeats = 1;
-    this.#taskHasBeenPickedForApproval = false;
+      let resultBlockNumber;
+      let resultTransactionHash;
+      let resultBlockTimestamp;
+
+      // eslint-disable-next-line no-plusplus
+      for (let i = endBlockNumber; i >= startBlockNumber; i--) {
+      /// eslint-disable-next-line no-await-in-loop
+        const block = await this.protocolContract.getProvider().getBlockWithTransactions(i);
+        // eslint-disable-next-line no-continue
+        if (!block || !block.transactions) continue;
+
+        // eslint-disable-next-line no-restricted-syntax
+        for (const transaction of block.transactions) {
+          if (transaction.to === this.protocolContract.contractAddress() && transaction.data) {
+            resultBlockNumber = transaction.blockNumber;
+            resultTransactionHash = transaction.hash;
+            resultBlockTimestamp = block.timestamp;
+          }
+        }
+      }
+
+      return {
+        inputTransactionHash: this.doHash,
+        inputTimestamp: startblockTimestamp,
+        inputBlockNumber: startblockNumber,
+        outputTransactionHash: outputTransactionHash,
+        outputBlockTimestamp: resultBlockTimestamp,
+        outputBlockNumber: resultBlockNumber,
+      }
+  }
+  async getResult() {
+    return this.result;
+  }
+  
+  reset = () => {
+    this.orderId = -1;
+    this.doHash = null;
+    this.doRequest = -1;
+    this.scriptHash = '';
+    this.fileSetHash = '';
+    this.interval = null;
+    this.getResultFromOrderRepeats = 1;
+    this.taskHasBeenPickedForApproval = false;
   };
 
-  #cleanup = async () => {
-    this.#reset();
-    const contract = this.#protocolContract.getContract();
+  cleanup = async () => {
+    this.reset();
+    const contract = this.protocolContract.getContract();
     contract.removeAllListeners();
   };
 
-  #isNodeOperatorAddress = async (nodeAddress) => {
+  isNodeOperatorAddress = async (nodeAddress) => {
     if (isNullOrEmpty(nodeAddress)) return true;
     if (isAddress(nodeAddress)) {
-      const isNode = await this.#protocolContract.isNodeOperator(nodeAddress);
+      const isNode = await this.protocolContract.isNodeOperator(nodeAddress);
       if (!isNode) {
-        this.#dispatchECEvent('Introduced address is not a valid node operator address.', ECStatus.ERROR);
-        return false;
+        this.status = ECStatus.ERROR;
+        this.dispatchECEvent('Introduced address is not a valid node operator address.');
+        throw new Error('Introduced address is not a valid node operator address.');
       }
       return true;
     }
-    this.#dispatchECEvent('Introduced address is not a valid wallet address.', ECStatus.ERROR);
-    return false;
+    this.status = ECStatus.ERROR;
+    this.dispatchECEvent('Introduced address is not a valid wallet address.');
+    throw new Error('Introduced address is not a valid wallet address.');
   };
 
   // eslint-disable-next-line class-methods-use-this
@@ -585,108 +653,71 @@ class EthernityCloudRunner extends EventTarget {
     EthernityCloudRunner.instance = null;
   }
 
-  async #checkNetwork() {
+
+  async setNetwork(network, type) {
+      this.network = network.toLowerCase()+ "_" + type.toUpperCase()
+      this.trustedZoneImage = ECRunner[network.toUpperCase()]["PYNITHY_RUNNER_"+type.toUpperCase()]
+  }
+
+  async checkNetwork() {
     try {
       // checking network
-      const networkName = await this.#tokenContract.getNetworkName();
-      console.log(networkName);
+      const networkName = await this.tokenContract.getNetworkName();
+      //console.log(networkName);
       // eslint-disable-next-line default-case
-      switch (this.#networkAddress) {
+      switch (this.networkAddress) {
         case ECAddress.BLOXBERG.MAINNET_ADDRESS:
         case ECAddress.BLOXBERG.TESTNET_ADDRESS:
           if (networkName !== ECNetworkName.BLOXBERG) {
-            this.#dispatchECEvent(`Please switch Metamask network and use Bloxberg!`, ECStatus.ERROR);
+            this.status = ECStatus.ERROR;
+            this.dispatchECEvent(`Please switch Web3 network and use Bloxberg!`);
+            throw new Error(`Please switch Web3 network and use Bloxberg!`);
           }
           break;
         case ECAddress.POLYGON.MAINNET_ADDRESS:
           if (networkName !== ECNetworkName.POLYGON) {
-            this.#dispatchECEvent(`Please switch Metamask network and use Polygon!`, ECStatus.ERROR);
+            this.status = ECStatus.ERROR;
+            this.dispatchECEvent(`Please switch Web3 network and use Polygon!`);
+            throw new Error(`Please switch Web3 network and use Polygon!`);
           }
           break;
         case ECAddress.POLYGON.TESTNET_ADDRESS:
           if (networkName !== ECNetworkName.MUMBAI) {
-            this.#dispatchECEvent(`Please switch Metamask network and use Mumbai!`, ECStatus.ERROR);
+            this.status = ECStatus.ERROR;
+            this.dispatchECEvent(`Please switch Web3 network and use Amoy!`);
+            throw new Error(`Please switch Web3 network and use Amoy!`);
           }
           break;
       }
 
-      const runnerNetworkName = ECNetworkNameDictionary[this.#networkAddress];
+      const runnerNetworkName = ECNetworkNameDictionary[this.networkAddress];
       return networkName === runnerNetworkName;
     } catch (e) {
-      this.#dispatchECEvent(
-        `Please switch Metamask network and use ${ECNetworkName1Dictionary[this.#networkAddress]}!`,
-        ECStatus.ERROR
+      this.status = ECStatus.ERROR;
+      this.dispatchECEvent(
+        `Error while connecting web3 client: ${e.message}`,
+      );
+      throw new Error(
+        `Error while connecting web3 client: ${e.message}`,
       );
       return false;
     }
   }
 
-  async run(
-    runnerType,
-    code,
-    nodeAddress = '',
-    resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 }
-  ) {
+  async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
     try {
-      // checking if the balance of the wallet is higher or equal than the price we agreed to pay for task execution
-      let balance = await this.#tokenContract.getBalance();
-      balance = parseInt(balance, 10);
-      if (balance < resources.taskPrice) {
-        this.#dispatchECEvent(
-          `Your wallet balance (${balance}/${resources.taskPrice}) is insufficient to cover the requested task price. The task has been declined.`,
-          ECStatus.ERROR
-        );
-        return;
-      }
-      this.#nodeAddress = nodeAddress;
-      this.#resource = resources;
-      const isNodeOperatorAddress = await this.#isNodeOperatorAddress(nodeAddress);
-      if (isNodeOperatorAddress) {
-        this.#runnerType = runnerType;
-        this.#imageRegistryContract = new ImageRegistryContract(this.#networkAddress, runnerType);
-        await this.#cleanup();
-        this.#dispatchECEvent('Started processing task...');
-
-        await this.#tokenContract.initialize();
-
-        const connected = await this.#handleMetaMaskConnection();
-        if (connected) {
-          await this.#getEnclaveDetails();
-          // if (!this.#isMainnet) {
-          //   const faucetResult = await this.#getTokensFromFaucet();
-          //   if (!faucetResult) {
-          //     this.#dispatchECEvent('Unable to retrieve tETNY from the faucet.', ECStatus.ERROR);
-          //   }
-          // }
-
-          if (
-            this.#networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS ||
-            this.#networkAddress === ECAddress.POLYGON.TESTNET_ADDRESS
-          ) {
-            this.#dispatchECEvent('Checking for the allowance on the current wallet...');
-            const passedAllowance = await this.#tokenContract.checkAndSetAllowance(
-              this.#protocolContract.contractAddress(),
-              '100',
-              resources.taskPrice.toString()
-            );
-            if (!passedAllowance) {
-              this.#dispatchECEvent('Unable to set allowance.', ECStatus.ERROR);
-              return;
-            }
-            this.#dispatchECEvent('Allowance checking completed.');
-          }
-          const canProcessTask = await this.#processTask(code);
-          if (!canProcessTask) {
-            this.#dispatchECEvent('Unable to proceed with the task; exiting.', ECStatus.ERROR);
-          }
-        } else {
-          this.#dispatchECEvent('Unable to connect to MetaMask', ECStatus.ERROR);
-        }
-      }
-    } catch (e) {
-      this.#dispatchECEvent(e.message, ECStatus.ERROR);
+      this.resources = resources;
+      await this.checkWalletBalance(this.resources.taskPrice);
+      await this.verifyNodeAddress(nodeAddress);
+      await this.initializeImageRegistry(secureLockEnclave);
+      await this.initializeWeb3Connection();
+      await this.checkAllowance(this.resources.taskPrice);
+      await this.processTask(code);
+    } catch (error) {
+      this.handleError(error);
     }
   }
+
 }
 
 export default EthernityCloudRunner;

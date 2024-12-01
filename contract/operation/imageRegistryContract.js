@@ -15,7 +15,7 @@ class ImageRegistryContract {
     this.ethereum = window.ethereum;
     this.provider = new ethers.providers.Web3Provider(window.ethereum);
     this.signer = this.provider.getSigner();
-    console.log('Token address: ', networkAddress);
+
     switch (networkAddress) {
       case ECAddress.BLOXBERG.TESTNET_ADDRESS:
         if (runnerType === ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET) {
@@ -105,13 +105,15 @@ class ImageRegistryContract {
   }
 
   async getEnclaveDetailsV3(imageName, version) {
-    try {
-      return await this.contract.getLatestTrustedZoneImageCertPublicKey(imageName, version);
-    } catch (e) {
-      console.log(e);
-      return null;
+      try {
+        const trustedZonePublicKey = (await this.contract.getLatestTrustedZoneImageCertPublicKey('etny-pynithy-testnet', 'v3'));
+        const imageDetails = await this.contract.getLatestImageVersionPublicKey(imageName, 'v5');
+        return [imageDetails[0], trustedZonePublicKey[1], imageDetails[2]];
+      } catch (e) {
+        console.log(e);
+        return null;
+      }
     }
-  }
 }
 
 export default ImageRegistryContract;
