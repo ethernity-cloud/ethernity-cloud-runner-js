@@ -107,7 +107,7 @@ class ImageRegistryContract {
   async getEnclaveDetailsV3(imageName, version) {
       try {
         const trustedZonePublicKey = (await this.contract.getLatestTrustedZoneImageCertPublicKey('etny-pynithy-testnet', 'v3'));
-        const imageDetails = await this.contract.getLatestImageVersionPublicKey(imageName, 'v5');
+        const imageDetails = await this.contract.getLatestImageVersionPublicKey(imageName, 'v3');
         return [imageDetails[0], trustedZonePublicKey[1], imageDetails[2]];
       } catch (e) {
         console.log(e);
