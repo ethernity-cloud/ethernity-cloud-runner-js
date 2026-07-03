@@ -11,10 +11,20 @@ class ImageRegistryContract {
 
   signer = null;
 
-  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, runnerType = ECRunner.BLOXBERG.NODENITHY_RUNNER) {
-    this.ethereum = window.ethereum;
-    this.provider = new ethers.providers.Web3Provider(window.ethereum);
-    this.signer = this.provider.getSigner();
+  constructor(
+    networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS,
+    runnerType = ECRunner.BLOXBERG.NODENITHY_RUNNER,
+    walletContext = null
+  ) {
+    if (walletContext && walletContext.provider) {
+      this.ethereum = null;
+      this.provider = walletContext.provider;
+      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+    } else {
+      this.ethereum = window.ethereum;
+      this.provider = new ethers.providers.Web3Provider(window.ethereum);
+      this.signer = this.provider.getSigner();
+    }
 
     switch (networkAddress) {
       case ECAddress.BLOXBERG.TESTNET_ADDRESS:

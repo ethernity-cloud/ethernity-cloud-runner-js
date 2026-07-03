@@ -13,9 +13,14 @@ class EcldContract {
 
   currentWallet = null;
 
-  constructor(networkAddress) {
-    this.provider = new ethers.providers.Web3Provider(window.ethereum);
-    this.signer = this.provider.getSigner();
+  constructor(networkAddress, walletContext = null) {
+    if (walletContext && walletContext.provider) {
+      this.provider = walletContext.provider;
+      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+    } else {
+      this.provider = new ethers.providers.Web3Provider(window.ethereum);
+      this.signer = this.provider.getSigner();
+    }
     this.ecldContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.ecldContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
@@ -45,6 +50,14 @@ class EcldContract {
 
   async _getCurrentWallet() {
     try {
+      // Prefer the signer's own address: works for an ethers.Wallet (raw private
+      // key), a JsonRpcSigner (window.ethereum), and injected signers alike.
+      // provider.listAccounts() is empty for a plain JsonRpcProvider (raw-key
+      // path against a public RPC), so it can only be a fallback.
+      if (this.signer && this.signer.getAddress) {
+        const address = await this.signer.getAddress();
+        if (address) return address;
+      }
       const accounts = await this.provider.listAccounts();
       return accounts[0];
     } catch (e) {

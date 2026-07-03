@@ -10,9 +10,14 @@ class BloxbergProtocolContract {
 
   signer = null;
 
-  constructor(networkAddress) {
-    this.provider = new ethers.providers.Web3Provider(window.ethereum);
-    this.signer = this.provider.getSigner();
+  constructor(networkAddress, walletContext = null) {
+    if (walletContext && walletContext.provider) {
+      this.provider = walletContext.provider;
+      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+    } else {
+      this.provider = new ethers.providers.Web3Provider(window.ethereum);
+      this.signer = this.provider.getSigner();
+    }
     this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }

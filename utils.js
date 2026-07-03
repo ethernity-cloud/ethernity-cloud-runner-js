@@ -25,22 +25,26 @@ export const formatDate = (dt) => {
   )}:${padL(dt.getSeconds())}`;
 };
 
-export const generateRandomDigitsHexOfSize = (size) =>
-  [...Array(size)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
-
-export const generateRandomHexOfSize = (size) => {
+// Generate `size` uniformly-random lowercase hex characters using a CSPRNG
+// (Web Crypto's crypto.getRandomValues, available in browsers and Node >= 18 -
+// the same primitive crypto.js already uses). These values feed the client
+// challenge nonce and its integrity binding, so they must be unpredictable;
+// Math.random() is not cryptographically secure and must not be used here.
+// Masking each byte to its low nibble (byte & 0x0f) is bias-free because 256 is
+// a multiple of 16.
+const secureRandomHex = (size) => {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
   let result = '';
-  // eslint-disable-next-line no-plusplus
-  for (let i = 0; i < size; i++) {
-    const randomNumber = Math.floor(Math.random() * 16);
-    if (randomNumber < 10) {
-      result += randomNumber;
-    } else {
-      result += String.fromCharCode(randomNumber + 87);
-    }
+  for (let i = 0; i < size; i += 1) {
+    result += (bytes[i] & 0x0f).toString(16);
   }
   return result;
 };
+
+export const generateRandomDigitsHexOfSize = (size) => secureRandomHex(size);
+
+export const generateRandomHexOfSize = (size) => secureRandomHex(size);
 
 export const isNullOrEmpty = (value) => value === null || value === undefined || value === '';
 

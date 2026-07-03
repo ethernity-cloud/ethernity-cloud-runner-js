@@ -3,6 +3,7 @@ import forge from 'node-forge';
 import elliptic from 'elliptic';
 import jsSHA256 from 'js-sha256';
 import jsrsasign from 'jsrsasign';
+import { decrypt as ethSigUtilDecrypt } from '@metamask/eth-sig-util';
 import ascii from './ascii.js';
 // eslint-disable-next-line new-cap
 const curve = new elliptic.ec('p384');
@@ -98,7 +99,15 @@ export const encryptWithCertificate = async (message, certificate) => {
   return encrypt(pubKey, message);
 };
 
-export const decryptWithPrivateKey = async (encryptedMessage, account) => {
+// Decrypts an enclave result (x25519-xsalsa20-poly1305 / NaCl box).
+//   encryptedMessage - hex string: ephemPublicKey(32) | nonce(24) | ciphertext
+//   account          - wallet address (used for the MetaMask eth_decrypt path)
+//   privateKey       - optional raw private key ('0x...'); when provided we
+//                      decrypt locally with @metamask/eth-sig-util (the exact
+//                      reference implementation MetaMask's eth_decrypt uses), so
+//                      Web3Auth / raw-key / WalletConnect wallets work without
+//                      window.ethereum. Falls back to eth_decrypt otherwise.
+export const decryptWithPrivateKey = async (encryptedMessage, account, privateKey = null) => {
   try {
     const data = Buffer.from(encryptedMessage, 'hex');
 
@@ -108,6 +117,14 @@ export const decryptWithPrivateKey = async (encryptedMessage, account) => {
       nonce: data.slice(32, 56).toString('base64'),
       ciphertext: data.slice(56).toString('base64')
     };
+
+    if (privateKey) {
+      const pkHex = privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey;
+      const decryptedMessage = ethSigUtilDecrypt({ encryptedData: structuredData, privateKey: pkHex });
+      const decodedMessage = ascii.decode(decryptedMessage).toString();
+      return { success: true, data: decodedMessage };
+    }
+
     const ct = `0x${Buffer.from(JSON.stringify(structuredData), 'utf8').toString('hex')}`;
     const decryptedMessage = await window.ethereum.request({ method: 'eth_decrypt', params: [ct, account] });
     const decodedMessage = ascii.decode(decryptedMessage).toString();

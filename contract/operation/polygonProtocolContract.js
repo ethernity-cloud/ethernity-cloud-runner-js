@@ -12,11 +12,16 @@ class PolygonProtocolContract {
 
   signer = null;
 
-  constructor(networkAddress) {
+  constructor(networkAddress, walletContext = null) {
     console.log('Polygon protocol address: ', networkAddress);
     this.networkAddress = networkAddress;
-    this.provider = new ethers.providers.Web3Provider(window.ethereum);
-    this.signer = this.provider.getSigner();
+    if (walletContext && walletContext.provider) {
+      this.provider = walletContext.provider;
+      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+    } else {
+      this.provider = new ethers.providers.Web3Provider(window.ethereum);
+      this.signer = this.provider.getSigner();
+    }
     this.protocolContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.protocolContractWithProvider = new ethers.Contract(contract.address, contract.abi, this.provider);
   }

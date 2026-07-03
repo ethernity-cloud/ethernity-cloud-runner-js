@@ -10,6 +10,7 @@ import {
   parseTransactionBytes
 } from './utils.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
+import { resolveWalletContext } from './walletContext.js';
 import EtnyContract from './contract/operation/etnyContract.js';
 import EcldContract from './contract/operation/ecldContract.js';
 import ImageRegistryContract from './contract/operation/imageRegistryContract.js';
@@ -35,28 +36,41 @@ const LAST_BLOCKS = 20;
 const VERSION = 'v3';
 
 class EthernityCloudRunner extends EventTarget {
-  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS) {
+  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}) {
     super();
     this.networkAddress = networkAddress;
+    // Resolve the wallet once (raw privateKey / injected signer / provider, or
+    // MetaMask via window.ethereum when no options are given) and share it with
+    // every contract so they all talk to the same chain and wallet. We do NOT
+    // retain the raw walletOptions on the instance so the private key isn't
+    // exposed as an extra, easily-serialisable field on the runner.
+    this.walletContext = resolveWalletContext(networkAddress, walletOptions || {});
     this.initializeContracts();
     this.resetState();
+    // An explicit encryption public key (or one derived from a raw private key)
+    // lets us skip the MetaMask-only eth_getEncryptionPublicKey call.
+    if (this.walletContext.encryptionPublicKey) {
+      this.publicKey = this.walletContext.encryptionPublicKey;
+    }
   }
 
   initializeContracts() {
+    const wc = this.walletContext;
     switch (this.networkAddress) {
       case ECAddress.BLOXBERG.TESTNET_ADDRESS:
       case ECAddress.BLOXBERG.MAINNET_ADDRESS:
-        this.tokenContract = new EtnyContract(this.networkAddress);
-        this.protocolContract = new BloxbergProtocolContract(this.networkAddress);
+        this.tokenContract = new EtnyContract(this.networkAddress, wc);
+        this.protocolContract = new BloxbergProtocolContract(this.networkAddress, wc);
         this.protocolAbi = contractBloxberg.abi;
         break;
       case ECAddress.POLYGON.MAINNET_ADDRESS:
       case ECAddress.POLYGON.TESTNET_ADDRESS:
-        this.tokenContract = new EcldContract(this.networkAddress);
+        this.tokenContract = new EcldContract(this.networkAddress, wc);
         this.protocolContract = new PolygonProtocolContract(
           this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS
             ? ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS
-            : ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS
+            : ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS,
+          wc
         );
         this.protocolAbi = protocolContractPolygon.abi;
         break;
@@ -127,7 +141,11 @@ class EthernityCloudRunner extends EventTarget {
   async initializeImageRegistry(secureLockEnclave) {
     this.dispatchECEvent('Checking image registry...');
     this.secureLockEnclave = secureLockEnclave;
-    this.imageRegistryContract = new ImageRegistryContract(this.networkAddress, 'etny-pynithy-testnet');
+    this.imageRegistryContract = new ImageRegistryContract(
+      this.networkAddress,
+      'etny-pynithy-testnet',
+      this.walletContext
+    );
     await this.getEnclaveDetails();
   }
 
@@ -267,7 +285,13 @@ class EthernityCloudRunner extends EventTarget {
 
   async handleWeb3Connection() {
     try {
-      await this.tokenContract.getProvider().send('eth_requestAccounts', []);
+      // eth_requestAccounts is a MetaMask connection prompt and is only
+      // meaningful for window.ethereum. With a raw key / injected signer the
+      // account is already known, and a public JsonRpcProvider rejects
+      // eth_requestAccounts, so skip it in that case.
+      if (!this.walletContext || this.walletContext.usesWindowEthereum) {
+        await this.tokenContract.getProvider().send('eth_requestAccounts', []);
+      }
       const walletAddress = this.tokenContract.getCurrentWallet();
       return walletAddress !== null && walletAddress !== undefined;
     } catch (e) {
@@ -344,8 +368,26 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async getWalletPublicKey() {
+    // Prefer an explicitly provided / derived X25519 encryption key (Web3Auth,
+    // raw key, or app-supplied) so we never need the MetaMask-only
+    // eth_getEncryptionPublicKey method.
+    if (this.walletContext && this.walletContext.encryptionPublicKey) {
+      return this.walletContext.encryptionPublicKey;
+    }
+    // eth_getEncryptionPublicKey only exists on window.ethereum (MetaMask). If we
+    // were initialised with a signer/provider (but no raw privateKey to derive
+    // from and no explicit encryptionPublicKey), we cannot obtain it. Fail with
+    // an actionable message instead of a cryptic "window.ethereum is undefined".
+    if (this.walletContext && !this.walletContext.usesWindowEthereum) {
+      throw new Error(
+        'Cannot obtain the wallet encryption public key: this wallet has no ' +
+          'eth_getEncryptionPublicKey. Pass { privateKey } (to derive it) or ' +
+          '{ encryptionPublicKey } to EthernityCloudRunner.'
+      );
+    }
     await this.tokenContract.initialize();
     const account = this.tokenContract.getCurrentWallet();
+    // Fall back to MetaMask only when running through window.ethereum.
     const keyB64 = await window.ethereum.request({
       method: 'eth_getEncryptionPublicKey',
       params: [account]
@@ -525,7 +567,11 @@ class EthernityCloudRunner extends EventTarget {
       // decrypt data
       this.dispatchECEvent(`Validating proof...`);
       const currentWalletAddress = this.tokenContract.getCurrentWallet();
-      const decryptedData = await decryptWithPrivateKey(ipfsResult, currentWalletAddress);
+      const decryptedData = await decryptWithPrivateKey(
+        ipfsResult,
+        currentWalletAddress,
+        this.walletContext ? this.walletContext.privateKey : null
+      );
 
       if (!decryptedData.success) {
         return { success: false, message: 'Could not decrypt the order result.' };

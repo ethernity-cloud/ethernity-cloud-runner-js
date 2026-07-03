@@ -1,6 +1,6 @@
 {
   "name": "@ethernity-cloud/runner",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Ethernity Cloud Runner",
   "type": "module",
   "homepage": "https://github.com/ethernity-cloud/ethernity-cloud-runner-js#readme",
@@ -27,6 +27,7 @@
   "author": "ciprian@ethernity.cloud",
   "license": "AGPL-3.0",
   "dependencies": {
+    "@metamask/eth-sig-util": "^8.2.0",
     "buffer": "^6.0.3",
     "dag-jose": "^5.1.1",
     "elliptic": "^6.5.4",
