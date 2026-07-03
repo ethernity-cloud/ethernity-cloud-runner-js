@@ -4,6 +4,11 @@ import { ECError } from './enums.js';
 
 let ipfs = null;
 
+// Lets the runner detect whether a storage endpoint was already configured
+// (via initializeStorage) so it can fall back to a default instead of calling
+// ipfs.add on a null client.
+export const isInitialized = () => ipfs !== null;
+
 export const initialize = (host, protocol, port, token) => {
   if (host.search('http') !== -1) {
     ipfs = create(host);

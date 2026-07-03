@@ -34,6 +34,9 @@ import util from 'util';
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
+// Fallback IPFS endpoint used when the app did not call initializeStorage()
+// before run(); prevents "Cannot read properties of null (reading 'add')".
+const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud:5001';
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}) {
@@ -752,6 +755,12 @@ class EthernityCloudRunner extends EventTarget {
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
     try {
       this.resources = resources;
+      // If the app never configured storage, fall back to the default IPFS
+      // endpoint so the challenge/code upload doesn't fail with a null client.
+      // An explicit initializeStorage() call before run() takes precedence.
+      if (!ipfsClient.isInitialized()) {
+        this.initializeStorage(DEFAULT_IPFS_ADDRESS);
+      }
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
