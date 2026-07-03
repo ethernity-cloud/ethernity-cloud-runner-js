@@ -36,7 +36,8 @@ const LAST_BLOCKS = 20;
 const VERSION = 'v3';
 // Fallback IPFS endpoint used when the app did not call initializeStorage()
 // before run(); prevents "Cannot read properties of null (reading 'add')".
-const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud:5001';
+// Plain HTTPS on the default port (443), no custom port.
+const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud';
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}) {
