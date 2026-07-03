@@ -1,6 +1,6 @@
 import { create } from 'ipfs-http-client';
-import { delay, getRetryDelay } from './utils';
-import { ECError } from './enums';
+import { delay, getRetryDelay } from './utils.js';
+import { ECError } from './enums.js';
 
 let ipfs = null;
 

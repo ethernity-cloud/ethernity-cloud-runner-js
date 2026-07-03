@@ -1,9 +1,9 @@
-const { Buffer } = require('buffer/');
-const forge = require('node-forge');
-const elliptic = require('elliptic');
-const jsSHA256 = require('js-sha256');
-const jsrsasign = require('jsrsasign');
-const ascii = require('./ascii');
+import { Buffer } from 'buffer';
+import forge from 'node-forge';
+import elliptic from 'elliptic';
+import jsSHA256 from 'js-sha256';
+import jsrsasign from 'jsrsasign';
+import ascii from './ascii.js';
 // eslint-disable-next-line new-cap
 const curve = new elliptic.ec('p384');
 

@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import contract from '../abi/etnyAbi';
+import contract from '../abi/etnyAbi.js';
 
 class BloxbergProtocolContract {
   etnyContract = null;

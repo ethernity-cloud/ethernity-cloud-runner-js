@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import contract from '../abi/imageRegistryAbi';
-import { ECAddress, ECRunner } from '../../enums';
+import contract from '../abi/imageRegistryAbi.js';
+import { ECAddress, ECRunner } from '../../enums.js';
 
 class ImageRegistryContract {
   contract = null;

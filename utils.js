@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-promise-executor-return
 import { ethers } from 'ethers';
-import { sha256 } from './crypto';
+import { sha256 } from './crypto.js';
 
 // eslint-disable-next-line no-promise-executor-return
 export const delay = (ms) => new Promise((res) => setTimeout(res, ms));

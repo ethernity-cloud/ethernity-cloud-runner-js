@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import contract from '../abi/etnyAbi';
-import { ECNetworkByChainIdDictionary } from '../../enums';
+import contract from '../abi/etnyAbi.js';
+import { ECNetworkByChainIdDictionary } from '../../enums.js';
 
 class EtnyContract {
   etnyContract = null;

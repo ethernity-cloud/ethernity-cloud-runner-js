@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import * as ipfsClient from './ipfs';
+import * as ipfsClient from './ipfs.js';
 import {
   delay,
   formatDate,
@@ -8,13 +8,13 @@ import {
   isAddress,
   isNullOrEmpty,
   parseTransactionBytes
-} from './utils';
-import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto';
-import EtnyContract from './contract/operation/etnyContract';
-import EcldContract from './contract/operation/ecldContract';
-import ImageRegistryContract from './contract/operation/imageRegistryContract';
-import contractBloxberg from './contract/abi/etnyAbi';
-import protocolContractPolygon from './contract/abi/polygonProtocolAbi';
+} from './utils.js';
+import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
+import EtnyContract from './contract/operation/etnyContract.js';
+import EcldContract from './contract/operation/ecldContract.js';
+import ImageRegistryContract from './contract/operation/imageRegistryContract.js';
+import contractBloxberg from './contract/abi/etnyAbi.js';
+import protocolContractPolygon from './contract/abi/polygonProtocolAbi.js';
 import {
   ECEvent,
   ECStatus,
@@ -25,12 +25,11 @@ import {
   ECError,
   ECRunner,
   ECNetworkName
-} from './enums';
-import PolygonProtocolContract from './contract/operation/polygonProtocolContract';
-import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract';
-
-const { Buffer } = require('buffer/');
-const util = require('util');
+} from './enums.js';
+import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
+import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
+import { Buffer } from 'buffer';
+import util from 'util';
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';

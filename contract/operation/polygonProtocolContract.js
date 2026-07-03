@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import contract from '../abi/polygonProtocolAbi';
+import contract from '../abi/polygonProtocolAbi.js';
 
 class PolygonProtocolContract {
   networkAddress = null;

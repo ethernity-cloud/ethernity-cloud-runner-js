@@ -1,6 +1,6 @@
 /* eslint-disable */
 
-const { Buffer } = require('buffer/');
+import { Buffer } from 'buffer';
 /**
  * Copyright 2015 Huan Du. All rights reserved.
  * Licensed under the MIT license that can be found in the LICENSE file.
@@ -125,7 +125,7 @@ function Ascii85(options) {
   }
 }
 
-const defaultCodec = (module.exports = new Ascii85());
+const defaultCodec = new Ascii85();
 
 /**
  * Encode a binary data to ascii85 string.
@@ -502,4 +502,4 @@ defaultCodec.PostScript = new Ascii85({
  */
 defaultCodec.Ascii85 = Ascii85;
 
-module.exports = defaultCodec;
+export default defaultCodec;
