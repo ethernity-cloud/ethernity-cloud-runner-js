@@ -12,6 +12,12 @@ const DEFAULT_RPC_BY_ADDRESS = {
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: 'https://bloxberg.ethernity.cloud',
   [ECAddress.POLYGON.MAINNET_ADDRESS]: 'https://polygon-rpc.com',
   [ECAddress.POLYGON.TESTNET_ADDRESS]: 'https://rpc-amoy.polygon.technology'
+  // NOTE: IoTeX / Sepolia / LitVM testnets share one ECLD token address, so they
+  // cannot be keyed here by networkAddress. For the raw-privateKey path on those
+  // networks, pass an explicit { rpcUrl } (or { provider }) in walletOptions:
+  //   IoTeX   : https://babel-api.testnet.iotex.io
+  //   Sepolia : https://ethereum-sepolia-rpc.publicnode.com
+  //   LitVM   : https://liteforge.rpc.caldera.xyz/infra-partner-http
 };
 
 /**

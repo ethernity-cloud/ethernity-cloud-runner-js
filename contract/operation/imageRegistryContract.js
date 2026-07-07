@@ -14,7 +14,8 @@ class ImageRegistryContract {
   constructor(
     networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS,
     runnerType = ECRunner.BLOXBERG.NODENITHY_RUNNER,
-    walletContext = null
+    walletContext = null,
+    registryAddress = undefined
   ) {
     if (walletContext && walletContext.provider) {
       this.ethereum = null;
@@ -24,6 +25,14 @@ class ImageRegistryContract {
       this.ethereum = window.ethereum;
       this.provider = new ethers.providers.Web3Provider(window.ethereum);
       this.signer = this.provider.getSigner();
+    }
+
+    // When the caller resolved the Image Registry address from the network
+    // descriptor (all networks beyond the legacy Bloxberg/Polygon pair), use it
+    // directly and skip the 2-network switch below.
+    if (registryAddress) {
+      this.contract = new ethers.Contract(registryAddress, contract.abi, this.signer);
+      return;
     }
 
     switch (networkAddress) {
@@ -114,9 +123,9 @@ class ImageRegistryContract {
     return this.provider;
   }
 
-  async getEnclaveDetailsV3(imageName, version) {
+  async getEnclaveDetailsV3(imageName, version, trustedZoneImage = 'etny-pynithy-testnet') {
       try {
-        const trustedZonePublicKey = (await this.contract.getLatestTrustedZoneImageCertPublicKey('etny-pynithy-testnet', 'v3'));
+        const trustedZonePublicKey = (await this.contract.getLatestTrustedZoneImageCertPublicKey(trustedZoneImage, 'v3'));
         const imageDetails = await this.contract.getLatestImageVersionPublicKey(imageName, 'v3');
         return [imageDetails[0], trustedZonePublicKey[1], imageDetails[2]];
       } catch (e) {

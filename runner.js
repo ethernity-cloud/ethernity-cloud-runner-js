@@ -25,7 +25,7 @@ import {
   ECAddress,
   ECError,
   ECRunner,
-  ECNetworkName
+  resolveNetworkConfig
 } from './enums.js';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
@@ -40,9 +40,13 @@ const VERSION = 'v3';
 const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud';
 
 class EthernityCloudRunner extends EventTarget {
-  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}) {
+  constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
     super();
     this.networkAddress = networkAddress;
+    // Optional disambiguator for the ECLD-family testnets (IoTeX / Sepolia /
+    // LitVM) that share a token address. When omitted, it is resolved from the
+    // wallet provider's chainId in resolveNetworkContext() before the run.
+    this.chainId = chainId;
     // Resolve the wallet once (raw privateKey / injected signer / provider, or
     // MetaMask via window.ethereum when no options are given) and share it with
     // every contract so they all talk to the same chain and wallet. We do NOT
@@ -60,27 +64,74 @@ class EthernityCloudRunner extends EventTarget {
 
   initializeContracts() {
     const wc = this.walletContext;
-    switch (this.networkAddress) {
-      case ECAddress.BLOXBERG.TESTNET_ADDRESS:
-      case ECAddress.BLOXBERG.MAINNET_ADDRESS:
-        this.tokenContract = new EtnyContract(this.networkAddress, wc);
-        this.protocolContract = new BloxbergProtocolContract(this.networkAddress, wc);
-        this.protocolAbi = contractBloxberg.abi;
-        break;
-      case ECAddress.POLYGON.MAINNET_ADDRESS:
-      case ECAddress.POLYGON.TESTNET_ADDRESS:
-        this.tokenContract = new EcldContract(this.networkAddress, wc);
-        this.protocolContract = new PolygonProtocolContract(
-          this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS
-            ? ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS
-            : ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS,
-          wc
-        );
-        this.protocolAbi = protocolContractPolygon.abi;
-        break;
-      default:
-        throw new Error('Invalid network address');
+    const cfg = resolveNetworkConfig(this.networkAddress, this.chainId);
+    if (!cfg) {
+      throw new Error('Invalid network address');
     }
+    this.networkConfig = cfg;
+    if (cfg.family === 'bloxberg') {
+      this.tokenContract = new EtnyContract(this.networkAddress, wc);
+      this.protocolContract = new BloxbergProtocolContract(this.networkAddress, wc);
+      this.protocolAbi = contractBloxberg.abi;
+    } else {
+      // ECLD family: Polygon mainnet/Amoy + IoTeX / Sepolia / LitVM testnets.
+      this.tokenContract = new EcldContract(this.networkAddress, wc);
+      this.protocolAbi = protocolContractPolygon.abi;
+      // For the shared-token testnets the PoX address isn't known until a
+      // chainId is read (resolveNetworkContext); build the protocol contract
+      // now only when we already have the address.
+      if (cfg.protocolAddress) {
+        this.protocolContract = new PolygonProtocolContract(cfg.protocolAddress, wc);
+      }
+    }
+  }
+
+  /**
+   * Finalise the network descriptor once a provider is available. The ECLD
+   * testnets IoTeX / Sepolia / LitVM share a token address, so when no chainId
+   * hint was passed to the constructor we read it from the provider and rebuild
+   * the protocol contract against the correct PoX address. No-op for networks
+   * that were already unambiguously resolved by token address.
+   */
+  async resolveNetworkContext() {
+    const provisional = this.networkConfig && this.networkConfig.provisional;
+    const provider = this.walletContext && this.walletContext.provider;
+    if (!provider || !provider.getNetwork) {
+      // Nothing to read the chainId from. If the config is already complete
+      // (bloxberg / polygon / an explicit chainId), we're fine; otherwise the
+      // shared-token testnet cannot be resolved.
+      if (provisional) {
+        throw new Error(
+          'This network shares a token address with other ECLD testnets. Pass the chainId to the EthernityCloudRunner constructor, or supply a { provider } / { rpcUrl } so it can be detected.'
+        );
+      }
+      return;
+    }
+    let chainId;
+    try {
+      const net = await provider.getNetwork();
+      chainId = net && net.chainId;
+    } catch (e) {
+      if (provisional) throw e;
+      return; // fall back to whatever initializeContracts() resolved
+    }
+    if (!chainId) {
+      if (provisional) throw new Error('Unable to detect chainId to resolve the ECLD testnet.');
+      return;
+    }
+    const cfg = resolveNetworkConfig(this.networkAddress, chainId);
+    if (!cfg || cfg.provisional) {
+      if (provisional) throw new Error(`Unsupported chainId ${chainId} for this token address.`);
+      return;
+    }
+    this.chainId = chainId;
+    // Build/rebuild the protocol contract when we just learned the PoX address
+    // (shared-token testnet) or it changed from what the constructor resolved.
+    if (cfg.family === 'ecld' &&
+        (!this.protocolContract || cfg.protocolAddress !== this.networkConfig.protocolAddress)) {
+      this.protocolContract = new PolygonProtocolContract(cfg.protocolAddress, this.walletContext);
+    }
+    this.networkConfig = cfg;
   }
 
   resetState() {
@@ -145,10 +196,18 @@ class EthernityCloudRunner extends EventTarget {
   async initializeImageRegistry(secureLockEnclave) {
     this.dispatchECEvent('Checking image registry...');
     this.secureLockEnclave = secureLockEnclave;
+    // Resolve the Image Registry address from the network descriptor so the
+    // ECLD-family networks (Amoy/IoTeX/Sepolia/LitVM) hit their own registry
+    // rather than falling through the legacy 2-network switch. Bloxberg keeps
+    // the same address for pynithy/nodenithy, so PYNITHY is a safe default.
+    const registryAddress =
+      (this.networkConfig && this.networkConfig.imageRegistry &&
+        this.networkConfig.imageRegistry.PYNITHY) || undefined;
     this.imageRegistryContract = new ImageRegistryContract(
       this.networkAddress,
       'etny-pynithy-testnet',
-      this.walletContext
+      this.walletContext,
+      registryAddress
     );
     await this.getEnclaveDetails();
   }
@@ -161,8 +220,10 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async checkAllowance(taskPrice) {
-    if (this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS ||
-        this.networkAddress === ECAddress.POLYGON.TESTNET_ADDRESS) {
+    // The ECLD family (Polygon + IoTeX / Sepolia / LitVM) pays via an ERC-20
+    // token and must set an allowance for the protocol contract before ordering.
+    // Bloxberg (ETNY) does not go through this path.
+    if (this.networkConfig && this.networkConfig.family === 'ecld') {
       this.dispatchECEvent('Checking for the allowance on the current wallet...');
       if (!await this.tokenContract.checkAndSetAllowance(
         this.protocolContract.contractAddress(),
@@ -198,9 +259,7 @@ class EthernityCloudRunner extends EventTarget {
 
   // ... (other methods remain the same)
 
-  isMainnet = () =>
-    this.networkAddress === ECAddress.BLOXBERG.MAINNET_ADDRESS ||
-    this.networkAddress === ECAddress.POLYGON.MAINNET_ADDRESS;
+  isMainnet = () => !!(this.networkConfig && this.networkConfig.isMainnet);
 
   getLog = () => {
     return this.log;
@@ -223,8 +282,25 @@ class EthernityCloudRunner extends EventTarget {
     this.dispatchEvent(customEvent);
   };
 
+  // The trustedzone whose cert we fetch is the pynithy variant of the resolved
+  // network. Prefer an explicit setNetwork() value, then derive from the
+  // network descriptor, then fall back to the legacy Bloxberg testnet name.
+  resolveTrustedZoneImage() {
+    if (this.trustedZoneImage) return this.trustedZoneImage;
+    const key = this.networkConfig && this.networkConfig.networkKey;
+    if (key && ECRunner[key]) {
+      const suffix = this.networkConfig.isMainnet ? 'PYNITHY_RUNNER' : 'PYNITHY_RUNNER_TESTNET';
+      if (ECRunner[key][suffix]) return ECRunner[key][suffix];
+    }
+    return 'etny-pynithy-testnet';
+  }
+
   async getEnclaveDetails() {
-    const details = await this.imageRegistryContract.getEnclaveDetailsV3(this.secureLockEnclave, VERSION);
+    const details = await this.imageRegistryContract.getEnclaveDetailsV3(
+      this.secureLockEnclave,
+      VERSION,
+      this.resolveTrustedZoneImage()
+    );
     if (details) {
       [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
       this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
@@ -752,35 +828,14 @@ class EthernityCloudRunner extends EventTarget {
     try {
       // checking network
       const networkName = await this.tokenContract.getNetworkName();
-      //console.log(networkName);
-      // eslint-disable-next-line default-case
-      switch (this.networkAddress) {
-        case ECAddress.BLOXBERG.MAINNET_ADDRESS:
-        case ECAddress.BLOXBERG.TESTNET_ADDRESS:
-          if (networkName !== ECNetworkName.BLOXBERG) {
-            this.status = ECStatus.ERROR;
-            this.dispatchECEvent(`Please switch Web3 network and use Bloxberg!`);
-            throw new Error(`Please switch Web3 network and use Bloxberg!`);
-          }
-          break;
-        case ECAddress.POLYGON.MAINNET_ADDRESS:
-          if (networkName !== ECNetworkName.POLYGON) {
-            this.status = ECStatus.ERROR;
-            this.dispatchECEvent(`Please switch Web3 network and use Polygon!`);
-            throw new Error(`Please switch Web3 network and use Polygon!`);
-          }
-          break;
-        case ECAddress.POLYGON.TESTNET_ADDRESS:
-          if (networkName !== ECNetworkName.MUMBAI) {
-            this.status = ECStatus.ERROR;
-            this.dispatchECEvent(`Please switch Web3 network and use Amoy!`);
-            throw new Error(`Please switch Web3 network and use Amoy!`);
-          }
-          break;
+      const expected = this.networkConfig && this.networkConfig.networkName;
+      if (expected && networkName !== expected) {
+        this.status = ECStatus.ERROR;
+        const label = (this.networkConfig.networkKey || expected).toString();
+        this.dispatchECEvent(`Please switch Web3 network and use ${label}!`);
+        throw new Error(`Please switch Web3 network and use ${label}!`);
       }
-
-      const runnerNetworkName = ECNetworkNameDictionary[this.networkAddress];
-      return networkName === runnerNetworkName;
+      return networkName === expected;
     } catch (e) {
       this.status = ECStatus.ERROR;
       this.dispatchECEvent(
@@ -802,6 +857,9 @@ class EthernityCloudRunner extends EventTarget {
       if (!ipfsClient.isInitialized()) {
         this.initializeStorage(DEFAULT_IPFS_ADDRESS);
       }
+      // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
+      // live provider before any contract call depends on the PoX address.
+      await this.resolveNetworkContext();
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
