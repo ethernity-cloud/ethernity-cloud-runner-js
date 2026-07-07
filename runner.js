@@ -409,6 +409,18 @@ class EthernityCloudRunner extends EventTarget {
     // uploading to IPFS the base64 encrypted challenge
     const challengeIPFSHash = await ipfsClient.uploadToIPFS(base64EncryptedChallenge);
 
+    // The challenge hash is a REQUIRED field of the DO-request metadata. If the
+    // IPFS upload failed we must NOT build a request with a null/empty hash: it
+    // serializes on-chain as the literal "null", the node cannot fetch it, the
+    // (already paid) order gets cancelled, and the task never completes. Abort
+    // here instead so no gas is spent on a doomed request.
+    if (!challengeIPFSHash || challengeIPFSHash === 'null') {
+      throw new Error(
+        'Failed to upload the challenge to IPFS (got no hash). Aborting before submitting the request. ' +
+        'Check IPFS connectivity.'
+      );
+    }
+
     this.dispatchECEvent(`Uploaded challenge to IPFS: ${challengeIPFSHash}`);
 
     const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
@@ -424,6 +436,16 @@ class EthernityCloudRunner extends EventTarget {
     // uploading all node js code to IPFS and received hash of transaction
     const base64EncryptedScript = await encryptWithCertificate(code, this.enclavePublicKey);
     this.scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
+
+    // The payload (code) hash is REQUIRED -- it is the program the enclave
+    // executes. As with the challenge, refuse to build/submit a request if the
+    // upload produced no hash (see getV3ImageMetadata for the full rationale).
+    if (!this.scriptHash || this.scriptHash === 'null') {
+      throw new Error(
+        'Failed to upload the task code to IPFS (got no hash). Aborting before submitting the request. ' +
+        'Check IPFS connectivity.'
+      );
+    }
 
     this.dispatchECEvent(`Uploaded encrypted code to IPFS: ${this.scriptHash}`);
 
@@ -442,8 +464,26 @@ class EthernityCloudRunner extends EventTarget {
 
   createDORequest = async (imageMetadata, codeMetadata, inputMetadata) => {
     try {
+      // Belt-and-suspenders: never submit a (paid) request whose metadata carries
+      // a null/empty required IPFS hash. imageMetadata is
+      //   v3:image:name:compose:challenge:pubkey   (challenge required, index 4)
+      // codeMetadata is
+      //   v3:code:checksum                          (code required, index 1)
+      // inputMetadata is v3::checksum -- the input hash is legitimately optional.
+      // A "null"/empty in a required slot means an upstream upload failed; abort
+      // now so the node never gets a request it cannot fulfill.
+      const _imgParts = String(imageMetadata).split(':');
+      const _codeParts = String(codeMetadata).split(':');
+      const _bad = (h) => !h || h === 'null';
+      if (_bad(_imgParts[4])) {
+        throw new Error(`Refusing to submit DO request: challenge IPFS hash is "${_imgParts[4]}" (upload failed).`);
+      }
+      if (_bad(_codeParts[1])) {
+        throw new Error(`Refusing to submit DO request: code IPFS hash is "${_codeParts[1]}" (upload failed).`);
+      }
+
       this.ordersOffset = await this.protocolContract.getContract()._getOrdersCount();
-      
+
       this.progress = ECEvent.SENDING;
 
       this.dispatchECEvent(`Submitting transaction for DO request`);

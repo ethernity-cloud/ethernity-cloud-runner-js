@@ -35,13 +35,17 @@ export const initialize = (host, protocol, port, token) => {
 };
 
 export const uploadToIPFS = async (code) => {
-  try {
-    const response = await ipfs.add(code);
-    return response.path;
-  } catch (e) {
-    console.log(e);
-    return null;
+  // NOTE: this MUST NOT silently return null on failure. Callers interpolate the
+  // returned hash into the on-chain DO-request metadata; a null there gets
+  // serialized as the literal string "null", the node then can't fetch it,
+  // cancels the (already paid) order, and the task can never complete. Throw so
+  // the caller aborts BEFORE submitting the request. Also validate the response
+  // actually contains a path.
+  const response = await ipfs.add(code);
+  if (!response || !response.path) {
+    throw new Error('uploadToIPFS: IPFS add returned no path (upload failed)');
   }
+  return response.path;
 };
 
 // export const getFromIPFS = async (hash) => {
