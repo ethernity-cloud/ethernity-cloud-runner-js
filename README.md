@@ -49,12 +49,11 @@ data for processing. As a developer, having a Web3 dApp testing wallet is necess
 The wallet setup process with Metamask is detailed
 here: [Getting started with MetaMask](https://support.metamask.io/hc/en-us/articles/360015489531-Getting-started-with-MetaMask).
 
-Currently, there are two networks for using Ethernity Cloud. Please set up your wallet for the desired network following
-one of the articles below:
+Ethernity Cloud runs on several networks. Set up your wallet for the network you intend to use (see the **Networks** section below for the full list and chain IDs):
 
-- OpenBeta Network on bloxberg
-- TestNet Network on bloxberg
-- MainNet Network on Polygon
+- Bloxberg (mainnet and testnet)
+- Polygon (mainnet) and Polygon Amoy (testnet)
+- IoTeX Testnet, Ethereum Sepolia, and LitVM LiteForge (testnets)
 
 ### 4. Code execution
 
@@ -64,49 +63,42 @@ network and processing the task accordingly.
 
 ```javascript
 import EthernityCloudRunner from "@ethernity-cloud/runner";
-import {ECRunner, ECStatus, ECEvent} from "@ethernity-cloud/runner/enums";
+import { ECRunner, ECStatus, ECAddress } from "@ethernity-cloud/runner/enums";
 
 const executeTask = async () => {
     const ipfsAddress = 'https://ipfs.ethernity.cloud:5001';
     const code = `___etny_result___("Hello, World!")`;
 
-    const onTaskCreated = (e) => {
-        console.log('Task published.');
+    // Progress updates (encrypting, submitting, matching, downloading, ...).
+    const onProgress = (e) => {
+        console.log(`[${e.detail.progress}] ${e.detail.message}`);
     };
 
-    const onTaskOrderPlaced = () => {
-        console.log('Task order placed and approved, started processing.');
+    // Fired once the task completes; fetch the result from the runner.
+    const onSuccess = async () => {
+        const result = await runner.getResult();
+        console.log(`Task Result: ${result}`);
     };
 
-    const onTaskProgress = (e) => {
-        if (e.detail.status === ECStatus.ERROR) {
-            console.error(e.detail.message);
-        } else {
-            console.log(e.detail.message);
-        }
+    const onError = (e) => {
+        console.error(e.detail.message);
     };
 
-    const onTaskNotProcessed = (e) => {
-        console.log('Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.');
-    };
-
-    const onTaskCompleted = (e) => {
-        console.log(`Task Result: ${e.detail.message.result}; Task code: ${e.detail.message.resultTaskCode}`);
-    }
-
+    // No network address -> Bloxberg testnet + the browser wallet.
+    // To target another network pass its token address, e.g.
+    //   new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS);
     const runner = new EthernityCloudRunner();
     runner.initializeStorage(ipfsAddress);
 
-    runner.addEventListener(ECEvent.TASK_CREATED, onTaskCreated);
-    runner.addEventListener(ECEvent.TASK_ORDER_PLACED, onTaskOrderPlaced);
-    runner.addEventListener(ECEvent.TASK_PROGRESS, onTaskProgress);
-    runner.addEventListener(ECEvent.TASK_NOT_PROCESSED, onTaskNotProcessed);
-    runner.addEventListener(ECEvent.TASK_COMPLETED, onTaskCompleted);
+    // Events are dispatched named by task status (the ECStatus values).
+    runner.addEventListener(ECStatus.DEFAULT, onProgress); // "Running" updates
+    runner.addEventListener(ECStatus.SUCCESS, onSuccess);
+    runner.addEventListener(ECStatus.ERROR, onError);
 
     const resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 };
-    // this will execute a new task using Python template and will run the code provided above 
-    // the code will run on the TESTNET network
-    await runner.run(ECRunner.PYNITHY_RUNNER_TESTNET, code, '', resources);
+    // Execute a task with the Python testnet enclave on Bloxberg.
+    // Signature: run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave)
+    await runner.run(resources, ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET, code);
 }
 
 await executeTask();
@@ -126,112 +118,50 @@ Ethernity Cloud Runner's functionality.
 
 ### Events subscription
 
-   In the Ethernity Cloud Runner integration, events play a crucial role in providing real-time feedback and updates
-   during the execution of tasks. By subscribing to these events, developers can monitor the progress and completion
-   status of their tasks.
+The runner extends `EventTarget` and, as a task moves through its lifecycle, dispatches `CustomEvent`s **named by the task status**. You therefore subscribe using the `ECStatus` values, not a separate event-name enum:
 
-   **1. Task Created Event (`ECEvent.TASK_CREATED`):**
-   
-   The `ECEvent.TASK_CREATED` event is triggered when a new task is successfully created and published on the network. This event signifies that the task has been registered and is ready for processing. Developers can define a function, such as `onTaskCreated`, to handle this event and execute any actions required upon task creation.
-   
-   In the provided example code:
-   
-   ```javascript
-   const onTaskCreated = (e) => {
-       console.log('Task published.');
-   };
-   
-   runner.addEventListener(ECEvent.TASK_CREATED, onTaskCreated);
-   ```
-   
-   The `onTaskCreated` function simply logs the message "Task published." to the console, indicating that the task has been successfully created and registered on the EthernityCloud network.
-   
-   **2. Task Order Placed Event (`ECEvent.TASK_ORDER_PLACED`):**
-   
-   The `ECEvent.TASK_ORDER_PLACED` event is triggered when an order for task processing is placed and approved by the network. This event indicates that the task execution is about to begin. Developers can define a function, such as `onTaskOrderPlaced`, to handle this event and perform any necessary actions when the task order is placed.
-   
-   In the provided example code:
-   
-   ```javascript
-   const onTaskOrderPlaced = () => {
-       console.log('Task order placed and approved, started processing.');
-   };
-   
-   runner.addEventListener(ECEvent.TASK_ORDER_PLACED, onTaskOrderPlaced);
-   ```
-   
-   The `onTaskOrderPlaced` function logs the message "Task order placed and approved, started processing." to the console, signaling that the task execution process has commenced.
-   
-   **3. Task Not Processed Event (`ECEvent.TASK_NOT_PROCESSED`):**
-   
-   The `ECEvent.TASK_NOT_PROCESSED` event is triggered when a task fails to be processed due to unavailability of nodes or when the network is currently busy or when the resource requirements are not met. This event indicates that the task execution encountered an issue and could not proceed. Developers can define a function, such as `onTaskNotProcessed`, to handle this event and respond appropriately to the failed task processing.
-   
-   In the provided example code:
-   
-   ```javascript
-   const onTaskNotProcessed = (e) => {
-       console.log('Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price.');
-   };
-   
-   runner.addEventListener(ECEvent.TASK_NOT_PROCESSED, onTaskNotProcessed);
-   ```
-   
-   The `onTaskNotProcessed` function logs the error message "Task processing failed due to unavailability of nodes. The network is currently busy. Please consider increasing the task price." to the console, providing information about the reason for the task processing failure. This message can be used to inform the user or perform any necessary error handling.
-   
-   **4. Task Progress Event (`ECEvent.TASK_PROGRESS`):**
+| Event name (`ECStatus`) | Value | When it fires |
+| --- | --- | --- |
+| `ECStatus.DEFAULT` | `"Running"` | Progress updates while the task is encrypting, being submitted, matched, processed, and the result downloaded. |
+| `ECStatus.SUCCESS` | `"Success"` | The task finished successfully and a result is available. |
+| `ECStatus.ERROR` | `"Error"` | The task failed (e.g. no matching node, insufficient balance, checksum error). |
 
-   The `ECEvent.TASK_PROGRESS` event is triggered when there is progress in the execution of a task. To capture and
-   handle this event, developers can define a function, such as `onTaskProgress`, to process the event data. The event
-   object, `e`, provides access to the event detail, which contains information about the task's current status.
+Every event's `detail` is `{ message, status, progress }`:
 
-   In the example code provided:
+- `message` — a human-readable message for the current step.
+- `status` — the `ECStatus` value (same as the event name).
+- `progress` — a phase label from `ECEvent` (e.g. `"Encrypting task"`, `"In Progress"`, `"Downloading result"`, `"Finished"`), useful for driving a progress UI.
 
-   ```javascript
-   const onTaskProgress = (e) => {
-       if (e.detail.status === ECStatus.ERROR) {
-           console.error(e.detail.message);
-       } else {
-           console.log(e.detail.message);
-       }
-   };
-   
-   runner.addEventListener(ECEvent.TASK_PROGRESS, onTaskProgress);
-   ```
+```javascript
+// Progress: use e.detail.progress for the phase and e.detail.message for detail.
+const onProgress = (e) => {
+    console.log(`[${e.detail.progress}] ${e.detail.message}`);
+};
 
-   The `onTaskProgress` function receives the event object `e`, and it checks the `e.detail.status` to determine if the
-   task encountered an error or if it is progressing successfully. If an error is detected, the function logs the error
-   message to the console using `console.error`, otherwise, it logs the progress message using `console.log`.
+// Success: the result is available on the runner once this fires.
+const onSuccess = async () => {
+    const result = await runner.getResult();
+    console.log(`Task Result: ${result}`);
+};
 
-   **5. Task Completed Event (`ECEvent.TASK_COMPLETED`):**
+// Error: something went wrong; e.detail.message explains what.
+const onError = (e) => {
+    console.error(e.detail.message);
+};
 
-   The `ECEvent.TASK_COMPLETED` event is triggered when a task is successfully completed. Similar to the previous event,
-   developers can define a function, such as `onTaskCompleted`, to handle the event and access the task result.
+runner.addEventListener(ECStatus.DEFAULT, onProgress);
+runner.addEventListener(ECStatus.SUCCESS, onSuccess);
+runner.addEventListener(ECStatus.ERROR, onError);
+```
 
-   In the example code provided:
-
-   ```javascript
-   const onTaskCompleted = (e) => {
-       console.log(`Task Result: ${e.detail.message.result}`);
-   }
-   
-   runner.addEventListener(ECEvent.TASK_COMPLETED, onTaskCompleted);
-   ```
-
-   The `onTaskCompleted` function receives the event object `e`, and it accesses the task result
-   from `e.detail.message.result`. The function then logs the result to the console, providing developers with the
-   outcome of the completed task.
-
-   By subscribing to these events, developers can stay informed about the execution progress and results of tasks,
-   enabling them to monitor and respond to task executions effectively. The Ethernity Cloud Runner's event system
-   enhances the developer experience, allowing for seamless integration and handling of task-related events in
-   real-time.
+After `ECStatus.SUCCESS`, call `await runner.getResult()` to obtain the decrypted task result.
 
 ### Task resources
 
 ```javascript
  const resources = { taskPrice: 10, cpu: 1, memory: 1, storage: 40, bandwidth: 1, duration: 1, validators: 1 };
 ```
-The `resources` parameter provided in the `run` method as the last parameter is an object that defines the resource requirements for executing a new task using the Python/Node.js template. It specifies the amount of various resources needed for the task to be processed on the EthernityCloud network. The `resources` object contains the following properties:
+The `resources` parameter is the **first** argument to the `run` method and is an object that defines the resource requirements for executing a new task using the Python/Node.js template. It specifies the amount of various resources needed for the task to be processed on the EthernityCloud network. The `resources` object contains the following properties:
 
 1. `taskPrice`: This represents the price in tETNY that a user is willing to pay for the task execution. It determines the priority and readiness of the task for processing.
 
@@ -247,4 +177,39 @@ The `resources` parameter provided in the `run` method as the last parameter is 
 
 7. `validators`: This property determines the number of validators required for the task. Validators are nodes on the network responsible for processing and validating tasks.
 
-By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the specified TESTNET network.
+By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the selected network.
+
+### Networks
+
+The network is chosen by passing the network's token contract address (from `ECAddress`) as the first argument to the constructor. With no argument, the runner targets the **Bloxberg testnet**.
+
+| Network | Type | Chain ID | Constructor address |
+| --- | --- | --- | --- |
+| Bloxberg | mainnet | 8995 | `ECAddress.BLOXBERG.MAINNET_ADDRESS` |
+| Bloxberg | testnet | 8995 | `ECAddress.BLOXBERG.TESTNET_ADDRESS` |
+| Polygon | mainnet | 137 | `ECAddress.POLYGON.MAINNET_ADDRESS` |
+| Polygon Amoy | testnet | 80002 | `ECAddress.POLYGON.TESTNET_ADDRESS` |
+| IoTeX | testnet | 4690 | `ECAddress.IOTEX.TESTNET_ADDRESS` |
+| Ethereum Sepolia | testnet | 11155111 | `ECAddress.SEPOLIA.TESTNET_ADDRESS` |
+| LitVM LiteForge | testnet | 4441 | `ECAddress.LITVM.TESTNET_ADDRESS` |
+
+```javascript
+import { ECAddress, ECRunner } from "@ethernity-cloud/runner/enums";
+
+// Run on Polygon Amoy
+const runner = new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS);
+// ...
+await runner.run(resources, ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET, code);
+```
+
+The `ECRunner` enclave-image enum is keyed by network, so use the entry matching the network you constructed the runner with (e.g. `ECRunner.IOTEX.PYNITHY_RUNNER_TESTNET`). Mainnet variants drop the `_TESTNET` suffix.
+
+The IoTeX, Sepolia, and LitVM testnets share a single ECLD token address, so the runner reads the chain ID from your wallet/provider to distinguish them — automatic with a browser wallet or an injected `provider`. On the raw-private-key path, pass the chain ID as the **third** constructor argument and an `rpcUrl` in the wallet options:
+
+```javascript
+const runner = new EthernityCloudRunner(
+    ECAddress.IOTEX.TESTNET_ADDRESS,
+    { privateKey: "0x…", rpcUrl: "https://babel-api.testnet.iotex.io" },
+    4690 // IoTeX Testnet chain ID
+);
+```
