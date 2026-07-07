@@ -66,7 +66,7 @@ import EthernityCloudRunner from "@ethernity-cloud/runner";
 import { ECRunner, ECStatus, ECAddress } from "@ethernity-cloud/runner/enums";
 
 const executeTask = async () => {
-    const ipfsAddress = 'https://ipfs.ethernity.cloud:5001';
+    const ipfsAddress = 'https://ipfs.ethernity.cloud';
     const code = `___etny_result___("Hello, World!")`;
 
     // Progress updates (encrypting, submitting, matching, downloading, ...).
