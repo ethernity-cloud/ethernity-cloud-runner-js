@@ -531,8 +531,13 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async getV3InputMedata() {
-    let  fileSetChecksum = sha256(ZERO_CHECKSUM);
-    // fileSetChecksum = await this.tokenContract.signMessage(fileSetChecksum);
+    // No-input tasks declare the empty-fileset checksum. ZERO_CHECKSUM is ALREADY
+    // sha256("") -- the value the enclave computes for an empty/absent input. It
+    // must NOT be hashed again: sha256(ZERO_CHECKSUM) yields a different value
+    // (cd372fb8...) that the enclave never produces, so trustedzone rejects every
+    // no-input task with "INPUT CHECKSUM DOESN'T MATCH". Declare ZERO_CHECKSUM
+    // as-is so it matches the enclave's sha256(empty).
+    let fileSetChecksum = ZERO_CHECKSUM;
     // v3::filesetchecksum
     return `${VERSION}::${fileSetChecksum}`;
   }
