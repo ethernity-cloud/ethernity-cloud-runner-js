@@ -1,6 +1,6 @@
 {
   "name": "@ethernity-cloud/runner",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Ethernity Cloud Runner",
   "type": "module",
   "homepage": "https://github.com/ethernity-cloud/ethernity-cloud-runner-js#readme",
@@ -31,7 +31,7 @@
     "buffer": "^6.0.3",
     "dag-jose": "^5.1.1",
     "elliptic": "^6.5.4",
-    "ethers": "^5.5.4",
+    "ethers": "^5.8.0",
     "ipfs-http-client": "^60.0.1",
     "is-ip": "^5.0.1",
     "js-sha256": "^0.9.0",
