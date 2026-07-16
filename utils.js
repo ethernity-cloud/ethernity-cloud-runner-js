@@ -62,7 +62,7 @@ export const generateWallet = (clientChallenge, enclaveChallenge) => {
 
 export const isAddress = (address) => {
   try {
-    ethers.utils.getAddress(address);
+    ethers.getAddress(address);
   } catch (e) {
     return false;
   }
@@ -70,8 +70,8 @@ export const isAddress = (address) => {
 };
 
 export const parseTransactionBytes = (contract, bytesInput) => {
-  const parsedTransaction = ethers.utils.parseTransaction(bytesInput);
-  const iface = new ethers.utils.Interface(contract);
+  const parsedTransaction = ethers.Transaction.from(bytesInput);
+  const iface = new ethers.Interface(contract);
   const decodedData = iface.parseTransaction({ data: parsedTransaction.data, value: parsedTransaction.value });
   return {
     from: parsedTransaction.from,

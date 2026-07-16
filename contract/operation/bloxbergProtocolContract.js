@@ -11,14 +11,17 @@ class BloxbergProtocolContract {
   signer = null;
 
   constructor(networkAddress, walletContext = null) {
+    // ethers v6: the signer is pre-resolved by resolveWalletContext (getSigner()
+    // is async in v6). walletContext always carries a resolved signer; fall back
+    // to a BrowserProvider only for the legacy no-context path.
     if (walletContext && walletContext.provider) {
       this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+      this.signer = walletContext.signer || null;
     } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
+      this.provider = new ethers.BrowserProvider(window.ethereum);
+      this.signer = null;
     }
-    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
+    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer || this.provider);
     this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
 

@@ -16,14 +16,17 @@ class EtnyContract {
   constructor(networkAddress, walletContext = null) {
     // Use the shared wallet context (raw key / injected signer / provider) when
     // provided; otherwise fall back to MetaMask via window.ethereum (unchanged).
+    // ethers v6: the signer is pre-resolved by resolveWalletContext (getSigner()
+    // is async in v6). walletContext always carries a resolved signer; fall back
+    // to a BrowserProvider only for the legacy no-context path.
     if (walletContext && walletContext.provider) {
       this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+      this.signer = walletContext.signer || null;
     } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
+      this.provider = new ethers.BrowserProvider(window.ethereum);
+      this.signer = null;
     }
-    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
+    this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer || this.provider);
     this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
 
@@ -62,7 +65,8 @@ class EtnyContract {
         if (address) return address;
       }
       const accounts = await this.provider.listAccounts();
-      return accounts[0];
+      // ethers v6: listAccounts() returns signer objects
+      return accounts[0] && (accounts[0].address || accounts[0]);
     } catch (e) {
       console.log(e);
       return null;
@@ -74,7 +78,7 @@ class EtnyContract {
       const address = await this.signer.getAddress();
       const balance = await this.etnyContract.balanceOf(address);
       // convert a currency unit from wei to ether
-      return ethers.utils.formatEther(balance);
+      return ethers.formatEther(balance);
     } catch (ex) {
       console.log(ex);
       return 0;
@@ -91,7 +95,8 @@ class EtnyContract {
     const networkName = network.name;
 
     console.log('Current network:', networkName);
-    return ECNetworkByChainIdDictionary[network.chainId];
+    // ethers v6: chainId is a bigint
+    return ECNetworkByChainIdDictionary[Number(network.chainId)];
   }
 
   async signMessage(message) {

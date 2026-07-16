@@ -47,19 +47,39 @@ class EthernityCloudRunner extends EventTarget {
     // LitVM) that share a token address. When omitted, it is resolved from the
     // wallet provider's chainId in resolveNetworkContext() before the run.
     this.chainId = chainId;
-    // Resolve the wallet once (raw privateKey / injected signer / provider, or
-    // MetaMask via window.ethereum when no options are given) and share it with
-    // every contract so they all talk to the same chain and wallet. We do NOT
-    // retain the raw walletOptions on the instance so the private key isn't
-    // exposed as an extra, easily-serialisable field on the runner.
-    this.walletContext = resolveWalletContext(networkAddress, walletOptions || {});
-    this.initializeContracts();
+    // ethers v6: resolveWalletContext is async (provider.getSigner() is async in
+    // v6), so wallet + contract construction can't happen in the (sync)
+    // constructor. Stash the options and lazily resolve them once, on first use,
+    // via _ensureWallet(). We do NOT keep walletOptions as an enumerable field
+    // (so a raw private key isn't trivially serialised off the instance).
+    Object.defineProperty(this, '_walletOptions', {
+      value: walletOptions || {},
+      enumerable: false,
+      writable: true
+    });
+    this.walletContext = null;
+    this._walletReady = null;
     this.resetState();
-    // An explicit encryption public key (or one derived from a raw private key)
-    // lets us skip the MetaMask-only eth_getEncryptionPublicKey call.
-    if (this.walletContext.encryptionPublicKey) {
-      this.publicKey = this.walletContext.encryptionPublicKey;
+  }
+
+  // Idempotently resolve the wallet context and build the contracts. Safe to
+  // call multiple times / concurrently -- the first call does the work and the
+  // rest await the same promise. Every public async entry point awaits this.
+  async _ensureWallet() {
+    if (this.walletContext) return;
+    if (!this._walletReady) {
+      this._walletReady = (async () => {
+        this.walletContext = await resolveWalletContext(this.networkAddress, this._walletOptions);
+        this._walletOptions = {}; // drop the raw options (incl. any private key)
+        this.initializeContracts();
+        // An explicit encryption public key (or one derived from a raw private
+        // key) lets us skip the MetaMask-only eth_getEncryptionPublicKey call.
+        if (this.walletContext.encryptionPublicKey) {
+          this.publicKey = this.walletContext.encryptionPublicKey;
+        }
+      })();
     }
+    await this._walletReady;
   }
 
   initializeContracts() {
@@ -110,7 +130,9 @@ class EthernityCloudRunner extends EventTarget {
     let chainId;
     try {
       const net = await provider.getNetwork();
-      chainId = net && net.chainId;
+      // ethers v6: net.chainId is a bigint. Coerce to Number so it matches the
+      // numeric keys in ECEcldTestnetConfig / ECNetworkByChainIdDictionary.
+      chainId = net && net.chainId != null ? Number(net.chainId) : undefined;
     } catch (e) {
       if (provisional) throw e;
       return; // fall back to whatever initializeContracts() resolved
@@ -333,7 +355,7 @@ class EthernityCloudRunner extends EventTarget {
     }
     delete tx.gasPrice;
     const code = await contract.getProvider().call(tx, tx.blockNumber);
-    const reason = ethers.utils.toUtf8String(`0x${code.substring(138)}`);
+    const reason = ethers.toUtf8String(`0x${code.substring(138)}`);
     //console.log(reason);
     return reason.trim();
   }
@@ -855,6 +877,9 @@ class EthernityCloudRunner extends EventTarget {
 
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
     try {
+      // ethers v6: resolve the wallet + build contracts before anything uses
+      // them (deferred from the constructor because getSigner() is async).
+      await this._ensureWallet();
       this.resources = resources;
       // If the app never configured storage, fall back to the default IPFS
       // endpoint so the challenge/code upload doesn't fail with a null client.

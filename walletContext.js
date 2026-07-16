@@ -39,14 +39,15 @@ const DEFAULT_RPC_BY_ADDRESS = {
  *
  * Returns { provider, signer, privateKey, encryptionPublicKey, usesWindowEthereum }.
  */
-export function resolveWalletContext(networkAddress, opts = {}) {
+export async function resolveWalletContext(networkAddress, opts = {}) {
   const { privateKey, signer, provider, rpcUrl, encryptionPublicKey } = opts;
 
   // 1) raw private key -> ethers.Wallet bound to the correct chain
   if (privateKey) {
     const rpc =
       rpcUrl || DEFAULT_RPC_BY_ADDRESS[networkAddress] || DEFAULT_RPC_BY_ADDRESS[ECAddress.BLOXBERG.TESTNET_ADDRESS];
-    const rpcProvider = provider || new ethers.providers.JsonRpcProvider(rpc);
+    // ethers v6: JsonRpcProvider is top-level (was ethers.providers.JsonRpcProvider).
+    const rpcProvider = provider || new ethers.JsonRpcProvider(rpc);
     const wallet = new ethers.Wallet(privateKey, rpcProvider);
     return {
       provider: rpcProvider,
@@ -60,9 +61,18 @@ export function resolveWalletContext(networkAddress, opts = {}) {
   // 2) caller-supplied signer and/or provider (WalletConnect, Privy, Web3Auth EIP-1193, ...)
   if (signer || provider) {
     const resolvedProvider = provider || (signer && signer.provider) || null;
+    // ethers v6: provider.getSigner() is ASYNC (returns a Promise). Await it.
+    let resolvedSigner = signer || null;
+    if (!resolvedSigner && resolvedProvider && resolvedProvider.getSigner) {
+      try {
+        resolvedSigner = await resolvedProvider.getSigner();
+      } catch (e) {
+        resolvedSigner = null;
+      }
+    }
     return {
       provider: resolvedProvider,
-      signer: signer || (resolvedProvider && resolvedProvider.getSigner && resolvedProvider.getSigner()) || null,
+      signer: resolvedSigner,
       privateKey: null,
       encryptionPublicKey: encryptionPublicKey || null,
       usesWindowEthereum: false
@@ -71,10 +81,12 @@ export function resolveWalletContext(networkAddress, opts = {}) {
 
   // 3) default: MetaMask via window.ethereum (unchanged legacy behaviour)
   if (typeof window !== 'undefined' && window.ethereum) {
-    const web3Provider = new ethers.providers.Web3Provider(window.ethereum);
+    // ethers v6: Web3Provider -> BrowserProvider; getSigner() is async.
+    const web3Provider = new ethers.BrowserProvider(window.ethereum);
+    const web3Signer = await web3Provider.getSigner();
     return {
       provider: web3Provider,
-      signer: web3Provider.getSigner(),
+      signer: web3Signer,
       privateKey: null,
       encryptionPublicKey: encryptionPublicKey || null,
       usesWindowEthereum: true

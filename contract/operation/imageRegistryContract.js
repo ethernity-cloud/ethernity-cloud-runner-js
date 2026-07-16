@@ -17,21 +17,24 @@ class ImageRegistryContract {
     walletContext = null,
     registryAddress = undefined
   ) {
+    // ethers v6: the signer is pre-resolved by resolveWalletContext (getSigner()
+    // is async in v6). walletContext always carries a resolved signer; fall back
+    // to a BrowserProvider only for the legacy no-context path.
     if (walletContext && walletContext.provider) {
       this.ethereum = null;
       this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
+      this.signer = walletContext.signer || null;
     } else {
       this.ethereum = window.ethereum;
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
+      this.provider = new ethers.BrowserProvider(window.ethereum);
+      this.signer = null;
     }
 
     // When the caller resolved the Image Registry address from the network
     // descriptor (all networks beyond the legacy Bloxberg/Polygon pair), use it
     // directly and skip the 2-network switch below.
     if (registryAddress) {
-      this.contract = new ethers.Contract(registryAddress, contract.abi, this.signer);
+      this.contract = new ethers.Contract(registryAddress, contract.abi, this.signer || this.provider);
       return;
     }
 
@@ -41,7 +44,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
 
@@ -49,7 +52,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
         break;
@@ -58,7 +61,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
 
@@ -66,7 +69,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
         break;
@@ -75,7 +78,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.MAINNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
 
@@ -83,7 +86,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
         break;
@@ -94,7 +97,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
 
@@ -103,7 +106,7 @@ class ImageRegistryContract {
           this.contract = new ethers.Contract(
             ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
             contract.abi,
-            this.signer
+            this.signer || this.provider
           );
         }
         break;
