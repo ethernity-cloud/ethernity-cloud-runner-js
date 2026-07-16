@@ -1,6 +1,10 @@
+// process.env is undefined in non-React browser bundles; guard so the module
+// loads there and falls back to the hardcoded default address.
+const env = typeof process !== 'undefined' && process.env ? process.env : {};
+
 const contract = {
   address:
-    process.env.REACT_APP_ETNY_POLYGON_IMAGE_REGISTRY_CONTRACT_ADDRESS || '0x689f3806874d3c8A973f419a4eB24e6fBA7E830F',
+    env.REACT_APP_ETNY_POLYGON_IMAGE_REGISTRY_CONTRACT_ADDRESS || '0x689f3806874d3c8A973f419a4eB24e6fBA7E830F',
   abi: [
     { inputs: [], stateMutability: 'nonpayable', type: 'constructor' },
     {

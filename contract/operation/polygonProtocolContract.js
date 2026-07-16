@@ -1,6 +1,10 @@
 import { ethers } from 'ethers';
 import contract from '../abi/polygonProtocolAbi.js';
 
+// process.env is undefined in non-React browser bundles; guard so the module
+// loads there and the gas params fall back to their defaults.
+const env = typeof process !== 'undefined' && process.env ? process.env : {};
+
 class PolygonProtocolContract {
   networkAddress = null;
 
@@ -46,11 +50,13 @@ class PolygonProtocolContract {
   // eslint-disable-next-line class-methods-use-this
   getEIP1559GasOptions() {
     // const limit = 250 * 10 ** 9;
-    const maxFeePerGas = parseInt(process.env.REACT_APP_MAX_FEE_PER_GAS, 10) * 10 ** 9;
-    const maxPriorityFeePerGas = parseInt(process.env.REACT_APP_MAX_PRIORITY_FEE_PER_GAS, 10) * 10 ** 9;
+    // Default to 30 gwei when the env override is absent; parseInt(undefined)
+    // would otherwise yield NaN and produce an invalid fee.
+    const maxFeePerGas = parseInt(env.REACT_APP_MAX_FEE_PER_GAS || '30', 10) * 10 ** 9;
+    const maxPriorityFeePerGas = parseInt(env.REACT_APP_MAX_PRIORITY_FEE_PER_GAS || '30', 10) * 10 ** 9;
 
     const options = {
-      gasLimit: parseInt(process.env.REACT_APP_GAS_LIMIT, 10) || 200000,
+      gasLimit: parseInt(env.REACT_APP_GAS_LIMIT, 10) || 200000,
       maxFeePerGas,
       maxPriorityFeePerGas
     };

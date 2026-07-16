@@ -2,6 +2,10 @@ import { create } from 'ipfs-http-client';
 import { delay, getRetryDelay } from './utils.js';
 import { ECError } from './enums.js';
 
+// process.env is undefined in non-React browser bundles; guard so the module
+// loads there and falls back to the default retry count.
+const env = typeof process !== 'undefined' && process.env ? process.env : {};
+
 let ipfs = null;
 
 // Lets the runner detect whether a storage endpoint was already configured
@@ -64,7 +68,7 @@ export const uploadToIPFS = async (code) => {
 //   }
 // };
 
-export const getFromIPFS = async (hash, maxRetries = process.env.REACT_APP_IPFS_RETRIES || 100) => {
+export const getFromIPFS = async (hash, maxRetries = env.REACT_APP_IPFS_RETRIES || 100) => {
   let res = '';
   let retryCount = 0;
 

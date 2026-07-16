@@ -1,5 +1,9 @@
+// process.env is undefined in non-React browser bundles; guard so the module
+// loads there and falls back to the hardcoded default address.
+const env = typeof process !== 'undefined' && process.env ? process.env : {};
+
 const contract = {
-  address: process.env.REACT_APP_POLYGON_PROTOCOL_CONTRACT_ADDRESS || '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
+  address: env.REACT_APP_POLYGON_PROTOCOL_CONTRACT_ADDRESS || '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
   abi: [
     {
       anonymous: false,
