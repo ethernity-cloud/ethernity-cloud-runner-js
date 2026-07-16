@@ -103,7 +103,13 @@ class EthernityCloudRunner extends EventTarget {
         if (this.walletContext.encryptionPublicKey) {
           this.publicKey = this.walletContext.encryptionPublicKey;
         }
-      })();
+      })().catch((e) => {
+        // Don't cache a rejected promise: a transient failure (user dismissed
+        // the MetaMask prompt, RPC blip) must not permanently wedge the runner.
+        // Clear the latch so the next call retries from scratch.
+        this._walletReady = null;
+        throw e;
+      });
     }
     await this._walletReady;
   }
@@ -140,6 +146,7 @@ class EthernityCloudRunner extends EventTarget {
    * that were already unambiguously resolved by token address.
    */
   async resolveNetworkContext() {
+    await this._ensureWallet();
     const provisional = this.networkConfig && this.networkConfig.provisional;
     const provider = this.walletContext && this.walletContext.provider;
     if (!provider || !provider.getNetwork) {
@@ -358,6 +365,7 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   getTokensFromFaucet = async () => {
+    await this._ensureWallet();
     const account = this.tokenContract.getCurrentWallet();
     const balance = await this.tokenContract.getBalance(account);
     if (parseInt(balance, 10) <= 100) {
@@ -393,9 +401,29 @@ class EthernityCloudRunner extends EventTarget {
         this.dispatchECEvent(`TX:` + inspect(tx), ECLog.DEBUG);
         const txReceipt = await tx.wait();
         this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
-  
-        const events = txReceipt.events.find(event => event.event === protocolEvent);
+
+        // ethers v6: TransactionReceipt no longer exposes `.events` (parsed logs
+        // with `.event`/`.args`) — only raw `.logs`. Decode them ourselves with
+        // the protocol ABI and match the target event by name.
+        const iface = new ethers.Interface(this.protocolAbi);
+        let events = null;
+        for (const logEntry of txReceipt.logs) {
+          let parsed;
+          try {
+            parsed = iface.parseLog(logEntry);
+          } catch (e) {
+            // A log from another contract/event not in this ABI — skip it.
+            continue;
+          }
+          if (parsed && parsed.name === protocolEvent) {
+            events = parsed;
+            break;
+          }
+        }
         this.dispatchECEvent(`EVENTS:` + inspect(events), ECLog.DEBUG);
+        if (!events) {
+          throw new Error(`Event ${protocolEvent} not found in transaction logs`);
+        }
         txReceipt.result = events.args;
 
         return txReceipt;
@@ -496,6 +524,7 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async getWalletPublicKey() {
+    await this._ensureWallet();
     // Prefer an explicitly provided / derived X25519 encryption key (Web3Auth,
     // raw key, or app-supplied) so we never need the MetaMask-only
     // eth_getEncryptionPublicKey method.
@@ -841,6 +870,9 @@ class EthernityCloudRunner extends EventTarget {
 
   cleanup = async () => {
     this.reset();
+    // Nothing to clean up if the wallet/contracts were never resolved (the
+    // instance was constructed but never run). Avoid an NPE on protocolContract.
+    if (!this.protocolContract) return;
     const contract = this.protocolContract.getContract();
     contract.removeAllListeners();
   };
@@ -848,6 +880,7 @@ class EthernityCloudRunner extends EventTarget {
   isNodeOperatorAddress = async (nodeAddress) => {
     if (isNullOrEmpty(nodeAddress)) return true;
     if (isAddress(nodeAddress)) {
+      await this._ensureWallet();
       const isNode = await this.protocolContract.isNodeOperator(nodeAddress);
       if (!isNode) {
         this.status = ECStatus.ERROR;
@@ -879,6 +912,7 @@ class EthernityCloudRunner extends EventTarget {
 
   async checkNetwork() {
     try {
+      await this._ensureWallet();
       // checking network
       const networkName = await this.tokenContract.getNetworkName();
       const expected = this.networkConfig && this.networkConfig.networkName;
