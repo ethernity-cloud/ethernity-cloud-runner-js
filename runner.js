@@ -30,7 +30,33 @@ import {
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
 import { Buffer } from 'buffer';
-import util from 'util';
+
+// Deep, browser-safe object dump for DEBUG events. Replaces node's util.inspect
+// so the runner no longer pulls in the `util` polyfill — that polyfill does
+// bare `process.env.NODE_DEBUG` / `process.pid` accesses that crash in non-Node
+// bundles (browsers without a process shim). Handles the two things a plain
+// JSON.stringify chokes on here: bigints and circular refs (ethers tx/receipt
+// objects). Mirrors `util.inspect(x, {depth: null})` closely enough for a debug
+// log line.
+const inspect = (value) => {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(
+      value,
+      (_key, val) => {
+        if (typeof val === 'bigint') return `${val}n`;
+        if (typeof val === 'object' && val !== null) {
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        return val;
+      },
+      2
+    );
+  } catch (e) {
+    return String(value);
+  }
+};
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
@@ -342,12 +368,12 @@ class EthernityCloudRunner extends EventTarget {
   async waitForTransactionToBeProcessed(tx, protocolEvent) {
     while (true) {
       try {
-        this.dispatchECEvent(`TX:` + util.inspect(tx, {depth: null}), ECLog.DEBUG);
+        this.dispatchECEvent(`TX:` + inspect(tx), ECLog.DEBUG);
         const txReceipt = await tx.wait();
-        this.dispatchECEvent(`RECEIPT:` + util.inspect(txReceipt, {depth: null}), ECLog.DEBUG);
+        this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
   
         const events = txReceipt.events.find(event => event.event === protocolEvent);
-        this.dispatchECEvent(`EVENTS:` + util.inspect(events, {depth: null}), ECLog.DEBUG);
+        this.dispatchECEvent(`EVENTS:` + inspect(events), ECLog.DEBUG);
         txReceipt.result = events.args;
 
         return txReceipt;
@@ -415,7 +441,7 @@ class EthernityCloudRunner extends EventTarget {
     while (true) {
       try {
         const order = await this.protocolContract.getOrder(this.orderId);
-        this.dispatchECEvent(`Order:` + util.inspect(order,{depth: null}), ECLog.DEBUG);
+        this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
         if (parseInt(order.status) == 1) {
           this.dispatchECEvent(`Task ${this.orderId} is still processing...`, ECLog.DEBUG);
           await delay(5000);
@@ -608,7 +634,7 @@ class EthernityCloudRunner extends EventTarget {
 
         for (let i = ordersCount - 1; i >= this.ordersOffset; i--) {
           const order = await protocolContract._getOrder(i);
-          this.dispatchECEvent(`Checking order: ` + util.inspect(order, {depth: null}), ECLog.DEBUG);
+          this.dispatchECEvent(`Checking order: ` + inspect(order), ECLog.DEBUG);
           this.dispatchECEvent(`Checking if: ${order.doRequest} == ${this.doRequest}`, ECLog.DEBUG);
           if (parseInt(order.doRequest) === parseInt(this.doRequest)) {
             this.dispatchECEvent(`Found order with orderId: ${i}`, ECLog.DEBUG);
