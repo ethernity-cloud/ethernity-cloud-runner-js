@@ -25,7 +25,9 @@ import {
   ECAddress,
   ECError,
   ECRunner,
-  resolveNetworkConfig
+  resolveNetworkConfig,
+  taskStatusName,
+  isOperatorFaultCode
 } from './enums.js';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
@@ -263,6 +265,30 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async processTask(code) {
+    // Failures caused by the submitted code are final results and are never
+    // retried. Failures attributable to the node operator (order timeout,
+    // unusable operator output, task code 40-49) are retried by submitting a
+    // NEW DO request: the contract flips a DO request to BOOKED at first order
+    // placement with no reset path, so the request itself cannot be reused;
+    // the failed order's escrow is refunded by the validator.
+    const maxRetries = Number.isInteger(this.maxTaskRetries) ? this.maxTaskRetries : 2;
+    const retryDelayMs = Number.isInteger(this.taskRetryDelayMs) ? this.taskRetryDelayMs : 30000;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.processTaskAttempt(code);
+      } catch (e) {
+        if (!e.operatorFault || attempt >= maxRetries) throw e;
+        this.dispatchECEvent(
+          `Operator-side failure: ${e.message}. Resubmitting as a new request (retry ${attempt + 1}/${maxRetries})...`,
+          ECLog.WARNING
+        );
+        await this.cleanup();
+        await delay(retryDelayMs);
+      }
+    }
+  }
+
+  async processTaskAttempt(code) {
     this.challengeHash = generateRandomHexOfSize(20);
     const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
     const codeMetadata = await this.getV3CodeMetadata(code);
@@ -438,7 +464,17 @@ class EthernityCloudRunner extends EventTarget {
   waitforTaskToBeProcessed = async () => {
     this.progress = ECEvent.IN_PROGRESS
     this.dispatchECEvent(`Operator ${this.nodeAddress} is processing task ${this.orderId}`);
+    // An honest node holds an order at most its duration plus the node agent's
+    // own result wait (~62 min); past that the operator is hung or offline and
+    // the order will never leave PROCESSING on its own.
+    const durationHours = (this.resources && this.resources.duration) || 1;
+    const deadline = Date.now() + (durationHours * 3600 + 900) * 1000;
     while (true) {
+      if (Date.now() > deadline) {
+        const err = new Error(`Order ${this.orderId} was not completed within its duration (operator hung or offline)`);
+        err.operatorFault = true;
+        throw err;
+      }
       try {
         const order = await this.protocolContract.getOrder(this.orderId);
         this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
@@ -451,6 +487,7 @@ class EthernityCloudRunner extends EventTarget {
         }
       }
       catch (e) {
+        if (e.operatorFault) throw e;
         this.dispatchECEvent(`Error while waiting for task to be processed: ${e.message}`, ECLog.WARNING);
         await delay(1000);
       }
@@ -461,10 +498,17 @@ class EthernityCloudRunner extends EventTarget {
     this.dispatchECEvent(`Task ${this.orderId} was successfully processed.`);
     const parsedOrderResult = await this.getResultFromOrder();
     if (parsedOrderResult.success === false) {
-      this.status = ECStatus.ERROR;
-      this.progress = ECEvent.FINISHED;
+      const err = new Error(parsedOrderResult.message);
+      if (parsedOrderResult.operatorFault) {
+        // Leave status untouched: processTask() may retry; run()'s error
+        // handler sets ERROR if all attempts are exhausted.
+        err.operatorFault = true;
+      } else {
+        this.status = ECStatus.ERROR;
+        this.progress = ECEvent.FINISHED;
+      }
       this.dispatchECEvent(parsedOrderResult.message);
-      throw new Error(parsedOrderResult.message);
+      throw err;
     } else {
       this.result = parsedOrderResult.result;
       this.status = ECStatus.SUCCESS;
@@ -679,7 +723,7 @@ class EthernityCloudRunner extends EventTarget {
         version: arr[0],
         from: result.from,
         taskCode: arr[1],
-        taskCodeString: ECOrderTaskStatus[arr[1]],
+        taskCodeString: taskStatusName(arr[1]),
         checksum: arr[2],
         enclaveChallenge: arr[3]
       };
@@ -698,7 +742,7 @@ class EthernityCloudRunner extends EventTarget {
       // parse the order result
       const parsedOrderResult = this.parseOrderResult(orderResult);
       if(parsedOrderResult.resultIPFSHash === undefined) {
-        return { success: false, message: 'Task processing failed, no IPFS hash returned' };
+        return { success: false, operatorFault: true, message: 'Task processing failed, no IPFS hash returned' };
       }
 
       this.dispatchECEvent(`Downloading: ${parsedOrderResult.resultIPFSHash}`);
@@ -706,11 +750,22 @@ class EthernityCloudRunner extends EventTarget {
       // parse the transaction bytes of the order result
       const transactionResult = this.parseTransactionBytes(parsedOrderResult.transactionBytes);
 
+      // Task codes 40-49 mean the enclave stack on the node never ran the task
+      // (not started, unusable output, storage down). The escrow is refunded by
+      // the validator, so this is safe to retry with a fresh DO request.
+      if (isOperatorFaultCode(transactionResult.taskCode)) {
+        return {
+          success: false,
+          operatorFault: true,
+          message: `Task failed on the operator side: ${transactionResult.taskCodeString} (${transactionResult.taskCode})`
+        };
+      }
+
       // generate a wallet address using the `challengeHash` and `transactionResult.enclaveChallenge`
       const wallet = generateWallet(this.challengeHash, transactionResult.enclaveChallenge);
       // check if the generated wallet address matches the `transactionResult.from` address
       if (!wallet || wallet !== transactionResult.from) {
-        return { success: false, message: 'Integrity check failed, signer wallet address is wrong.' };
+        return { success: false, operatorFault: true, message: 'Integrity check failed, signer wallet address is wrong.' };
       }
 
       // get the result value from IPFS using the `parsedOrderResult.resultIPFSHash`
@@ -725,6 +780,8 @@ class EthernityCloudRunner extends EventTarget {
       );
 
       if (!decryptedData.success) {
+        // Not an operator fault: the common cause is a wrong client key, and
+        // auto-resubmitting would spend gas without changing the outcome.
         return { success: false, message: 'Could not decrypt the order result.' };
       }
 
@@ -734,7 +791,7 @@ class EthernityCloudRunner extends EventTarget {
       const ipfsResultChecksum = sha256(decryptedData.data);
       // check if the calculated checksum matches the `transactionResult.checksum`
       if (ipfsResultChecksum !== transactionResult.checksum) {
-        return { success: false, message: 'Integrity check failed, checksum of the order result is wrong.' };
+        return { success: false, operatorFault: true, message: 'Integrity check failed, checksum of the order result is wrong.' };
       }
 
       
@@ -754,10 +811,10 @@ class EthernityCloudRunner extends EventTarget {
     } catch (ex) {
       //console.log(ex);
       if (ex.name === ECError.PARSE_ERROR) {
-        return { success: false, message: 'Ethernity parsing transaction error.' };
+        return { success: false, operatorFault: true, message: 'Ethernity parsing transaction error.' };
       }
       if (ex.name === ECError.IPFS_DOWNLOAD_ERROR) {
-        return { success: false, message: 'Ethernity IPFS download result error.' };
+        return { success: false, operatorFault: true, message: 'Ethernity IPFS download result error.' };
       }
       await delay(5000);
       this.getResultFromOrderRepeats += 1;
@@ -879,9 +936,13 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
-  async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
+  async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet', options = {}) {
     try {
       this.resources = resources;
+      // Operator-side failures are resubmitted as a new DO request up to
+      // maxRetries times; failures caused by the submitted code never retry.
+      this.maxTaskRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2;
+      this.taskRetryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 30000;
       // If the app never configured storage, fall back to the default IPFS
       // endpoint so the challenge/code upload doesn't fail with a null client.
       // An explicit initializeStorage() call before run() takes precedence.

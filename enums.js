@@ -23,7 +23,32 @@ export const ECOrderTaskStatus = {
   4: 'BASE_EXCEPTION',
   5: 'PAYLOAD_NOT_DEFINED',
   6: 'PAYLOAD_CHECKSUM_ERROR',
-  7: 'INPUT_CHECKSUM_ERROR'
+  7: 'INPUT_CHECKSUM_ERROR',
+  // Extended diagnostics emitted by newer trustedzone builds. 21+ are
+  // customer-side outcomes; 40-49 are operator-side infrastructure failures
+  // (securelock never ran / produced unusable output) and are the codes the
+  // runner treats as retriable with a fresh DO request.
+  21: 'EXECUTION_TIMEOUT',
+  40: 'SECURELOCK_NOT_STARTED',
+  41: 'SECURELOCK_NO_RESULT',
+  42: 'SECURELOCK_MALFORMED',
+  43: 'SIGNATURE_ERROR',
+  44: 'STORAGE_ERROR',
+  45: 'INTERNAL_ERROR'
+};
+
+// Name for a task code, tolerant of codes newer than this runner.
+export const taskStatusName = (code) => {
+  const n = parseInt(code, 10);
+  return ECOrderTaskStatus[n] !== undefined ? ECOrderTaskStatus[n] : `UNKNOWN_${code}`;
+};
+
+// Task codes attributed to the node operator rather than the submitted code.
+// The escrow for such orders is refunded by the validator, so resubmitting the
+// same task as a new DO request is safe and is what the runner's retry does.
+export const isOperatorFaultCode = (code) => {
+  const n = parseInt(code, 10);
+  return Number.isInteger(n) && n >= 40 && n <= 49;
 };
 
 export const ECOrderTaskStatusCode = {
