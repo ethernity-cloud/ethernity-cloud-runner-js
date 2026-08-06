@@ -71,6 +71,17 @@ class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
     super();
     this.networkAddress = networkAddress;
+    // LOCAL mode: run tasks against the SDK's local test API (`ecld-test
+    // serve`) instead of the blockchain. Same runner surface — run(), events,
+    // getResult() — no wallet, no gas, no SGX. Endpoint override:
+    // new EthernityCloudRunner('LOCAL', { localEndpoint: 'http://...' }).
+    this.localMode = networkAddress === 'LOCAL';
+    if (this.localMode) {
+      this.localEndpoint = ((walletOptions && walletOptions.localEndpoint) ||
+        'http://127.0.0.1:8745').replace(/\/$/, '');
+      this.resetState();
+      return;
+    }
     // Optional disambiguator for the ECLD-family testnets (IoTeX / Sepolia /
     // LitVM) that share a token address. When omitted, it is resolved from the
     // wallet provider's chainId in resolveNetworkContext() before the run.
@@ -87,6 +98,49 @@ class EthernityCloudRunner extends EventTarget {
     // lets us skip the MetaMask-only eth_getEncryptionPublicKey call.
     if (this.walletContext.encryptionPublicKey) {
       this.publicKey = this.walletContext.encryptionPublicKey;
+    }
+  }
+
+  // LOCAL mode task flow: same events as a real run, executed by the local
+  // test API (the enclave's own executor) instead of the network.
+  async runLocal(code) {
+    const post = async (path, body) => {
+      const res = await fetch(this.localEndpoint + path, {
+        method: body ? 'POST' : 'GET',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      if (!res.ok) throw new Error(`local API ${path} -> HTTP ${res.status}`);
+      return res.json();
+    };
+    try {
+      this.progress = ECEvent.INIT;
+      let health;
+      try {
+        health = await post('/v1/health');
+      } catch (e) {
+        throw new Error(
+          `Local test API not reachable at ${this.localEndpoint} — start it with 'ecld-test serve'. (${e.message})`
+        );
+      }
+      this.dispatchECEvent(`LOCAL mode: backend functions ${JSON.stringify(health.backend)}`);
+      this.progress = ECEvent.IN_PROGRESS;
+      this.dispatchECEvent('Executing task on the local test API...');
+      const resp = await post('/v1/task', { payload: code });
+      this.result = resp.result;
+      this.resultTaskCode = resp.task_code;
+      this.resultTaskCodeName = resp.task_code_name;
+      this.progress = ECEvent.FINISHED;
+      if (resp.task_code === 0) {
+        this.status = ECStatus.SUCCESS;
+        this.dispatchECEvent('Task completed successfully (LOCAL mode).');
+      } else {
+        this.status = ECStatus.ERROR;
+        this.dispatchECEvent(`Task failed (LOCAL mode): ${resp.task_code_name} — ${resp.result}`);
+      }
+      return resp.task_code === 0;
+    } catch (error) {
+      this.handleError(error);
     }
   }
 
@@ -937,6 +991,10 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet', options = {}) {
+    if (this.localMode) {
+      this.resources = resources;
+      return this.runLocal(code);
+    }
     try {
       this.resources = resources;
       // Operator-side failures are resubmitted as a new DO request up to
