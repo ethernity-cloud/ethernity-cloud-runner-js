@@ -221,7 +221,6 @@ export const ECAddress = {
 
 export const ECNetworkName = {
   BLOXBERG: 'bloxberg',
-  MUMBAI: 'maticmum',
   AMOY: 'amoy',
   POLYGON: 'matic',
   IOTEX: 'iotex',
