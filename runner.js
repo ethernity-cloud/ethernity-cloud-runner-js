@@ -14,6 +14,8 @@ import { resolveWalletContext } from './walletContext.js';
 import EtnyContract from './contract/operation/etnyContract.js';
 import EcldContract from './contract/operation/ecldContract.js';
 import ImageRegistryContract from './contract/operation/imageRegistryContract.js';
+import ESRContract from './contract/operation/esrContract.js';
+import { StateCache, parseResultEnvelope } from './stateCache.js';
 import contractBloxberg from './contract/abi/etnyAbi.js';
 import protocolContractPolygon from './contract/abi/polygonProtocolAbi.js';
 import {
@@ -127,7 +129,7 @@ class EthernityCloudRunner extends EventTarget {
       this.progress = ECEvent.IN_PROGRESS;
       this.dispatchECEvent('Executing task on the local test API...');
       const resp = await post('/v1/task', { payload: code });
-      this.result = resp.result;
+      this.result = this._applyEnvelope(resp.result);
       this.resultTaskCode = resp.task_code;
       this.resultTaskCodeName = resp.task_code_name;
       this.progress = ECEvent.FINISHED;
@@ -564,7 +566,7 @@ class EthernityCloudRunner extends EventTarget {
       this.dispatchECEvent(parsedOrderResult.message);
       throw err;
     } else {
-      this.result = parsedOrderResult.result;
+      this.result = this._applyEnvelope(parsedOrderResult.result);
       this.status = ECStatus.SUCCESS;
       this.progress = ECEvent.FINISHED;
       this.dispatchECEvent(`Task completed successfully.`);
@@ -915,6 +917,139 @@ class EthernityCloudRunner extends EventTarget {
   }
   async getResult() {
     return this.result;
+  }
+
+  /** Typed view of the last result: { type, data, esr, raw } (or null). */
+  getStructuredResult() {
+    return this.structuredResult || null;
+  }
+
+  /**
+   * Decode the structured result envelope (legacy strings pass through).
+   * Returns the legacy STRING view for this.result so string-treating dApps
+   * keep working; the typed view is kept on this.structuredResult. When the
+   * state cache is enabled, every envelope's esr entries refresh it.
+   */
+  _applyEnvelope(raw) {
+    const parsed = parseResultEnvelope(raw);
+    this.structuredResult = {
+      type: parsed.type,
+      data: parsed.data,
+      esr: parsed.esr,
+      raw: parsed.raw,
+    };
+    const esr = parsed.esr;
+    if (esr && esr.wallet) {
+      if (this.secureLockEnclave) {
+        this._esrWalletMemo = this._esrWalletMemo || {};
+        this._esrWalletMemo[this.secureLockEnclave] = esr.wallet;
+      }
+      if (this.stateCache) {
+        for (const entry of esr.entries || []) {
+          try {
+            if ('state' in entry) {
+              this.stateCache.set(esr.wallet, entry.key, entry.state, entry.version || 0, entry.cid);
+            }
+          } catch (e) { /* cache is best-effort */ }
+        }
+      }
+    }
+    return parsed.legacy;
+  }
+
+  /**
+   * Opt in to the runner-managed ESR state cache. Every task result carrying
+   * an ESR attachment refreshes it, and esrRead() serves unchanged state from
+   * it after a free on-chain check — zero orders, zero gas. `backend` accepts
+   * any { get, set, delete, keys } store; defaults to localStorage in the
+   * browser and an in-memory Map under Node.
+   */
+  enableStateCache(backend = null) {
+    this.stateCache = new StateCache(backend);
+    return this.stateCache;
+  }
+
+  /**
+   * Cache-gated ESR read.
+   *
+   * Serves state from the cache while a FREE on-chain check (getState
+   * eth_call via `registryAddress`) confirms it is current; otherwise submits
+   * one state-fetch task (the SDK's built-in `esrFetch`, or `readCode`) and
+   * refreshes the cache from its result envelope.
+   *
+   * Returns { state, version, cid, wallet, fromCache, checkedOnChain }.
+   */
+  async esrRead({
+    key,
+    registryAddress = null,
+    enclaveWallet = null,
+    readCode = null,
+    force = false,
+    trustMinVersion = null,
+    walletContext = null,
+  } = {}) {
+    if (!key) throw new Error('esrRead requires a key');
+    this._esrWalletMemo = this._esrWalletMemo || {};
+    let wallet = enclaveWallet || this._esrWalletMemo[this.secureLockEnclave || ''];
+
+    let checkedOnChain = false;
+    if (!force && this.stateCache && wallet && registryAddress) {
+      const entry = this.stateCache.get(wallet, key);
+      if (entry) {
+        try {
+          const esr = new ESRContract(registryAddress, walletContext);
+          const onchain = await esr.getState(wallet, key);
+          checkedOnChain = true;
+          // Prefer cid equality (content-addressed); fall back to version.
+          // trustMinVersion covers the caller's own still-relaying commit:
+          // external writes only increase the version, so they invalidate.
+          let fresh = false;
+          if (entry.cid && onchain.cid) fresh = entry.cid === onchain.cid;
+          if (!fresh) fresh = Number(onchain.version) === Number(entry.version);
+          if (!fresh && trustMinVersion != null) {
+            fresh = Number(onchain.version) <= Number(trustMinVersion);
+          }
+          if (fresh) {
+            return {
+              state: entry.state,
+              version: entry.version,
+              cid: entry.cid,
+              wallet,
+              fromCache: true,
+              checkedOnChain: true,
+            };
+          }
+        } catch (e) {
+          // Fail safe: never serve a maybe-stale cache on an errored check.
+          checkedOnChain = false;
+        }
+      }
+    }
+
+    // Miss / stale / forced: run one state-fetch task, cache from its envelope.
+    const code = readCode || `esrFetch('${key}')`;
+    await this.processTask(code);
+    const structured = this.getStructuredResult();
+    const esrAtt = (structured && structured.esr) || null;
+    if (!esrAtt) {
+      throw new Error(
+        `esrRead: result carried no state for key '${key}' ` +
+          '(is the enclave built with ESR and the new result API?)'
+      );
+    }
+    wallet = esrAtt.wallet || wallet;
+    const entry = (esrAtt.entries || []).find((e) => e.key === key);
+    if (!entry) {
+      throw new Error(`esrRead: result carried no state entry for key '${key}'`);
+    }
+    return {
+      state: entry.state,
+      version: entry.version,
+      cid: entry.cid,
+      wallet,
+      fromCache: false,
+      checkedOnChain,
+    };
   }
   
   reset = () => {
