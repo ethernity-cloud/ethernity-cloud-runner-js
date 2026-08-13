@@ -944,11 +944,12 @@ class EthernityCloudRunner extends EventTarget {
         this._esrWalletMemo = this._esrWalletMemo || {};
         this._esrWalletMemo[this.secureLockEnclave] = esr.wallet;
       }
-      if (this.stateCache) {
+      const cache = this._getStateCache();
+      if (cache) {
         for (const entry of esr.entries || []) {
           try {
             if ('state' in entry) {
-              this.stateCache.set(esr.wallet, entry.key, entry.state, entry.version || 0, entry.cid);
+              cache.set(esr.wallet, entry.key, entry.state, entry.version || 0, entry.cid);
             }
           } catch (e) { /* cache is best-effort */ }
         }
@@ -958,15 +959,33 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   /**
-   * Opt in to the runner-managed ESR state cache. Every task result carrying
-   * an ESR attachment refreshes it, and esrRead() serves unchanged state from
-   * it after a free on-chain check — zero orders, zero gas. `backend` accepts
-   * any { get, set, delete, keys } store; defaults to localStorage in the
-   * browser and an in-memory Map under Node.
+   * The active state cache, creating the default one on first use. The cache
+   * is ON BY DEFAULT (localStorage in the browser, in-memory Map under Node);
+   * returns null only after disableStateCache().
+   */
+  _getStateCache() {
+    if (this._stateCacheDisabled) return null;
+    if (!this.stateCache) this.stateCache = new StateCache();
+    return this.stateCache;
+  }
+
+  /**
+   * Configure the ESR state cache (it is already ON BY DEFAULT). Use this only
+   * to choose a backend: `backend` is any { get, set, delete, keys } store;
+   * defaults to localStorage in the browser and an in-memory Map under Node.
+   * Every task result carrying an ESR attachment refreshes the cache, and
+   * esrRead() serves unchanged state from it after a free on-chain check.
    */
   enableStateCache(backend = null) {
+    this._stateCacheDisabled = false;
     this.stateCache = new StateCache(backend);
     return this.stateCache;
+  }
+
+  /** Turn the ESR state cache OFF — esrRead then always runs a task. */
+  disableStateCache() {
+    this._stateCacheDisabled = true;
+    this.stateCache = null;
   }
 
   /**
@@ -993,8 +1012,9 @@ class EthernityCloudRunner extends EventTarget {
     let wallet = enclaveWallet || this._esrWalletMemo[this.secureLockEnclave || ''];
 
     let checkedOnChain = false;
-    if (!force && this.stateCache && wallet && registryAddress) {
-      const entry = this.stateCache.get(wallet, key);
+    const cache = this._getStateCache();
+    if (!force && cache && wallet && registryAddress) {
+      const entry = cache.get(wallet, key);
       if (entry) {
         try {
           const esr = new ESRContract(registryAddress, walletContext);
