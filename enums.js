@@ -45,6 +45,7 @@ export const ECOrderTaskStatus = {
   33: 'EXECUTION_TIMEOUT',
   34: 'ESR_GAS_LIMIT_EXCEEDED', // ESR state commits would exceed the per-order relayed-gas budget
   35: 'SECURITY_VIOLATION', // a state commit was authorized under a caller other than the task
+  36: 'ESR_NONCE_VIOLATION', // a commit's idempotency nonce was already used -- duplicate suppressed
                            // submitter (the in-enclave ownership check was bypassed); set by the
                            // securelock and/or the trustedzone re-adjudication
   40: 'SECURELOCK_NOT_STARTED',

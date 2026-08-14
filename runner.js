@@ -1071,7 +1071,81 @@ class EthernityCloudRunner extends EventTarget {
       checkedOnChain,
     };
   }
-  
+
+  /**
+   * Current on-chain { wallet, version, cid } for an ESR key — free (a single
+   * eth_call), no task, no gas. version 0 means never committed.
+   *
+   * `enclaveAddress` is the enclave's own address (the namespace its state
+   * lives under); when omitted, the wallet learned from previous result
+   * envelopes for this enclave is used.
+   */
+  async esrVersion({
+    key,
+    registryAddress,
+    enclaveAddress = null,
+    enclaveWallet = null,
+    walletContext = null,
+  } = {}) {
+    if (!key) throw new Error('esrVersion requires a key');
+    if (!registryAddress) throw new Error('esrVersion requires registryAddress');
+    this._esrWalletMemo = this._esrWalletMemo || {};
+    const wallet =
+      enclaveAddress || enclaveWallet || this._esrWalletMemo[this.secureLockEnclave || ''];
+    if (!wallet) {
+      throw new Error(
+        'esrVersion requires enclaveAddress (no previous run to learn it from)'
+      );
+    }
+    const esr = new ESRContract(registryAddress, walletContext || this.walletContext);
+    const onchain = await esr.getState(wallet, key);
+    return { wallet, version: Number(onchain.version || 0), cid: onchain.cid || null };
+  }
+
+  /**
+   * Wait (free polling eth_calls) until the key's on-chain version is GREATER
+   * than `sinceVersion`; resolves with the fresh { wallet, version, cid }.
+   *
+   * The intended pattern — read the version, submit the state-writing task,
+   * then wait for the commit to actually land on-chain:
+   *
+   *   const { version } = await runner.esrVersion({ key, registryAddress, enclaveAddress });
+   *   await runner.run(...);                      // task that commits state
+   *   await runner.esrWaitForVersion({ key, sinceVersion: version, registryAddress, enclaveAddress });
+   */
+  async esrWaitForVersion({
+    key,
+    sinceVersion,
+    registryAddress,
+    enclaveAddress = null,
+    enclaveWallet = null,
+    walletContext = null,
+    timeoutMs = 120000,
+    pollMs = 3000,
+  } = {}) {
+    if (!key) throw new Error('esrWaitForVersion requires a key');
+    if (sinceVersion == null) throw new Error('esrWaitForVersion requires sinceVersion');
+    if (!registryAddress) throw new Error('esrWaitForVersion requires registryAddress');
+    this._esrWalletMemo = this._esrWalletMemo || {};
+    const wallet =
+      enclaveAddress || enclaveWallet || this._esrWalletMemo[this.secureLockEnclave || ''];
+    if (!wallet) {
+      throw new Error(
+        'esrWaitForVersion requires enclaveAddress (no previous run to learn it from)'
+      );
+    }
+    const esr = new ESRContract(registryAddress, walletContext || this.walletContext);
+    const advanced = await esr.waitForVersion(wallet, key, Number(sinceVersion), timeoutMs, pollMs);
+    if (advanced == null) {
+      throw new Error(
+        `ESR state for '${key}' did not advance past version ${sinceVersion} ` +
+          `within ${timeoutMs}ms`
+      );
+    }
+    const onchain = await esr.getState(wallet, key);
+    return { wallet, version: Number(onchain.version || 0), cid: onchain.cid || null };
+  }
+
   reset = () => {
     this.orderId = -1;
     this.doHash = null;
