@@ -1103,6 +1103,39 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   /**
+   * Last accepted idempotency nonce for an ESR key — { wallet, nonce }, free
+   * (a single eth_call), no task, no gas. nonce 0 means no guarded commit was
+   * ever made.
+   *
+   * The nonce is PUBLIC on-chain data: the registry records it next to the
+   * version, so a web3 app can read the latest accepted value here and choose
+   * the next one (any strictly greater value; gaps allowed, so timestamps
+   * work) before submitting a state-writing task that passes { nonce } to
+   * commit(). A duplicate submission then fails with task code 36
+   * (ESR_NONCE_VIOLATION) instead of applying twice.
+   */
+  async esrNonce({
+    key,
+    registryAddress,
+    enclaveAddress = null,
+    enclaveWallet = null,
+    walletContext = null,
+  } = {}) {
+    if (!key) throw new Error('esrNonce requires a key');
+    if (!registryAddress) throw new Error('esrNonce requires registryAddress');
+    this._esrWalletMemo = this._esrWalletMemo || {};
+    const wallet =
+      enclaveAddress || enclaveWallet || this._esrWalletMemo[this.secureLockEnclave || ''];
+    if (!wallet) {
+      throw new Error(
+        'esrNonce requires enclaveAddress (no previous run to learn it from)'
+      );
+    }
+    const esr = new ESRContract(registryAddress, walletContext || this.walletContext);
+    return { wallet, nonce: await esr.getNonce(wallet, key) };
+  }
+
+  /**
    * Wait (free polling eth_calls) until the key's on-chain version is GREATER
    * than `sinceVersion`; resolves with the fresh { wallet, version, cid }.
    *

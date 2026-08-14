@@ -62,6 +62,21 @@ class ESRContract {
   }
 
   /**
+   * Last accepted idempotency nonce for (enclave, key); 0 when none.
+   *
+   * The nonce is PUBLIC on-chain data, recorded next to the version, so a
+   * web3 client can learn the latest accepted value with one free eth_call
+   * and pick the next one (any greater value; gaps are allowed) before
+   * submitting a state-writing task with an idempotency guard. Registries
+   * that predate the on-chain nonce field have no getNonce view -- this
+   * rejects there, like calling any missing function would.
+   */
+  async getNonce(enclaveAddress, key) {
+    const n = await this.contract.getNonce(enclaveAddress, this.keyHash(key));
+    return Number(n);
+  }
+
+  /**
    * Metadata for (enclave, key): { cid, version, updatedAt, valid }.
    *
    * `valid` reports whether the stored pointer actually looks like an IPFS CID.

@@ -1,5 +1,63 @@
 const esrAbi = [
   {
+    "inputs": [],
+    "name": "BadSignature",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "EmptyCID",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "stored",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "given",
+        "type": "uint256"
+      }
+    ],
+    "name": "NonceOutOfOrder",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "expected",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "actual",
+        "type": "uint256"
+      }
+    ],
+    "name": "RelayNonceMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "expected",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "actual",
+        "type": "uint256"
+      }
+    ],
+    "name": "VersionMismatch",
+    "type": "error"
+  },
+  {
     "anonymous": false,
     "inputs": [
       {
@@ -25,31 +83,22 @@ const esrAbi = [
         "internalType": "uint256",
         "name": "version",
         "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "seq",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
       }
     ],
     "name": "StateCommitted",
     "type": "event"
-  },
-  {
-    "inputs": [],
-    "name": "EmptyCID",
-    "type": "error"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "expected",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "actual",
-        "type": "uint256"
-      }
-    ],
-    "name": "VersionMismatch",
-    "type": "error"
   },
   {
     "inputs": [
@@ -67,11 +116,153 @@ const esrAbi = [
         "internalType": "uint256",
         "name": "expectedVersion",
         "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
       }
     ],
     "name": "commit",
     "outputs": [],
     "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "enclave",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "key",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "string",
+        "name": "newCID",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expectedVersion",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "relayNonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
+      }
+    ],
+    "name": "commitDigest",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "enclave",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "key",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "string",
+        "name": "newCID",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expectedVersion",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "relayNonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes",
+        "name": "signature",
+        "type": "bytes"
+      }
+    ],
+    "name": "commitFor",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "commitSeq",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "index",
+        "type": "uint256"
+      }
+    ],
+    "name": "entryAt",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "enclave",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "key",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "entryCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -93,6 +284,79 @@ const esrAbi = [
         "internalType": "bool",
         "name": "",
         "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "startIndex",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "name": "getEntriesFrom",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "enclaves",
+        "type": "address[]"
+      },
+      {
+        "internalType": "bytes32[]",
+        "name": "keys",
+        "type": "bytes32[]"
+      },
+      {
+        "internalType": "string[]",
+        "name": "cids",
+        "type": "string[]"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "versions",
+        "type": "uint256[]"
+      },
+      {
+        "internalType": "uint64[]",
+        "name": "updatedAts",
+        "type": "uint64[]"
+      },
+      {
+        "internalType": "uint256",
+        "name": "total",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "enclave",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "key",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getNonce",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -146,6 +410,25 @@ const esrAbi = [
       }
     ],
     "name": "getVersion",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "enclave",
+        "type": "address"
+      }
+    ],
+    "name": "relayNonce",
     "outputs": [
       {
         "internalType": "uint256",
