@@ -10,7 +10,6 @@
   },
   "main": "runner.js",
   "scripts": {
-    "publish": "npm publish --access=public",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
