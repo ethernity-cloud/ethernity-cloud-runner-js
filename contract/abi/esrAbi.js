@@ -426,6 +426,11 @@ const esrAbi = [
         "internalType": "address",
         "name": "enclave",
         "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "key",
+        "type": "bytes32"
       }
     ],
     "name": "relayNonce",

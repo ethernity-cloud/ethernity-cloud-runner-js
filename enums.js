@@ -46,6 +46,8 @@ export const ECOrderTaskStatus = {
   34: 'ESR_GAS_LIMIT_EXCEEDED', // ESR state commits would exceed the per-order relayed-gas budget
   35: 'SECURITY_VIOLATION', // a state commit was authorized under a caller other than the task
   36: 'ESR_NONCE_VIOLATION', // a commit's idempotency nonce was already used -- duplicate suppressed
+  37: 'ESR_RELAY_TIMEOUT', // signed state commits did not land on the registry -- node relay failure; refundable
+  38: 'ESR_COMMIT_LIMIT_EXCEEDED', // more than 100 state commits in one run (per-run cap); dApp fault, no refund
                            // submitter (the in-enclave ownership check was bypassed); set by the
                            // securelock and/or the trustedzone re-adjudication
   40: 'SECURELOCK_NOT_STARTED',
