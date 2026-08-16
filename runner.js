@@ -525,27 +525,68 @@ class EthernityCloudRunner extends EventTarget {
     // the order will never leave PROCESSING on its own.
     const durationHours = (this.resources && this.resources.duration) || 1;
     const deadline = Date.now() + (durationHours * 3600 + 900) * 1000;
-    while (true) {
-      if (Date.now() > deadline) {
-        const err = new Error(`Order ${this.orderId} was not completed within its duration (operator hung or offline)`);
-        err.operatorFault = true;
-        throw err;
-      }
+    const protocolContract = this.protocolContract.getContract();
+    const orderId = parseInt(this.orderId);
+
+    // EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the operator
+    // records the result. Like _orderPlacedEV it has no indexed params, so we
+    // match the order number in the handler.
+    let closedHandler = null;
+    const viaEvent = new Promise((resolve) => {
+      closedHandler = (orderNumber) => {
+        if (parseInt(orderNumber) === orderId) {
+          this.dispatchECEvent(`_orderClosedEV: order ${orderId} closed`, ECLog.DEBUG);
+          resolve(true);
+        }
+      };
       try {
-        const order = await this.protocolContract.getOrder(this.orderId);
-        this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
-        if (parseInt(order.status) == 1) {
-          this.dispatchECEvent(`Task ${this.orderId} (request ${this.doRequest}) is still processing...`, ECLog.DEBUG);
-          await delay(5000);
-        } else {
-          this.dispatchECEvent(`Task ${this.orderId} status is ${order.status}, continuing`, ECLog.DEBUG);
-          return true;
+        protocolContract.on('_orderClosedEV', closedHandler);
+      } catch (e) {
+        this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
+        closedHandler = null;
+      }
+    });
+
+    // POLL FALLBACK at a relaxed cadence: covers cancelled/other terminal
+    // states that don't emit _orderClosedEV, unreliable RPC filters, and the
+    // deadline for hung operators.
+    let stopPolling = false;
+    const viaPoll = (async () => {
+      while (!stopPolling) {
+        if (Date.now() > deadline) {
+          const err = new Error(`Order ${this.orderId} was not completed within its duration (operator hung or offline)`);
+          err.operatorFault = true;
+          throw err;
+        }
+        try {
+          const order = await this.protocolContract.getOrder(this.orderId);
+          this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
+          if (parseInt(order.status) == 1) {
+            this.dispatchECEvent(`Task ${this.orderId} (request ${this.doRequest}) is still processing...`, ECLog.DEBUG);
+            await delay(15000);
+          } else {
+            this.dispatchECEvent(`Task ${this.orderId} status is ${order.status}, continuing`, ECLog.DEBUG);
+            return true;
+          }
+        }
+        catch (e) {
+          if (e.operatorFault) throw e;
+          this.dispatchECEvent(`Error while waiting for task to be processed: ${e.message}`, ECLog.WARNING);
+          await delay(2000);
         }
       }
-      catch (e) {
-        if (e.operatorFault) throw e;
-        this.dispatchECEvent(`Error while waiting for task to be processed: ${e.message}`, ECLog.WARNING);
-        await delay(1000);
+      return true;
+    })();
+
+    try {
+      return await Promise.race([viaEvent, viaPoll]);
+    } finally {
+      stopPolling = true;
+      // If the event won, the poll task keeps one in-flight iteration; swallow
+      // a late deadline rejection so it can't surface as unhandled.
+      viaPoll.catch(() => {});
+      if (closedHandler) {
+        try { protocolContract.off('_orderClosedEV', closedHandler); } catch (e) { /* already gone */ }
       }
     }
   }
