@@ -726,31 +726,66 @@ class EthernityCloudRunner extends EventTarget {
   findOrder = async () => {
     this.progress = ECEvent.CREATED;
     this.dispatchECEvent(`Waiting for Ethernity CLOUD network... `);
-    while (true) {
-      try {
-        const protocolContract = this.protocolContract.getContract();
-        const ordersCount = await protocolContract._getOrdersCount();
-        this.dispatchECEvent(`Orders count: ${ordersCount}`, ECLog.DEBUG);
+    const protocolContract = this.protocolContract.getContract();
+    const doReq = parseInt(this.doRequest);
 
-        for (let i = ordersCount - 1; i >= this.ordersOffset; i--) {
-          const order = await protocolContract._getOrder(i);
-          this.dispatchECEvent(`Checking order: ` + inspect(order), ECLog.DEBUG);
-          this.dispatchECEvent(`Checking if: ${order.doRequest} == ${this.doRequest}`, ECLog.DEBUG);
-          if (parseInt(order.doRequest) === parseInt(this.doRequest)) {
-            this.dispatchECEvent(`Found order ${i} for request ${this.doRequest}`, ECLog.DEBUG);
-            this.orderId = i;
-            this.order = order;
-            this.progress = ECEvent.ORDER_PLACED;
-            this.dispatchECEvent(`Connected! (order ${i}, request ${this.doRequest})`);
-            return true;
-          }
+    // EVENT-FIRST: bind to _orderPlacedEV(_orderNumber, _doRequestId,
+    // _dpRequestId) and resolve the moment OUR request's order is placed --
+    // push-based and near-instant. The event has no indexed params, so we
+    // subscribe to all placements and match the request id in the handler.
+    let eventHandler = null;
+    const viaEvent = new Promise((resolve) => {
+      eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
+        if (parseInt(doRequestId) === doReq) {
+          this.dispatchECEvent(`_orderPlacedEV: order ${orderNumber} for request ${doReq}`, ECLog.DEBUG);
+          resolve(parseInt(orderNumber));
         }
-        await delay(1000);
-        continue;
+      };
+      try {
+        protocolContract.on('_orderPlacedEV', eventHandler);
+      } catch (e) {
+        this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
+        eventHandler = null;
       }
-      catch(e){
-        this.dispatchECEvent(`Failed to find order: ` + e.message, ECLog.WARNING);
-        await delay(1000);
+    });
+
+    // POLL FALLBACK: covers RPC providers with unreliable filters and the
+    // race where the event fired before the listener attached. Scans only
+    // orders created after our request was submitted (ordersOffset).
+    let stopPolling = false;
+    const viaPoll = (async () => {
+      while (!stopPolling) {
+        try {
+          const ordersCount = await protocolContract._getOrdersCount();
+          this.dispatchECEvent(`Orders count: ${ordersCount}`, ECLog.DEBUG);
+          for (let i = ordersCount - 1; i >= this.ordersOffset; i--) {
+            if (stopPolling) return -1;
+            const order = await protocolContract._getOrder(i);
+            if (parseInt(order.doRequest) === doReq) {
+              this.dispatchECEvent(`Found order ${i} for request ${doReq} (poll)`, ECLog.DEBUG);
+              return i;
+            }
+          }
+          await delay(2000);
+        } catch (e) {
+          this.dispatchECEvent(`Failed to find order: ` + e.message, ECLog.WARNING);
+          await delay(2000);
+        }
+      }
+      return -1;
+    })();
+
+    try {
+      const orderId = await Promise.race([viaEvent, viaPoll]);
+      this.orderId = orderId;
+      this.order = await protocolContract._getOrder(orderId);
+      this.progress = ECEvent.ORDER_PLACED;
+      this.dispatchECEvent(`Connected! (order ${orderId}, request ${doReq})`);
+      return true;
+    } finally {
+      stopPolling = true;
+      if (eventHandler) {
+        try { protocolContract.off('_orderPlacedEV', eventHandler); } catch (e) { /* already gone */ }
       }
     }
   }
