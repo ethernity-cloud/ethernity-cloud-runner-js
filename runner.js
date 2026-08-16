@@ -535,7 +535,7 @@ class EthernityCloudRunner extends EventTarget {
         const order = await this.protocolContract.getOrder(this.orderId);
         this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
         if (parseInt(order.status) == 1) {
-          this.dispatchECEvent(`Task ${this.orderId} is still processing...`, ECLog.DEBUG);
+          this.dispatchECEvent(`Task ${this.orderId} (request ${this.doRequest}) is still processing...`, ECLog.DEBUG);
           await delay(5000);
         } else {
           this.dispatchECEvent(`Task ${this.orderId} status is ${order.status}, continuing`, ECLog.DEBUG);
@@ -737,14 +737,13 @@ class EthernityCloudRunner extends EventTarget {
           this.dispatchECEvent(`Checking order: ` + inspect(order), ECLog.DEBUG);
           this.dispatchECEvent(`Checking if: ${order.doRequest} == ${this.doRequest}`, ECLog.DEBUG);
           if (parseInt(order.doRequest) === parseInt(this.doRequest)) {
-            this.dispatchECEvent(`Found order with orderId: ${i}`, ECLog.DEBUG);
+            this.dispatchECEvent(`Found order ${i} for request ${this.doRequest}`, ECLog.DEBUG);
             this.orderId = i;
             this.order = order;
             this.progress = ECEvent.ORDER_PLACED;
-            this.dispatchECEvent(`Connected!`);
+            this.dispatchECEvent(`Connected! (order ${i}, request ${this.doRequest})`);
             return true;
           }
-          await delay(200);
         }
         await delay(1000);
         continue;
@@ -1257,6 +1256,31 @@ class EthernityCloudRunner extends EventTarget {
       this.resources = resources;
       return this.runLocal(code);
     }
+    // SERIALIZE concurrent run() calls on this instance. Task state
+    // (doRequest, orderId, order, result, ...) lives on the instance, so two
+    // interleaved runs would track the SAME order, fail each other's
+    // integrity checks against the wrong result, and collide on the wallet's
+    // transaction nonce (TRANSACTION_REPLACED). Each extra call queues and
+    // gets its own order, in submission order. For truly parallel tasks use
+    // one runner instance per task (or per wallet).
+    const previous = this._runQueue || Promise.resolve();
+    let release;
+    this._runQueue = new Promise((r) => { release = r; });
+    const queued = previous !== null && this._runInFlight;
+    if (queued) {
+      this.dispatchECEvent('Another task is in flight on this runner -- queued; it will get its own order when the current one finishes.');
+    }
+    await previous.catch(() => {});
+    this._runInFlight = true;
+    try {
+      return await this._runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options);
+    } finally {
+      this._runInFlight = false;
+      release();
+    }
+  }
+
+  async _runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options) {
     try {
       this.resources = resources;
       // Operator-side failures are resubmitted as a new DO request up to
