@@ -775,26 +775,50 @@ class EthernityCloudRunner extends EventTarget {
     // push-based and near-instant. The event has no indexed params, so we
     // subscribe to all placements and match the request id in the handler.
     let eventHandler = null;
-    const viaEvent = new Promise((resolve) => {
-      eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
-        if (parseInt(doRequestId) === doReq) {
-          this.dispatchECEvent(`_orderPlacedEV: order ${orderNumber} for request ${doReq}`, ECLog.DEBUG);
-          resolve(parseInt(orderNumber));
-        }
-      };
-      try {
-        protocolContract.on('_orderPlacedEV', eventHandler);
-      } catch (e) {
-        this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
-        eventHandler = null;
+    let resolveFound;
+    const viaEvent = new Promise((resolve) => { resolveFound = resolve; });
+    eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
+      if (parseInt(doRequestId) === doReq) {
+        this.dispatchECEvent(`_orderPlacedEV: order ${orderNumber} for request ${doReq}`, ECLog.DEBUG);
+        resolveFound(parseInt(orderNumber));
       }
-    });
+    };
+    try {
+      protocolContract.on('_orderPlacedEV', eventHandler);
+    } catch (e) {
+      this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
+      eventHandler = null;
+    }
 
-    // POLL FALLBACK: covers RPC providers with unreliable filters and the
-    // race where the event fired before the listener attached. Scans only
-    // orders created after our request was submitted (ordersOffset).
+    // CATCH-UP: one log query over the recent past covers the race where the
+    // placement fired before the listener attached -- no struct scanning.
+    (async () => {
+      try {
+        const current = await protocolContract.provider.getBlockNumber();
+        const filter = protocolContract.filters._orderPlacedEV();
+        const logs = await protocolContract.queryFilter(filter, Math.max(0, current - 300), current);
+        for (const lg of logs) {
+          if (parseInt(lg.args._doRequestId) === doReq) {
+            this.dispatchECEvent(`_orderPlacedEV (catch-up): order ${lg.args._orderNumber} for request ${doReq}`, ECLog.DEBUG);
+            resolveFound(parseInt(lg.args._orderNumber));
+            return;
+          }
+        }
+      } catch (e) {
+        this.dispatchECEvent(`Catch-up log query failed: ${e.message}`, ECLog.DEBUG);
+      }
+    })();
+
+    // POLL FALLBACK, grace-delayed: the struct scan only starts if the event
+    // path has stayed silent past the grace window (or never attached), so a
+    // healthy RPC resolves purely on logs and the scan never runs.
+    const POLL_GRACE_MS = 30000;
     let stopPolling = false;
     const viaPoll = (async () => {
+      const graceEnd = eventHandler ? Date.now() + POLL_GRACE_MS : 0;
+      while (!stopPolling && Date.now() < graceEnd) {
+        await delay(500);
+      }
       while (!stopPolling) {
         try {
           const ordersCount = await protocolContract._getOrdersCount();
