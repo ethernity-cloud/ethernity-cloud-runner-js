@@ -16,6 +16,7 @@ import EcldContract from './contract/operation/ecldContract.js';
 import ImageRegistryContract from './contract/operation/imageRegistryContract.js';
 import ESRContract from './contract/operation/esrContract.js';
 import { StateCache, parseResultEnvelope } from './stateCache.js';
+import { EthernityCloudSession } from './session.js';
 import contractBloxberg from './contract/abi/etnyAbi.js';
 import protocolContractPolygon from './contract/abi/polygonProtocolAbi.js';
 import {
@@ -705,8 +706,12 @@ class EthernityCloudRunner extends EventTarget {
     // no-input task with "INPUT CHECKSUM DOESN'T MATCH". Declare ZERO_CHECKSUM
     // as-is so it matches the enclave's sha256(empty).
     let fileSetChecksum = ZERO_CHECKSUM;
+    // Interactive sessions mark the request with a 'v3s' version tag -- the
+    // trustedzone parses it through the same v3 branch but keeps the
+    // enclaves alive for the order duration.
+    const version = this._sessionRequest ? `${VERSION}s` : VERSION;
     // v3::filesetchecksum
-    return `${VERSION}::${fileSetChecksum}`;
+    return `${version}::${fileSetChecksum}`;
   }
 
 
@@ -1378,6 +1383,111 @@ class EthernityCloudRunner extends EventTarget {
       this._runInFlight = false;
       release();
     }
+  }
+
+  /**
+   * Start an INTERACTIVE SESSION task and return its handle. Same submission
+   * flow as run() up to order approval, but the request carries the v3s
+   * session marker so the enclaves stay alive for the order duration and
+   * stream inputs/outputs through the on-chain metadata channels. Resolves
+   * once the order is PROCESSING; use the returned EthernityCloudSession to
+   * sendInput / pollOutputs / close.
+   */
+  async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
+    if (this.localMode) throw new Error('Sessions are not available in LOCAL mode');
+    const previous = this._runQueue || Promise.resolve();
+    let release;
+    this._runQueue = new Promise((r) => { release = r; });
+    await previous.catch(() => {});
+    this._runInFlight = true;
+    try {
+      this.resources = resources;
+      if (!ipfsClient.isInitialized()) {
+        this.initializeStorage(DEFAULT_IPFS_ADDRESS);
+      }
+      await this.resolveNetworkContext();
+      await this.checkWalletBalance(this.resources.taskPrice);
+      await this.verifyNodeAddress(nodeAddress);
+      await this.initializeImageRegistry(secureLockEnclave);
+      await this.initializeWeb3Connection();
+      await this.checkAllowance(this.resources.taskPrice);
+      this.challengeHash = generateRandomHexOfSize(20);
+      const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
+      const codeMetadata = await this.getV3CodeMetadata(code);
+      this._sessionRequest = true;
+      let inputMetadata;
+      try {
+        inputMetadata = await this.getV3InputMedata();
+      } finally {
+        this._sessionRequest = false;
+      }
+      await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
+      await this.findOrder();
+      if (!this.nodeAddress) {
+        await this.approveOrder();
+      }
+      this.dispatchECEvent(`Session order ${this.orderId} is processing`);
+      return await EthernityCloudSession.create(this, this.orderId);
+    } catch (error) {
+      this.handleError(error);
+    } finally {
+      this._runInFlight = false;
+      release();
+    }
+  }
+
+  /**
+   * Reattach to a running session order -- STATELESS: seq resumes from the
+   * on-chain rows, output decryption uses the wallet key. Pass
+   * secureLockEnclave to also re-resolve the enclave certificate so
+   * sendInput works from this fresh process; without it the handle is
+   * receive/close-only.
+   */
+  async attachSession(orderId, secureLockEnclave = null) {
+    await this.resolveNetworkContext();
+    const contract = this.protocolContract.getContract();
+    const order = await contract._getOrder(orderId);
+    const wallet = this.tokenContract.getCurrentWallet();
+    if (String(order[0]).toLowerCase() !== String(wallet).toLowerCase()) {
+      throw new Error('Order does not belong to this wallet');
+    }
+    const meta = await contract._getDORequestMetadata(Number(order[2]));
+    if (String(meta[3] || '').split(':')[0] !== 'v3s') {
+      throw new Error('Order is not an interactive session');
+    }
+    if (secureLockEnclave) {
+      await this.initializeImageRegistry(secureLockEnclave);
+    }
+    return EthernityCloudSession.create(this, Number(orderId));
+  }
+
+  /**
+   * Order ids of THIS wallet's session requests still PROCESSING -- running
+   * enclaves this wallet can reattach to.
+   */
+  async listSessions() {
+    await this.resolveNetworkContext();
+    const contract = this.protocolContract.getContract();
+    const wallet = this.tokenContract.getCurrentWallet();
+    const sessions = [];
+    let myOrders;
+    try {
+      myOrders = await contract._getMyDOOrders({ from: wallet });
+    } catch (e) {
+      this.dispatchECEvent(`Could not enumerate orders: ${e.message}`, ECLog.WARNING);
+      return sessions;
+    }
+    for (const oid of myOrders) {
+      try {
+        const order = await contract._getOrder(Number(oid));
+        if (Number(order[4]) !== 1) continue;
+        const meta = await contract._getDORequestMetadata(Number(order[2]));
+        if (String(meta[3] || '').split(':')[0] === 'v3s') {
+          sessions.push(Number(oid));
+        }
+      } catch (e) { /* skip unreadable orders */ }
+    }
+    return sessions;
   }
 
   async _runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options) {
