@@ -30,6 +30,19 @@ export const SEND_CUTOFF_SECONDS = 600;
 
 export class SessionError extends Error {}
 
+// Codes carried by 'error' output rows (msg.code): task codes for payload
+// failures (5 = no ___etny_on_input___ handler defined, 1 = handler raised)
+// and session notices 50-53 (malformed row, out-of-order seq, undecryptable
+// input, securelock build without session support). 0 for ok/late rows.
+export const SESSION_ERROR_CODE_NAMES = {
+  1: 'handler-error',
+  5: 'handler-not-defined',
+  50: 'input-malformed',
+  51: 'input-out-of-order',
+  52: 'input-undecryptable',
+  53: 'unsupported-securelock',
+};
+
 export class EthernityCloudSession {
   constructor(runner, orderId) {
     this.runner = runner;
@@ -181,13 +194,14 @@ export class EthernityCloudSession {
 
   async _verifyOutputRow(value) {
     const parts = value.split(':');
-    if (parts.length !== 8 || parts[0] !== SESSION_WIRE_VERSION) return null;
+    if (parts.length !== 9 || parts[0] !== SESSION_WIRE_VERSION) return null;
     const seq = Number(parts[1]);
     const rowOrder = Number(parts[2]);
     const ack = Number(parts[3]);
-    const [status, cid, shaHex, sig] = [parts[4], parts[5], parts[6].toLowerCase(), parts[7]];
-    if (!Number.isFinite(seq) || rowOrder !== this.orderId) return null;
-    const message = `etny-so|${this.orderId}|${seq}|${ack}|${status}|${cid}|${shaHex}`;
+    const code = Number(parts[5]);
+    const [status, cid, shaHex, sig] = [parts[4], parts[6], parts[7].toLowerCase(), parts[8]];
+    if (!Number.isFinite(seq) || !Number.isFinite(code) || rowOrder !== this.orderId) return null;
+    const message = `etny-so|${this.orderId}|${seq}|${ack}|${status}|${code}|${cid}|${shaHex}`;
     let signer;
     try {
       signer = ethers.utils.verifyMessage(message, sig);
@@ -202,8 +216,10 @@ export class EthernityCloudSession {
         `${taskWallet} -- DISCARDING (operator forgery?)`, 2);
       return null;
     }
-    const msg = { seq, ack, status, data: null };
-    if (status !== 'ok' || !cid) return msg; // signed late/notice row -- no payload
+    const msg = { seq, ack, status, code, data: null };
+    if (!cid) return msg; // signed notice row without payload (late)
+    // 'ok' rows carry the reply; 'error' rows carry an encrypted explanation
+    // of why the input was not processed -- fetch both.
     try {
       const content = await ipfsClient.getFromIPFS(cid);
       if (sha256(content) !== shaHex) {
