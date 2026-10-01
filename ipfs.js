@@ -38,6 +38,12 @@ export const initialize = (host, protocol, port, token) => {
   }
 };
 
+// Every blob the runner adds (challenge, code, input, session rows) is stored
+// as a CIDv1 raw sha256 block: the CID is base32(0x01 0x55 0x12 0x20 ||
+// sha256(content)), computable from the bytes alone. The node pins results
+// with the same recipe (mvp-pox-node utils.py cidv1_raw).
+const RAW_BLOCK_OPTIONS = { cidVersion: 1, rawLeaves: true };
+
 export const uploadToIPFS = async (code) => {
   // NOTE: this MUST NOT silently return null on failure. Callers interpolate the
   // returned hash into the on-chain DO-request metadata; a null there gets
@@ -45,7 +51,7 @@ export const uploadToIPFS = async (code) => {
   // cancels the (already paid) order, and the task can never complete. Throw so
   // the caller aborts BEFORE submitting the request. Also validate the response
   // actually contains a path.
-  const response = await ipfs.add(code);
+  const response = await ipfs.add(code, RAW_BLOCK_OPTIONS);
   if (!response || !response.path) {
     throw new Error('uploadToIPFS: IPFS add returned no path (upload failed)');
   }
