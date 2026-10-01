@@ -285,7 +285,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: false,
     networkName: 'bloxberg',
-    networkKey: 'BLOXBERG'
+    networkKey: 'BLOXBERG',
+    agentNetwork: 'bloxberg_testnet'
   },
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: {
     family: 'bloxberg',
@@ -296,7 +297,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'bloxberg',
-    networkKey: 'BLOXBERG'
+    networkKey: 'BLOXBERG',
+    agentNetwork: 'bloxberg_mainnet'
   },
   [ECAddress.POLYGON.MAINNET_ADDRESS]: {
     family: 'ecld',
@@ -307,7 +309,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'matic',
-    networkKey: 'POLYGON'
+    networkKey: 'POLYGON',
+    agentNetwork: 'polygon_mainnet'
   },
   [ECAddress.POLYGON.TESTNET_ADDRESS]: {
     family: 'ecld',
@@ -318,7 +321,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: false,
     networkName: 'amoy',
-    networkKey: 'POLYGON'
+    networkKey: 'POLYGON',
+    agentNetwork: 'polygon_amoy'
   }
 };
 

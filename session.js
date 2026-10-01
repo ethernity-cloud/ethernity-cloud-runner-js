@@ -158,6 +158,9 @@ export class EthernityCloudSession {
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
     await tx.wait();
+    // With the public intake, the row is on chain now, so the bytes it names
+    // can be delivered.
+    await ipfsClient.flushPending(this.doReq);
     const seq = this.inputSeq;
     this.inputSeq += 1;
     this.runner.dispatchECEvent(`Session input ${seq} committed (${cid})`);

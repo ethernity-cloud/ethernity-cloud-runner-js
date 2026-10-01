@@ -760,6 +760,9 @@ class EthernityCloudRunner extends EventTarget {
       this.doRequest = requestId;
 
       this.dispatchECEvent(`Request ${this.doRequest} was created successfully.`);
+      // With the public intake, the artefacts named in the request are
+      // delivered now that the request they belong to is on chain.
+      await ipfsClient.flushPending(this.doRequest);
 
       return true;
     } catch (e) {
@@ -1319,6 +1322,17 @@ class EthernityCloudRunner extends EventTarget {
   // eslint-disable-next-line class-methods-use-this
   initializeStorage(ipfsAddress, protocol, port, token) {
     ipfsClient.initialize(ipfsAddress, protocol, port, token);
+  }
+
+  // Upload through the bootnode's payload intake and read through its public
+  // API: artefact CIDs are computed locally and the bytes are delivered once
+  // the DO request is on chain. Needs the network descriptor's agentNetwork.
+  initializePublicIntake(baseUrl = ipfsClient.PUBLIC_INTAKE) {
+    const network = this.networkConfig && this.networkConfig.agentNetwork;
+    if (!network) {
+      throw new Error('initializePublicIntake: this network has no agent network name');
+    }
+    ipfsClient.initializeIntake(network, baseUrl);
   }
 
   // use this in order to reset the instance and have a new runner
