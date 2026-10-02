@@ -69,12 +69,21 @@ export const isAddress = (address) => {
   return true;
 };
 
+// The enclave-signed result transaction: its signer, target, chain id (0 for a
+// pre-EIP-155 signature) and the order id and result string it was signed
+// over. Throws unless it is an _addResultToOrder call.
 export const parseTransactionBytes = (contract, bytesInput) => {
   const parsedTransaction = ethers.utils.parseTransaction(bytesInput);
   const iface = new ethers.utils.Interface(contract);
   const decodedData = iface.parseTransaction({ data: parsedTransaction.data, value: parsedTransaction.value });
+  if (decodedData.name !== '_addResultToOrder') {
+    throw new Error(`the result transaction calls ${decodedData.name}, not _addResultToOrder`);
+  }
   return {
     from: parsedTransaction.from,
+    to: parsedTransaction.to,
+    chainId: parsedTransaction.chainId,
+    orderId: decodedData.args[0],
     result: decodedData.args[1]
   };
 };

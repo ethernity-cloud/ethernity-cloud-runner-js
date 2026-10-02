@@ -25,10 +25,9 @@ export const ECOrderTaskStatus = {
   6: 'PAYLOAD_CHECKSUM_ERROR',
   7: 'INPUT_CHECKSUM_ERROR',
   // Extended diagnostics emitted by newer enclave builds (canonical registry:
-  // the trustedzone extended enum). 20-33 are customer-side outcomes; 40-49
-  // are operator-side infrastructure failures (securelock never ran /
-  // produced unusable output) and are the codes the runner treats as
-  // retriable with a fresh DO request.
+  // the trustedzone TaskStatus enum, etny_exec.py and task_status.js). 20-36
+  // and 38 are customer-side outcomes; 37, 39 and 40 are node-side faults the
+  // validator refunds, listed in OPERATOR_FAULT_CODES below.
   20: 'SIGNATURE_ERROR',
   21: 'SYNTAX_ERROR',
   22: 'MEMORY_ERROR',
@@ -45,17 +44,18 @@ export const ECOrderTaskStatus = {
   33: 'EXECUTION_TIMEOUT',
   34: 'ESR_GAS_LIMIT_EXCEEDED', // ESR state commits would exceed the per-order relayed-gas budget
   35: 'SECURITY_VIOLATION', // a state commit was authorized under a caller other than the task
+                           // submitter (the in-enclave ownership check was bypassed); set by the
+                           // securelock and/or the trustedzone re-adjudication
   36: 'ESR_NONCE_VIOLATION', // a commit's idempotency nonce was already used -- duplicate suppressed
   37: 'ESR_RELAY_TIMEOUT', // signed state commits did not land on the registry -- node relay failure; refundable
   38: 'ESR_COMMIT_LIMIT_EXCEEDED', // more than 100 state commits in one run (per-run cap); dApp fault, no refund
-                           // submitter (the in-enclave ownership check was bypassed); set by the
-                           // securelock and/or the trustedzone re-adjudication
-  40: 'SECURELOCK_NOT_STARTED',
-  41: 'SECURELOCK_NO_RESULT',
-  42: 'SECURELOCK_MALFORMED',
-  43: 'SIGNATURE_ERROR',
-  44: 'STORAGE_ERROR',
-  45: 'INTERNAL_ERROR'
+  39: 'SESSION_RELAY_FAULT', // the node withheld session input delivery or failed to relay; refundable
+  // The CAS that provisioned the enclave presented a quote the enclave could
+  // not bind to its own injected environment; the enclave terminated the
+  // order for refund. Codes above 40 are not defined by any enclave and the
+  // node emits no task codes of its own, so nothing on the network produces
+  // them.
+  40: 'CAS_ATTESTATION_FAULT'
 };
 
 // Name for a task code, tolerant of codes newer than this runner.
@@ -64,13 +64,16 @@ export const taskStatusName = (code) => {
   return ECOrderTaskStatus[n] !== undefined ? ECOrderTaskStatus[n] : `UNKNOWN_${code}`;
 };
 
-// Task codes attributed to the node operator rather than the submitted code.
-// The escrow for such orders is refunded by the validator, so resubmitting the
-// same task as a new DO request is safe and is what the runner's retry does.
-export const isOperatorFaultCode = (code) => {
-  const n = parseInt(code, 10);
-  return Number.isInteger(n) && n >= 40 && n <= 49;
-};
+// Task codes attributed to the node operator rather than the submitted code:
+// the node did not relay signed state commits (37), withheld session input or
+// output rows (39), or was provisioned by a CAS whose self-attestation failed
+// the ValidatorRegistry checks (40). The escrow for such orders is refunded by
+// the validator, so resubmitting the same task as a new DO request is safe and
+// is what the runner's retry does. 38 (per-run commit cap) is a dApp-side
+// fault and is not refunded.
+export const OPERATOR_FAULT_CODES = [37, 39, 40];
+
+export const isOperatorFaultCode = (code) => OPERATOR_FAULT_CODES.includes(parseInt(code, 10));
 
 export const ECOrderTaskStatusCode = {
   SUCCESS: 'SUCCESS',
@@ -167,13 +170,15 @@ export const ECAddress = {
   BLOXBERG: {
     TESTNET_ADDRESS: '0x02882F03097fE8cD31afbdFbB5D72a498B41112c',
     MAINNET_ADDRESS: '0x549A6E06BB2084100148D50F51CF77a3436C3Ae7',
+    // The testnet reads ECImageRegistryV2, where its trustedzones and the
+    // securelocks published against them are registered.
     IMAGE_REGISTRY: {
       PYNITHY: {
-        TESTNET_ADDRESS: '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31',
+        TESTNET_ADDRESS: '0x99A84C624C028bdf0a855A1E9E3f2fcf7275B3D8',
         MAINNET_ADDRESS: '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
       },
       NODENITHY: {
-        TESTNET_ADDRESS: '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31',
+        TESTNET_ADDRESS: '0x99A84C624C028bdf0a855A1E9E3f2fcf7275B3D8',
         MAINNET_ADDRESS: '0x15D73a742529C3fb11f3FA32EF7f0CC3870ACA31'
       }
     }

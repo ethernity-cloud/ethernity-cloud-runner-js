@@ -234,6 +234,7 @@ class EthernityCloudRunner extends EventTarget {
     this.getResultFromOrderRepeats = 1;
     this.secureLockEnclave = null;
     this.trustedZoneImage = null;
+    this.runTrustedZoneImage = null;
     this.resources = null;
     this.enclaveImageIPFSHash = '';
     this.enclavePublicKey = '';
@@ -290,7 +291,7 @@ class EthernityCloudRunner extends EventTarget {
         this.networkConfig.imageRegistry.PYNITHY) || undefined;
     this.imageRegistryContract = new ImageRegistryContract(
       this.networkAddress,
-      'etny-pynithy-testnet',
+      this.resolveTrustedZoneImage(),
       this.walletContext,
       registryAddress
     );
@@ -324,10 +325,11 @@ class EthernityCloudRunner extends EventTarget {
   async processTask(code) {
     // Failures caused by the submitted code are final results and are never
     // retried. Failures attributable to the node operator (order timeout,
-    // unusable operator output, task code 40-49) are retried by submitting a
-    // NEW DO request: the contract flips a DO request to BOOKED at first order
-    // placement with no reset path, so the request itself cannot be reused;
-    // the failed order's escrow is refunded by the validator.
+    // unusable operator output, an OPERATOR_FAULT_CODES task code) are retried
+    // by submitting a NEW DO request: the contract flips a DO request to
+    // BOOKED at first order placement with no reset path, so the request
+    // itself cannot be reused; the failed order's escrow is refunded by the
+    // validator.
     const maxRetries = Number.isInteger(this.maxTaskRetries) ? this.maxTaskRetries : 2;
     const retryDelayMs = Number.isInteger(this.taskRetryDelayMs) ? this.taskRetryDelayMs : 30000;
     for (let attempt = 0; ; attempt++) {
@@ -391,10 +393,20 @@ class EthernityCloudRunner extends EventTarget {
     this.dispatchEvent(customEvent);
   };
 
-  // The trustedzone whose cert we fetch is the pynithy variant of the resolved
-  // network. Prefer an explicit setNetwork() value, then derive from the
-  // network descriptor, then fall back to the legacy Bloxberg testnet name.
+  // The trustedzone a run uses: the run's own trustedZoneEnclave, else the one
+  // setNetwork() chose, else the pynithy variant of the resolved network, else
+  // the legacy Bloxberg testnet name. An -unsafe trustedzone runs without a
+  // CAS, and a mainnet accepts none.
+  selectTrustedZone(trustedZoneEnclave) {
+    this.runTrustedZoneImage = trustedZoneEnclave || null;
+    const name = this.resolveTrustedZoneImage();
+    if (name.endsWith('-unsafe') && this.isMainnet()) {
+      throw new Error(`${name} runs without a CAS; a mainnet accepts no -unsafe trustedzone`);
+    }
+  }
+
   resolveTrustedZoneImage() {
+    if (this.runTrustedZoneImage) return this.runTrustedZoneImage;
     if (this.trustedZoneImage) return this.trustedZoneImage;
     const key = this.networkConfig && this.networkConfig.networkKey;
     if (key && ECRunner[key]) {
@@ -668,8 +680,9 @@ class EthernityCloudRunner extends EventTarget {
     this.dispatchECEvent(`Uploaded challenge to IPFS: ${challengeIPFSHash}`);
 
     const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
-    // image metadata for v3 format v3:image_ipfs_hash:image_name:docker_compose_ipfs_hash:client_challenge_ipfs_hash:public_key
-    return `${VERSION}:${this.enclaveImageIPFSHash}:etny-pynithy-testnet:${
+    // image metadata for v3 format v3:image_ipfs_hash:trustedzone_name:docker_compose_ipfs_hash:client_challenge_ipfs_hash:public_key
+    // The trustedzone named here is the one whose certificate sealed the challenge.
+    return `${VERSION}:${this.enclaveImageIPFSHash}:${this.resolveTrustedZoneImage()}:${
       this.enclaveDockerComposeIPFSHash
     }:${challengeIPFSHash}:${publicKey}`;
   }
@@ -885,6 +898,9 @@ class EthernityCloudRunner extends EventTarget {
       return {
         version: arr[0],
         from: result.from,
+        to: result.to,
+        chainId: result.chainId,
+        orderId: result.orderId,
         taskCode: arr[1],
         taskCodeString: taskStatusName(arr[1]),
         checksum: arr[2],
@@ -893,6 +909,26 @@ class EthernityCloudRunner extends EventTarget {
     } catch (e) {
       throw new Error(ECError.PARSE_ERROR);
     }
+  }
+
+  // Why the enclave-signed result transaction is not this order's result on
+  // this network's PoX, or null when it is. The validators reject such a
+  // result the same way (ethernity-cas result_tx.rs, bound_to): a genuine
+  // enclave signature over another order, contract or chain proves nothing
+  // about this order. A chain id of 0 is a pre-EIP-155 signature.
+  async resultBindingError(transactionResult) {
+    if (!ethers.BigNumber.from(transactionResult.orderId).eq(this.orderId)) {
+      return `the result transaction is for order ${transactionResult.orderId}`;
+    }
+    const protocol = this.protocolContract.getContract().address;
+    if (!transactionResult.to || transactionResult.to.toLowerCase() !== protocol.toLowerCase()) {
+      return `the result transaction is addressed to ${transactionResult.to || 'no contract'}, not ${protocol}`;
+    }
+    const { chainId } = await this.protocolContract.getProvider().getNetwork();
+    if (transactionResult.chainId !== 0 && transactionResult.chainId !== chainId) {
+      return `the result transaction is signed for chain ${transactionResult.chainId}`;
+    }
+    return null;
   }
 
   async getResultFromOrder() {
@@ -913,8 +949,12 @@ class EthernityCloudRunner extends EventTarget {
       // parse the transaction bytes of the order result
       const transactionResult = this.parseTransactionBytes(parsedOrderResult.transactionBytes);
 
-      // Task codes 40-49 mean the enclave stack on the node never ran the task
-      // (not started, unusable output, storage down). The escrow is refunded by
+      const bindingError = await this.resultBindingError(transactionResult);
+      if (bindingError) {
+        return { success: false, operatorFault: true, message: `Integrity check failed, ${bindingError}.` };
+      }
+
+      // OPERATOR_FAULT_CODES are node-side faults. The escrow is refunded by
       // the validator, so this is safe to retry with a fresh DO request.
       if (isOperatorFaultCode(transactionResult.taskCode)) {
         return {
@@ -973,10 +1013,12 @@ class EthernityCloudRunner extends EventTarget {
       };
     } catch (ex) {
       //console.log(ex);
-      if (ex.name === ECError.PARSE_ERROR) {
+      // ECError values travel as the message: parseOrderResult,
+      // parseTransactionBytes and getFromIPFS throw new Error(ECError.X).
+      if (ex.message === ECError.PARSE_ERROR) {
         return { success: false, operatorFault: true, message: 'Ethernity parsing transaction error.' };
       }
-      if (ex.name === ECError.IPFS_DOWNLOAD_ERROR) {
+      if (ex.message === ECError.IPFS_DOWNLOAD_ERROR) {
         return { success: false, operatorFault: true, message: 'Ethernity IPFS download result error.' };
       }
       await delay(5000);
@@ -1370,7 +1412,11 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
-  async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet', options = {}) {
+  // trustedZoneEnclave: the trustedzone the securelock was built against, e.g.
+  // etny-nodenithy-testnet for a nodenithy dApp or the -unsafe variant for a
+  // securelock published without a CAS on the bloxberg testnet. Default: the
+  // one setNetwork() chose, else the network's pynithy trustedzone.
+  async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     if (this.localMode) {
       this.resources = resources;
       return this.runLocal(code);
@@ -1401,13 +1447,14 @@ class EthernityCloudRunner extends EventTarget {
 
   /**
    * Start an INTERACTIVE SESSION task and return its handle. Same submission
-   * flow as run() up to order approval, but the request carries the v3s
-   * session marker so the enclaves stay alive for the order duration and
-   * stream inputs/outputs through the on-chain metadata channels. Resolves
+   * flow and trustedzone selection as run() up to order approval, but the
+   * request carries the v3s session marker so the enclaves stay alive for the
+   * order duration and stream inputs/outputs through the on-chain metadata
+   * channels. Resolves
    * once the order is PROCESSING; use the returned EthernityCloudSession to
    * sendInput / pollOutputs / close.
    */
-  async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = 'etny-nodenithy-testnet') {
+  async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null) {
     if (this.localMode) throw new Error('Sessions are not available in LOCAL mode');
     const previous = this._runQueue || Promise.resolve();
     let release;
@@ -1420,6 +1467,7 @@ class EthernityCloudRunner extends EventTarget {
         this.initializeStorage(DEFAULT_IPFS_ADDRESS);
       }
       await this.resolveNetworkContext();
+      this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
@@ -1470,6 +1518,9 @@ class EthernityCloudRunner extends EventTarget {
       throw new Error('Order is not an interactive session');
     }
     if (secureLockEnclave) {
+      // The trustedzone the order was placed with: field 2 of its image
+      // metadata (v3:image:trustedzone:compose:challenge:key).
+      this.selectTrustedZone(String(meta[1] || '').split(':')[2] || null);
       await this.initializeImageRegistry(secureLockEnclave);
     }
     return EthernityCloudSession.create(this, Number(orderId));
@@ -1520,6 +1571,7 @@ class EthernityCloudRunner extends EventTarget {
       // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
       // live provider before any contract call depends on the PoX address.
       await this.resolveNetworkContext();
+      this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);

@@ -103,6 +103,12 @@ const executeTask = async () => {
 
 await executeTask();
 ```
+
+### Choosing the trustedzone
+
+`run()` and `runSession()` take `trustedZoneEnclave`, the trustedzone the securelock was built against. It defaults to the one `setNetwork()` chose, else the network's pynithy trustedzone (`etny-pynithy-testnet` on the bloxberg testnet); a nodenithy dApp passes `etny-nodenithy-testnet`. On the bloxberg testnet a securelock published without a CAS (`<project>-unsafe`) runs on `etny-pynithy-testnet-unsafe` or `etny-nodenithy-testnet-unsafe`; the runner refuses an `-unsafe` trustedzone on a mainnet.
+
+The runner accepts a result only when the transaction the enclave signed is `_addResultToOrder` for this order, addressed to this network's protocol contract and signed for this chain, and its signer is the wallet derived from the task's challenge. Task codes 37, 39 and 40 (`OPERATOR_FAULT_CODES`) are node-side faults the validator refunds; the runner resubmits such a task as a new request.
 ### `___etny_result___` function
 The `___etny_result___` function is a special function used in Ethernity Cloud Runner tasks. When executing a task, this
 function allows the task code to send the result back from the Ethernity Cloud platform.
