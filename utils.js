@@ -69,6 +69,16 @@ export const isAddress = (address) => {
   return true;
 };
 
+// The node a DO request is pinned to, or '' for an unpinned request. The zero
+// address means "any node": written into Metadata4 it would pin the request to
+// 0x0, which no node can place -- the protocol contract takes any non-empty
+// Metadata4 as the address of the node the request is pinned to.
+export const normalizeNodeAddress = (nodeAddress) => {
+  const address = String(nodeAddress ?? '').trim();
+  if (address === '' || (isAddress(address) && BigInt(address) === 0n)) return '';
+  return address;
+};
+
 // The enclave-signed result transaction: its signer, target, chain id (0 for a
 // pre-EIP-155 signature) and the order id and result string it was signed
 // over. Throws unless it is an _addResultToOrder call.

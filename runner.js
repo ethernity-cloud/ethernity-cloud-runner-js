@@ -6,6 +6,7 @@ import {
   generateWallet,
   isAddress,
   isNullOrEmpty,
+  normalizeNodeAddress,
   parseTransactionBytes
 } from './utils.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
@@ -272,10 +273,11 @@ class EthernityCloudRunner extends EventTarget {
 
   async verifyNodeAddress(nodeAddress) {
     this.dispatchECEvent('Verifying node address...');
-    if (!await this.isNodeOperatorAddress(nodeAddress)) {
+    const node = normalizeNodeAddress(nodeAddress);
+    if (!await this.isNodeOperatorAddress(node)) {
       throw new Error('Invalid node operator address');
     }
-    this.nodeAddress = nodeAddress;
+    this.nodeAddress = node;
   }
 
   async initializeImageRegistry(secureLockEnclave) {
@@ -756,11 +758,13 @@ class EthernityCloudRunner extends EventTarget {
 
       this.dispatchECEvent(`Submitting transaction for DO request`);
       // add here call to SC(smart contract)
+      // Metadata4 is the node the request is pinned to, empty for any node;
+      // the zero address there would pin it to 0x0, which no node can place.
       const tx = await this.protocolContract.addDORequest(
         imageMetadata,
         codeMetadata,
         inputMetadata,
-        this.nodeAddress,
+        normalizeNodeAddress(this.nodeAddress),
         this.resources,
       );
 
