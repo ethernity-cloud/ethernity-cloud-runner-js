@@ -28,6 +28,8 @@ import {
   ECAddress,
   ECError,
   ECRunner,
+  UNSAFE_NETWORK_SUFFIX,
+  UNSAFE_TRUSTEDZONE_SUFFIX,
   resolveNetworkConfig,
   taskStatusName,
   isOperatorFaultCode
@@ -394,15 +396,29 @@ class EthernityCloudRunner extends EventTarget {
     this.dispatchEvent(customEvent);
   };
 
+  // Whether setNetwork() chose an -unsafe network.
+  isUnsafe = () => !!this.networkType && this.networkType.endsWith(UNSAFE_NETWORK_SUFFIX);
+
   // The trustedzone a run uses: the run's own trustedZoneEnclave, else the one
   // setNetwork() chose, else the pynithy variant of the resolved network, else
   // the legacy Bloxberg testnet name. An -unsafe trustedzone runs without a
-  // CAS, and a mainnet accepts none.
+  // CAS, and runs only on an -unsafe network, which runs no other.
   selectTrustedZone(trustedZoneEnclave) {
     this.runTrustedZoneImage = trustedZoneEnclave || null;
     const name = this.resolveTrustedZoneImage();
-    if (name.endsWith('-unsafe') && this.isMainnet()) {
-      throw new Error(`${name} runs without a CAS; a mainnet accepts no -unsafe trustedzone`);
+    const unsafeZone = name.endsWith(UNSAFE_TRUSTEDZONE_SUFFIX);
+    if (unsafeZone && !this.isUnsafe()) {
+      const key = this.networkConfig && this.networkConfig.networkKey;
+      const twin = !this.isMainnet() && key && ECRunner[key] &&
+        ECRunner[key][`PYNITHY_RUNNER_TESTNET${UNSAFE_NETWORK_SUFFIX}`];
+      throw new Error(twin
+        ? `${name} runs without a CAS: run it on the -unsafe network, setNetwork('${key}', 'TESTNET${UNSAFE_NETWORK_SUFFIX}')`
+        : `${name} runs without a CAS, and this network has no -unsafe network`);
+    }
+    if (!unsafeZone && this.isUnsafe()) {
+      throw new Error(
+        `${this.network} runs only -unsafe trustedzones, and ${name} is provisioned by a CAS: ` +
+        `run it on setNetwork(<network>, '${this.networkType.slice(0, -UNSAFE_NETWORK_SUFFIX.length)}')`);
     }
   }
 
@@ -1350,9 +1366,28 @@ class EthernityCloudRunner extends EventTarget {
   }
 
 
+  // The network a run names, by ECRunner's keys: ('BLOXBERG', 'TESTNET'),
+  // ('BLOXBERG', 'MAINNET'), or an -unsafe network such as
+  // ('BLOXBERG', 'TESTNET_UNSAFE'), whose trustedzones run without a CAS. It
+  // sets the default trustedzone; the chain stays the one the constructor's
+  // address resolved, and a network of another chain is refused.
   async setNetwork(network, type) {
-      this.network = network.toLowerCase()+ "_" + type.toUpperCase()
-      this.trustedZoneImage = ECRunner[network.toUpperCase()]["PYNITHY_RUNNER_"+type.toUpperCase()]
+    const key = network.toUpperCase();
+    const kind = type.toUpperCase();
+    const trustedZone = ECRunner[key] &&
+      ECRunner[key][kind === 'MAINNET' ? 'PYNITHY_RUNNER' : `PYNITHY_RUNNER_${kind}`];
+    if (!trustedZone) {
+      throw new Error(`setNetwork: ${network} ${type} is not a network this runner knows`);
+    }
+    const cfg = this.networkConfig;
+    if (cfg && cfg.networkKey && (cfg.networkKey !== key || cfg.isMainnet !== (kind === 'MAINNET'))) {
+      throw new Error(
+        `setNetwork: ${network} ${type} is not on the chain of this runner's address ` +
+        `(${cfg.networkKey} ${cfg.isMainnet ? 'MAINNET' : 'TESTNET'})`);
+    }
+    this.network = `${network.toLowerCase()}_${kind}`;
+    this.networkType = kind;
+    this.trustedZoneImage = trustedZone;
   }
 
   async checkNetwork() {
@@ -1380,9 +1415,10 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   // trustedZoneEnclave: the trustedzone the securelock was built against, e.g.
-  // etny-nodenithy-testnet for a nodenithy dApp or the -unsafe variant for a
-  // securelock published without a CAS on the bloxberg testnet. Default: the
-  // one setNetwork() chose, else the network's pynithy trustedzone.
+  // etny-nodenithy-testnet for a nodenithy dApp. Default: the one setNetwork()
+  // chose, else the network's pynithy trustedzone. A securelock published
+  // without a CAS runs on the -unsafe network (setNetwork('BLOXBERG',
+  // 'TESTNET_UNSAFE')) against an -unsafe trustedzone, and only there.
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     if (this.localMode) {
       this.resources = resources;

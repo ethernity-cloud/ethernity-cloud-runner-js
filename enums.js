@@ -115,9 +115,17 @@ export const ECNetworkByChainIdDictionary = {
   4441: 'litvm'
 };
 
+// An -unsafe network: a network type ending in _UNSAFE, with the chain and
+// contracts of the type it is named after and the trustedzones that run without
+// a CAS, whose names end in -unsafe. The runner runs an -unsafe trustedzone only
+// on an -unsafe network, chosen with setNetwork(), and no other trustedzone there.
+export const UNSAFE_NETWORK_SUFFIX = '_UNSAFE';
+export const UNSAFE_TRUSTEDZONE_SUFFIX = '-unsafe';
+
 export const ECNetwork = {
   BLOXBERG: {
     TESTNET: 'Bloxberg TESTNET',
+    TESTNET_UNSAFE: 'Bloxberg TESTNET_UNSAFE',
     MAINNET: 'Bloxberg MAINNET'
   },
   POLYGON: {
@@ -131,7 +139,8 @@ export const ECNetwork = {
     TESTNET: 'Sepolia TESTNET'
   },
   LITVM: {
-    TESTNET: 'LitVM TESTNET'
+    TESTNET: 'LitVM TESTNET',
+    TESTNET_UNSAFE: 'LitVM TESTNET_UNSAFE'
   }
 };
 
@@ -139,6 +148,8 @@ export const ECRunner = {
   BLOXBERG: {
     PYNITHY_RUNNER_TESTNET: 'etny-pynithy-testnet',
     NODENITHY_RUNNER_TESTNET: 'etny-nodenithy-testnet',
+    PYNITHY_RUNNER_TESTNET_UNSAFE: 'etny-pynithy-testnet-unsafe',
+    NODENITHY_RUNNER_TESTNET_UNSAFE: 'etny-nodenithy-testnet-unsafe',
     PYNITHY_RUNNER: 'etny-pynithy',
     NODENITHY_RUNNER: 'etny-nodenithy'
   },
@@ -158,7 +169,9 @@ export const ECRunner = {
   },
   LITVM: {
     PYNITHY_RUNNER_TESTNET: 'ecld-pynithy-litvm-testnet',
-    NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-litvm-testnet'
+    NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-litvm-testnet',
+    PYNITHY_RUNNER_TESTNET_UNSAFE: 'ecld-pynithy-litvm-testnet-unsafe',
+    NODENITHY_RUNNER_TESTNET_UNSAFE: 'ecld-nodenithy-litvm-testnet-unsafe'
   }
 };
 
