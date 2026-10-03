@@ -65,6 +65,36 @@ const inspect = (value) => {
   }
 };
 
+// Calls handler(...args) for each `eventName` log the contract emits from the
+// current block on, until the returned stop() runs. A contract.on()
+// subscription reads its logs in a promise ethers never handles, so one failed
+// eth_getLogs -- a load-balanced RPC whose backend has not reached the block
+// yet -- is an unhandled rejection, which ends a Node process. Here a failed
+// read is retried over the same range on the next tick.
+const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) => {
+  let stopped = false;
+  let from = null;
+  const filter = contract.filters[eventName]();
+  (async () => {
+    while (!stopped) {
+      try {
+        const head = await provider.getBlockNumber();
+        if (from === null) from = head;
+        if (head >= from) {
+          const logs = await contract.queryFilter(filter, from, head);
+          if (stopped) return;
+          logs.forEach((log) => { if (log.args) handler(...log.args); });
+          from = head + 1;
+        }
+      } catch (e) {
+        // The same range is read again on the next tick.
+      }
+      await delay(intervalMs);
+    }
+  })();
+  return () => { stopped = true; };
+};
+
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
 // Fallback IPFS endpoint used when the app did not call initializeStorage()
@@ -569,16 +599,13 @@ class EthernityCloudRunner extends EventTarget {
     // EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the operator
     // records the result. Like _orderPlacedEV it has no indexed params, so we
     // match the order number in the handler.
-    let closedHandler = null;
+    let stopWatching = () => {};
     const viaEvent = new Promise((resolve) => {
-      closedHandler = (orderNumber) => {
+      stopWatching = watchEvent(protocolContract, this.protocolContract.getProvider(), '_orderClosedEV', (orderNumber) => {
         if (parseInt(orderNumber) === orderId) {
           this.dispatchECEvent(`_orderClosedEV: order ${orderId} closed`, ECLog.DEBUG);
           resolve(true);
         }
-      };
-      protocolContract.on('_orderClosedEV', closedHandler).catch((e) => {
-        this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
       });
     });
 
@@ -620,7 +647,7 @@ class EthernityCloudRunner extends EventTarget {
       // If the event won, the poll task keeps one in-flight iteration; swallow
       // a late deadline rejection so it can't surface as unhandled.
       viaPoll.catch(() => {});
-      protocolContract.off('_orderClosedEV', closedHandler).catch(() => { /* already gone */ });
+      stopWatching();
     }
   }
 
@@ -813,10 +840,10 @@ class EthernityCloudRunner extends EventTarget {
     const protocolContract = this.protocolContract.getContract();
     const doReq = parseInt(this.doRequest);
 
-    // EVENT-FIRST: bind to _orderPlacedEV(_orderNumber, _doRequestId,
-    // _dpRequestId) and resolve the moment OUR request's order is placed --
-    // push-based and near-instant. The event has no indexed params, so we
-    // subscribe to all placements and match the request id in the handler.
+    // EVENT-FIRST: watch _orderPlacedEV(_orderNumber, _doRequestId,
+    // _dpRequestId) and resolve within a few seconds of OUR request's order
+    // being placed. The event has no indexed params, so we read all
+    // placements and match the request id in the handler.
     let resolveFound;
     const viaEvent = new Promise((resolve) => { resolveFound = resolve; });
     const eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
@@ -825,11 +852,7 @@ class EthernityCloudRunner extends EventTarget {
         resolveFound(parseInt(orderNumber));
       }
     };
-    let subscribed = true;
-    protocolContract.on('_orderPlacedEV', eventHandler).catch((e) => {
-      subscribed = false;
-      this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
-    });
+    const stopWatching = watchEvent(protocolContract, this.protocolContract.getProvider(), '_orderPlacedEV', eventHandler);
 
     // CATCH-UP: one log query over the recent past covers the race where the
     // placement fired before the listener attached -- no struct scanning.
@@ -851,13 +874,13 @@ class EthernityCloudRunner extends EventTarget {
     })();
 
     // POLL FALLBACK, grace-delayed: the struct scan only starts if the event
-    // path has stayed silent past the grace window (or never attached), so a
-    // healthy RPC resolves purely on logs and the scan never runs.
+    // path has stayed silent past the grace window, so a healthy RPC resolves
+    // purely on logs and the scan never runs.
     const POLL_GRACE_MS = 30000;
     let stopPolling = false;
     const viaPoll = (async () => {
       const graceEnd = Date.now() + POLL_GRACE_MS;
-      while (!stopPolling && subscribed && Date.now() < graceEnd) {
+      while (!stopPolling && Date.now() < graceEnd) {
         await delay(500);
       }
       while (!stopPolling) {
@@ -890,7 +913,7 @@ class EthernityCloudRunner extends EventTarget {
       return true;
     } finally {
       stopPolling = true;
-      protocolContract.off('_orderPlacedEV', eventHandler).catch(() => { /* already gone */ });
+      stopWatching();
     }
   }
 
