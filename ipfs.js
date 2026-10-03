@@ -91,7 +91,12 @@ export const cidv1Raw = (bytes) => {
 
 const toBytes = (data) => (data instanceof Uint8Array ? data : ethers.toUtf8Bytes(String(data)));
 
-export const uploadToIPFS = async (code) => {
+// An add the API does not answer within `timeoutMs` is aborted and retried
+// `attempts` times; without the bound an unanswered add held the run with no
+// DO request placed. The bound is an abort signal: ipfs-http-client sends a
+// per-call `timeout` option to the server as a query parameter instead of
+// applying it to the request.
+export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs = 60000) => {
   if (intake) {
     const bytes = toBytes(code);
     const cid = cidv1Raw(bytes);
@@ -104,11 +109,22 @@ export const uploadToIPFS = async (code) => {
   // cancels the (already paid) order, and the task can never complete. Throw so
   // the caller aborts BEFORE submitting the request. Also validate the response
   // actually contains a path.
-  const response = await ipfs.add(code, RAW_BLOCK_OPTIONS);
-  if (!response || !response.path) {
-    throw new Error('uploadToIPFS: IPFS add returned no path (upload failed)');
+  let last = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await ipfs.add(code, { ...RAW_BLOCK_OPTIONS, signal: controller.signal });
+      if (response && response.path) return response.path;
+      last = new Error('IPFS add returned no path');
+    } catch (e) {
+      last = controller.signal.aborted ? new Error(`no answer within ${timeoutMs} ms`) : e;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < attempts) await delay(delayMs);
   }
-  return response.path;
+  throw new Error(`uploadToIPFS: upload failed after ${attempts} attempts: ${last?.message || last}`);
 };
 
 // Deliver every queued blob to the intake for `doRequest`. A blob the intake
