@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import esrAbi from '../abi/esrAbi.js';
+import { contractRunners } from '../../walletContext.js';
 
 /**
  * Read-only client for the Enclave State Registry (ESR).
@@ -33,11 +34,7 @@ class ESRContract {
     if (!registryAddress) {
       throw new Error('ESR registry address is required');
     }
-    if (walletContext && walletContext.provider) {
-      this.provider = walletContext.provider;
-    } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-    }
+    ({ provider: this.provider } = contractRunners(walletContext));
     this.contract = new ethers.Contract(registryAddress, esrAbi, this.provider);
   }
 
@@ -47,7 +44,7 @@ class ESRContract {
    */
   // eslint-disable-next-line class-methods-use-this
   keyHash(key) {
-    return ethers.utils.id(key);
+    return ethers.id(key);
   }
 
   /** Current version for (enclave, key); 0 when never committed. */

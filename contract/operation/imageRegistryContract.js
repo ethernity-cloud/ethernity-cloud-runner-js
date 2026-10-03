@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import contract from '../abi/imageRegistryAbi.js';
 import { ECAddress, ECRunner } from '../../enums.js';
+import { contractRunners } from '../../walletContext.js';
 
 class ImageRegistryContract {
   contract = null;
@@ -17,15 +18,8 @@ class ImageRegistryContract {
     walletContext = null,
     registryAddress = undefined
   ) {
-    if (walletContext && walletContext.provider) {
-      this.ethereum = null;
-      this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
-    } else {
-      this.ethereum = window.ethereum;
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
-    }
+    this.ethereum = walletContext && walletContext.provider ? null : window.ethereum;
+    ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
 
     // When the caller resolved the Image Registry address from the network
     // descriptor (all networks beyond the legacy Bloxberg/Polygon pair), use it

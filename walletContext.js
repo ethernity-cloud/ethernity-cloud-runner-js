@@ -21,6 +21,71 @@ const DEFAULT_RPC_BY_ADDRESS = {
 };
 
 /**
+ * The signer of a wallet provider (window.ethereum, or a provider passed in)
+ * whose account is known only once the wallet answers: ethers 6 hands it out
+ * through the async provider.getSigner(), while the runner and its contracts
+ * are built synchronously. This signer asks for the account on first use and
+ * passes every call to it; a refused request is asked again on the next use.
+ */
+export class ProviderAccountSigner extends ethers.AbstractSigner {
+  constructor(provider) {
+    super(provider);
+    this.account = null;
+  }
+
+  resolveAccount() {
+    if (!this.account) {
+      this.account = this.provider.getSigner().catch((e) => {
+        this.account = null;
+        throw e;
+      });
+    }
+    return this.account;
+  }
+
+  connect(provider) {
+    return new ProviderAccountSigner(provider);
+  }
+
+  async getAddress() {
+    return (await this.resolveAccount()).getAddress();
+  }
+
+  async signTransaction(tx) {
+    return (await this.resolveAccount()).signTransaction(tx);
+  }
+
+  async sendTransaction(tx) {
+    return (await this.resolveAccount()).sendTransaction(tx);
+  }
+
+  async signMessage(message) {
+    return (await this.resolveAccount()).signMessage(message);
+  }
+
+  async signTypedData(domain, types, value) {
+    return (await this.resolveAccount()).signTypedData(domain, types, value);
+  }
+}
+
+/**
+ * The provider and signer a contract uses: the wallet context's, else the
+ * browser wallet's (window.ethereum). signer is null for a provider that
+ * holds no account.
+ */
+export function contractRunners(walletContext) {
+  if (walletContext && walletContext.provider) {
+    const { provider } = walletContext;
+    return {
+      provider,
+      signer: walletContext.signer || (provider.getSigner ? new ProviderAccountSigner(provider) : null)
+    };
+  }
+  const provider = new ethers.BrowserProvider(window.ethereum);
+  return { provider, signer: new ProviderAccountSigner(provider) };
+}
+
+/**
  * Resolve the wallet options passed to EthernityCloudRunner into a single,
  * chain-correct context that the runner and every contract share.
  *
@@ -46,7 +111,10 @@ export function resolveWalletContext(networkAddress, opts = {}) {
   if (privateKey) {
     const rpc =
       rpcUrl || DEFAULT_RPC_BY_ADDRESS[networkAddress] || DEFAULT_RPC_BY_ADDRESS[ECAddress.BLOXBERG.TESTNET_ADDRESS];
-    const rpcProvider = provider || new ethers.providers.JsonRpcProvider(rpc);
+    // polling: contract events are read with eth_getLogs, which any backend
+    // behind a load-balanced RPC answers, rather than through an eth_newFilter
+    // id that only the backend which created it knows.
+    const rpcProvider = provider || new ethers.JsonRpcProvider(rpc, undefined, { polling: true });
     const wallet = new ethers.Wallet(privateKey, rpcProvider);
     return {
       provider: rpcProvider,
@@ -62,7 +130,7 @@ export function resolveWalletContext(networkAddress, opts = {}) {
     const resolvedProvider = provider || (signer && signer.provider) || null;
     return {
       provider: resolvedProvider,
-      signer: signer || (resolvedProvider && resolvedProvider.getSigner && resolvedProvider.getSigner()) || null,
+      signer: signer || (resolvedProvider && resolvedProvider.getSigner ? new ProviderAccountSigner(resolvedProvider) : null),
       privateKey: null,
       encryptionPublicKey: encryptionPublicKey || null,
       usesWindowEthereum: false
@@ -71,10 +139,10 @@ export function resolveWalletContext(networkAddress, opts = {}) {
 
   // 3) default: MetaMask via window.ethereum (unchanged legacy behaviour)
   if (typeof window !== 'undefined' && window.ethereum) {
-    const web3Provider = new ethers.providers.Web3Provider(window.ethereum);
+    const browserProvider = new ethers.BrowserProvider(window.ethereum);
     return {
-      provider: web3Provider,
-      signer: web3Provider.getSigner(),
+      provider: browserProvider,
+      signer: new ProviderAccountSigner(browserProvider),
       privateKey: null,
       encryptionPublicKey: encryptionPublicKey || null,
       usesWindowEthereum: true

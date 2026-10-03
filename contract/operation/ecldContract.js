@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import contract from '../abi/ecldAbi.js';
 import { ECNetworkByChainIdDictionary } from '../../enums.js';
+import { contractRunners } from '../../walletContext.js';
 
 class EcldContract {
   ecldContract = null;
@@ -14,13 +15,7 @@ class EcldContract {
   currentWallet = null;
 
   constructor(networkAddress, walletContext = null) {
-    if (walletContext && walletContext.provider) {
-      this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
-    } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
-    }
+    ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.ecldContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.ecldContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
@@ -50,16 +45,9 @@ class EcldContract {
 
   async _getCurrentWallet() {
     try {
-      // Prefer the signer's own address: works for an ethers.Wallet (raw private
-      // key), a JsonRpcSigner (window.ethereum), and injected signers alike.
-      // provider.listAccounts() is empty for a plain JsonRpcProvider (raw-key
-      // path against a public RPC), so it can only be a fallback.
-      if (this.signer && this.signer.getAddress) {
-        const address = await this.signer.getAddress();
-        if (address) return address;
-      }
-      const accounts = await this.provider.listAccounts();
-      return accounts[0];
+      // The signer's own address: an ethers.Wallet (raw private key), a
+      // browser wallet's account, or an injected signer.
+      return this.signer ? await this.signer.getAddress() : null;
     } catch (e) {
       console.log(e);
       return null;
@@ -80,14 +68,14 @@ class EcldContract {
   // Fetch the current allowance and update if needed
   // approval address should be the address of protocol contract
   async checkAndSetAllowance(protocolAddress, amount, taskPrice) {
-    const allowanceAmount = ethers.utils.parseUnits(amount, 'ether'); // Adjust the amount accordingly
-    const taskPriceAmount = ethers.utils.parseUnits(taskPrice, 'ether');
+    const allowanceAmount = ethers.parseUnits(amount, 'ether'); // Adjust the amount accordingly
+    const taskPriceAmount = ethers.parseUnits(taskPrice, 'ether');
     const currentWalletAddress = await this.signer.getAddress();
     const allowance = await this.ecldContract.allowance(currentWalletAddress, protocolAddress);
     console.log(`initial allowance: ${allowance}`);
     // check if the current allowance is lower than allowanceAmount or taskPriceAmount
     // in this case we should add more tokens
-    if (allowance.lt(taskPriceAmount)) {
+    if (allowance < taskPriceAmount) {
       const approveTx = await this.ecldContract.approve(protocolAddress, allowanceAmount);
       try {
         await approveTx.wait();
@@ -104,7 +92,7 @@ class EcldContract {
   }
 
   async approve(tokens) {
-    const allowanceAmount = ethers.utils.parseUnits(tokens, 'ether'); // Adjust the amount accordingly
+    const allowanceAmount = ethers.parseUnits(tokens, 'ether'); // Adjust the amount accordingly
     const address = await this.signer.getAddress();
     return this.ecldContract.approve(address, allowanceAmount);
   }
@@ -114,7 +102,7 @@ class EcldContract {
       const address = await this.signer.getAddress();
       const balance = await this.ecldContract.balanceOf(address);
       // convert a currency unit from wei to ether
-      return ethers.utils.formatEther(balance);
+      return ethers.formatEther(balance);
     } catch (ex) {
       console.log(ex);
       return 0;

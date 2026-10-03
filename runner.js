@@ -1,4 +1,3 @@
-import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
 import {
   delay,
@@ -195,7 +194,7 @@ class EthernityCloudRunner extends EventTarget {
     let chainId;
     try {
       const net = await provider.getNetwork();
-      chainId = net && net.chainId;
+      chainId = net && Number(net.chainId);
     } catch (e) {
       if (provisional) throw e;
       return; // fall back to whatever initializeContracts() resolved
@@ -445,41 +444,49 @@ class EthernityCloudRunner extends EventTarget {
     return { success: true };
   };
 
+  // The revert reason of a mined transaction: its call replayed at its block.
   // eslint-disable-next-line class-methods-use-this
   async getReason(contract, txHash) {
-    const tx = await contract.getProvider().getTransaction(txHash);
+    const provider = contract.getProvider();
+    const tx = await provider.getTransaction(txHash);
     if (!tx) {
-      //console.log('tx not found');
       return 'Transaction hash not found';
     }
-    delete tx.gasPrice;
-    const code = await contract.getProvider().call(tx, tx.blockNumber);
-    const reason = ethers.utils.toUtf8String(`0x${code.substring(138)}`);
-    //console.log(reason);
-    return reason.trim();
+    try {
+      await provider.call({ to: tx.to, from: tx.from, data: tx.data, value: tx.value, blockTag: tx.blockNumber });
+      return '';
+    } catch (e) {
+      return (e.reason || e.shortMessage || e.message || '').trim();
+    }
   }
 
-  // eslint-disable-next-line class-methods-use-this
+  // Waits for `tx` to be mined and returns { receipt, result }, result being
+  // the arguments of the protocolEvent it emitted. A reverted or replaced
+  // transaction ends the wait with an error; any other failure is the
+  // provider not answering yet, and the wait goes on.
   async waitForTransactionToBeProcessed(tx, protocolEvent) {
     while (true) {
+      let txReceipt;
       try {
         this.dispatchECEvent(`TX:` + inspect(tx), ECLog.DEBUG);
-        const txReceipt = await tx.wait();
-        this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
-  
-        const events = txReceipt.events.find(event => event.event === protocolEvent);
-        this.dispatchECEvent(`EVENTS:` + inspect(events), ECLog.DEBUG);
-        txReceipt.result = events.args;
-
-        return txReceipt;
-      }
-      catch (e) {
-        if (e.message.includes('transaction failed')) {
-          throw new Error(e.message);
+        txReceipt = await tx.wait();
+      } catch (e) {
+        if (e.code === 'CALL_EXCEPTION' || e.code === 'TRANSACTION_REPLACED') {
+          throw new Error(e.shortMessage || e.message);
         }
         this.dispatchECEvent('Transaction not confirmed yet: ' + e.message, ECLog.WARNING);
         await delay(1000);
+        continue;
       }
+      this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
+      // A contract transaction's receipt carries its own contract's logs
+      // decoded, with eventName and args.
+      const event = txReceipt.logs.find((log) => log.eventName === protocolEvent);
+      if (!event) {
+        throw new Error(`transaction ${txReceipt.hash} emitted no ${protocolEvent}`);
+      }
+      this.dispatchECEvent(`EVENTS:` + inspect(event.args), ECLog.DEBUG);
+      return { receipt: txReceipt, result: event.args };
     }
   }
 
@@ -552,12 +559,9 @@ class EthernityCloudRunner extends EventTarget {
           resolve(true);
         }
       };
-      try {
-        protocolContract.on('_orderClosedEV', closedHandler);
-      } catch (e) {
+      protocolContract.on('_orderClosedEV', closedHandler).catch((e) => {
         this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
-        closedHandler = null;
-      }
+      });
     });
 
     // POLL FALLBACK at a relaxed cadence: covers cancelled/other terminal
@@ -598,9 +602,7 @@ class EthernityCloudRunner extends EventTarget {
       // If the event won, the poll task keeps one in-flight iteration; swallow
       // a late deadline rejection so it can't surface as unhandled.
       viaPoll.catch(() => {});
-      if (closedHandler) {
-        try { protocolContract.off('_orderClosedEV', closedHandler); } catch (e) { /* already gone */ }
-      }
+      protocolContract.off('_orderClosedEV', closedHandler).catch(() => { /* already gone */ });
     }
   }
 
@@ -748,7 +750,7 @@ class EthernityCloudRunner extends EventTarget {
         throw new Error(`Refusing to submit DO request: code IPFS hash is "${_codeParts[1]}" (upload failed).`);
       }
 
-      this.ordersOffset = await this.protocolContract.getContract()._getOrdersCount();
+      this.ordersOffset = Number(await this.protocolContract.getContract()._getOrdersCount());
 
       this.progress = ECEvent.SENDING;
 
@@ -795,27 +797,25 @@ class EthernityCloudRunner extends EventTarget {
     // _dpRequestId) and resolve the moment OUR request's order is placed --
     // push-based and near-instant. The event has no indexed params, so we
     // subscribe to all placements and match the request id in the handler.
-    let eventHandler = null;
     let resolveFound;
     const viaEvent = new Promise((resolve) => { resolveFound = resolve; });
-    eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
+    const eventHandler = (orderNumber, doRequestId, _dpRequestId) => {
       if (parseInt(doRequestId) === doReq) {
         this.dispatchECEvent(`_orderPlacedEV: order ${orderNumber} for request ${doReq}`, ECLog.DEBUG);
         resolveFound(parseInt(orderNumber));
       }
     };
-    try {
-      protocolContract.on('_orderPlacedEV', eventHandler);
-    } catch (e) {
+    let subscribed = true;
+    protocolContract.on('_orderPlacedEV', eventHandler).catch((e) => {
+      subscribed = false;
       this.dispatchECEvent(`Event subscription unavailable (${e.message}); relying on polling`, ECLog.DEBUG);
-      eventHandler = null;
-    }
+    });
 
     // CATCH-UP: one log query over the recent past covers the race where the
     // placement fired before the listener attached -- no struct scanning.
     (async () => {
       try {
-        const current = await protocolContract.provider.getBlockNumber();
+        const current = await this.protocolContract.getProvider().getBlockNumber();
         const filter = protocolContract.filters._orderPlacedEV();
         const logs = await protocolContract.queryFilter(filter, Math.max(0, current - 300), current);
         for (const lg of logs) {
@@ -836,13 +836,13 @@ class EthernityCloudRunner extends EventTarget {
     const POLL_GRACE_MS = 30000;
     let stopPolling = false;
     const viaPoll = (async () => {
-      const graceEnd = eventHandler ? Date.now() + POLL_GRACE_MS : 0;
-      while (!stopPolling && Date.now() < graceEnd) {
+      const graceEnd = Date.now() + POLL_GRACE_MS;
+      while (!stopPolling && subscribed && Date.now() < graceEnd) {
         await delay(500);
       }
       while (!stopPolling) {
         try {
-          const ordersCount = await protocolContract._getOrdersCount();
+          const ordersCount = Number(await protocolContract._getOrdersCount());
           this.dispatchECEvent(`Orders count: ${ordersCount}`, ECLog.DEBUG);
           for (let i = ordersCount - 1; i >= this.ordersOffset; i--) {
             if (stopPolling) return -1;
@@ -870,9 +870,7 @@ class EthernityCloudRunner extends EventTarget {
       return true;
     } finally {
       stopPolling = true;
-      if (eventHandler) {
-        try { protocolContract.off('_orderPlacedEV', eventHandler); } catch (e) { /* already gone */ }
-      }
+      protocolContract.off('_orderPlacedEV', eventHandler).catch(() => { /* already gone */ });
     }
   }
 
@@ -917,16 +915,17 @@ class EthernityCloudRunner extends EventTarget {
   // enclave signature over another order, contract or chain proves nothing
   // about this order. A chain id of 0 is a pre-EIP-155 signature.
   async resultBindingError(transactionResult) {
-    if (!ethers.BigNumber.from(transactionResult.orderId).eq(this.orderId)) {
+    if (BigInt(transactionResult.orderId) !== BigInt(this.orderId)) {
       return `the result transaction is for order ${transactionResult.orderId}`;
     }
-    const protocol = this.protocolContract.getContract().address;
+    const protocol = this.protocolContract.getContract().target;
     if (!transactionResult.to || transactionResult.to.toLowerCase() !== protocol.toLowerCase()) {
       return `the result transaction is addressed to ${transactionResult.to || 'no contract'}, not ${protocol}`;
     }
     const { chainId } = await this.protocolContract.getProvider().getNetwork();
-    if (transactionResult.chainId !== 0 && transactionResult.chainId !== chainId) {
-      return `the result transaction is signed for chain ${transactionResult.chainId}`;
+    const signedFor = BigInt(transactionResult.chainId);
+    if (signedFor !== 0n && signedFor !== chainId) {
+      return `the result transaction is signed for chain ${signedFor}`;
     }
     return null;
   }
@@ -1028,42 +1027,6 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
-  async getProofDetails(endBlockNumber = this.protocolContract.getProvider().getBlockNumber()) {
-      // get the original input transaction hash and the output transaction hash for the order
-      const transaction = await this.protocolContract.getProvider().getTransaction(this.doHash);
-      const startBlockNumber = await this.protocolContract.getProvider().getBlock(transaction.blockNumber);
-      const startblockTimestamp = startBlockNumber.timestamp;
-
-      let resultBlockNumber;
-      let resultTransactionHash;
-      let resultBlockTimestamp;
-
-      // eslint-disable-next-line no-plusplus
-      for (let i = endBlockNumber; i >= startBlockNumber; i--) {
-      /// eslint-disable-next-line no-await-in-loop
-        const block = await this.protocolContract.getProvider().getBlockWithTransactions(i);
-        // eslint-disable-next-line no-continue
-        if (!block || !block.transactions) continue;
-
-        // eslint-disable-next-line no-restricted-syntax
-        for (const transaction of block.transactions) {
-          if (transaction.to === this.protocolContract.contractAddress() && transaction.data) {
-            resultBlockNumber = transaction.blockNumber;
-            resultTransactionHash = transaction.hash;
-            resultBlockTimestamp = block.timestamp;
-          }
-        }
-      }
-
-      return {
-        inputTransactionHash: this.doHash,
-        inputTimestamp: startblockTimestamp,
-        inputBlockNumber: startblockNumber,
-        outputTransactionHash: outputTransactionHash,
-        outputBlockTimestamp: resultBlockTimestamp,
-        outputBlockNumber: resultBlockNumber,
-      }
-  }
   async getResult() {
     return this.result;
   }
@@ -1342,7 +1305,7 @@ class EthernityCloudRunner extends EventTarget {
   cleanup = async () => {
     this.reset();
     const contract = this.protocolContract.getContract();
-    contract.removeAllListeners();
+    await contract.removeAllListeners();
   };
 
   isNodeOperatorAddress = async (nodeAddress) => {

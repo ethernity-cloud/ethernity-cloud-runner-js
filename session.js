@@ -207,7 +207,7 @@ export class EthernityCloudSession {
     const message = `etny-so|${this.orderId}|${seq}|${ack}|${status}|${code}|${cid}|${shaHex}`;
     let signer;
     try {
-      signer = ethers.utils.verifyMessage(message, sig);
+      signer = ethers.verifyMessage(message, sig);
     } catch (e) {
       this.runner.dispatchECEvent(`Session output ${seq}: bad signature encoding`, 2);
       return null;

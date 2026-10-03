@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import contract from '../abi/polygonProtocolAbi.js';
+import { contractRunners } from '../../walletContext.js';
 
 // process.env is undefined in non-React browser bundles; guard so the module
 // loads there and the gas params fall back to their defaults.
@@ -19,13 +20,7 @@ class PolygonProtocolContract {
   constructor(networkAddress, walletContext = null) {
     console.log('Polygon protocol address: ', networkAddress);
     this.networkAddress = networkAddress;
-    if (walletContext && walletContext.provider) {
-      this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
-    } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
-    }
+    ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.protocolContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.protocolContractWithProvider = new ethers.Contract(contract.address, contract.abi, this.provider);
   }

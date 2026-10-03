@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import contract from '../abi/etnyAbi.js';
+import { contractRunners } from '../../walletContext.js';
 
 class BloxbergProtocolContract {
   etnyContract = null;
@@ -11,13 +12,7 @@ class BloxbergProtocolContract {
   signer = null;
 
   constructor(networkAddress, walletContext = null) {
-    if (walletContext && walletContext.provider) {
-      this.provider = walletContext.provider;
-      this.signer = walletContext.signer || (this.provider.getSigner && this.provider.getSigner());
-    } else {
-      this.provider = new ethers.providers.Web3Provider(window.ethereum);
-      this.signer = this.provider.getSigner();
-    }
+    ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
