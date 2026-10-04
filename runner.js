@@ -264,6 +264,8 @@ class EthernityCloudRunner extends EventTarget {
     this.fileSetHash = '';
     this.taskHasBeenPickedForApproval = false;
     this.getResultFromOrderRepeats = 1;
+    this.orderDeadline = undefined;
+    this.resultDeadline = undefined;
     this.secureLockEnclave = null;
     this.trustedZoneImage = null;
     this.runTrustedZoneImage = null;
@@ -593,6 +595,8 @@ class EthernityCloudRunner extends EventTarget {
     // the order will never leave PROCESSING on its own.
     const durationHours = (this.resources && this.resources.duration) || 1;
     const deadline = Date.now() + (durationHours * 3600 + 900) * 1000;
+    // The result read is bounded by the same deadline (getResultFromOrder).
+    this.orderDeadline = deadline;
     const protocolContract = this.protocolContract.getContract();
     const orderId = parseInt(this.orderId);
 
@@ -973,7 +977,17 @@ class EthernityCloudRunner extends EventTarget {
     return null;
   }
 
+  // The result is read until the order's deadline, which waitforTaskToBeProcessed
+  // set, and for at least two minutes after the order closed: a result pinned
+  // at close may take that long to reach the endpoint read from.
+  resultReadDeadline() {
+    return Math.max(this.orderDeadline || 0, Date.now() + 120000);
+  }
+
   async getResultFromOrder() {
+    if (this.resultDeadline === undefined) {
+      this.resultDeadline = this.resultReadDeadline();
+    }
     try {
       // get the result of the order using the `etnyContract` object
       this.progress = ECEvent.DOWNLOADING;
@@ -1014,7 +1028,7 @@ class EthernityCloudRunner extends EventTarget {
       }
 
       // get the result value from IPFS using the `parsedOrderResult.resultIPFSHash`
-      const ipfsResult = await ipfsClient.getFromIPFS(parsedOrderResult.resultIPFSHash);
+      const ipfsResult = await ipfsClient.getFromIPFS(parsedOrderResult.resultIPFSHash, this.resultDeadline);
       // decrypt data
       this.dispatchECEvent(`Validating proof...`);
       const currentWalletAddress = this.tokenContract.getCurrentWallet();
@@ -1062,6 +1076,12 @@ class EthernityCloudRunner extends EventTarget {
       }
       if (ex.message === ECError.IPFS_DOWNLOAD_ERROR) {
         return { success: false, operatorFault: true, message: 'Ethernity IPFS download result error.' };
+      }
+      // A chain read or a decryption that threw: asked again until the same
+      // deadline the IPFS read runs on, then given up as a result that could
+      // not be read, which is not the operator's doing.
+      if (Date.now() >= this.resultDeadline) {
+        return { success: false, message: `The result could not be read before the order's deadline: ${ex.message}` };
       }
       await delay(5000);
       this.getResultFromOrderRepeats += 1;
@@ -1342,6 +1362,8 @@ class EthernityCloudRunner extends EventTarget {
     this.fileSetHash = '';
     this.interval = null;
     this.getResultFromOrderRepeats = 1;
+    this.orderDeadline = undefined;
+    this.resultDeadline = undefined;
     this.taskHasBeenPickedForApproval = false;
   };
 

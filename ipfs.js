@@ -1,11 +1,7 @@
 import { create } from 'ipfs-http-client';
 import { ethers } from 'ethers';
-import { delay, getRetryDelay } from './utils.js';
+import { delay } from './utils.js';
 import { ECError } from './enums.js';
-
-// process.env is undefined in non-React browser bundles; guard so the module
-// loads there and falls back to the default retry count.
-const env = typeof process !== 'undefined' && process.env ? process.env : {};
 
 let ipfs = null;
 
@@ -169,58 +165,61 @@ export const flushPending = async (doRequest, attempts = 3, delayMs = 5000) => {
   }
 };
 
-// export const getFromIPFS = async (hash) => {
-//   let res = '';
-//   try {
-//     // eslint-disable-next-line no-restricted-syntax
-//     for await (const file of ipfs.cat(hash)) {
-//       res += new TextDecoder().decode(file.buffer);
-//     }
-//
-//     return res;
-//   } catch (error) {
-//     console.error(error.message);
-//     await delay(2000);
-//     return getFromIPFS(hash);
-//   }
-// };
+// One read request is given this long before it is abandoned and the next
+// endpoint tried.
+export const READ_TIMEOUT_MS = 60000;
+// The public gateway a result is read from when the configured endpoint does
+// not answer; it is a mirror of the same content, reached without credentials.
+const PUBLIC_GATEWAY = 'https://ipfs.io/ipfs';
 
-const catFromIntakeApi = async (hash) => {
-  const response = await fetch(`${intake.baseUrl}/api/v0/cat?arg=${hash}`, { method: 'POST' });
-  if (response.status !== 200) {
-    throw new Error(`cat ${hash}: ${response.status}`);
+const fetchText = async (url, init) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (response.status !== 200) {
+      throw new Error(`${url}: ${response.status}`);
+    }
+    return await response.text();
+  } finally {
+    clearTimeout(timer);
   }
-  return response.text();
 };
 
-export const getFromIPFS = async (hash, maxRetries = env.REACT_APP_IPFS_RETRIES || 100) => {
+// The configured endpoint: the intake's read API, or the application's own
+// Kubo RPC through the client `initialize` built.
+const catConfigured = async (hash) => {
+  if (intake) {
+    return fetchText(`${intake.baseUrl}/api/v0/cat?arg=${hash}`, { method: 'POST' });
+  }
   let res = '';
-  let retryCount = 0;
+  // eslint-disable-next-line no-restricted-syntax
+  for await (const file of ipfs.cat(hash, { timeout: READ_TIMEOUT_MS })) {
+    res += new TextDecoder().decode(file.buffer);
+  }
+  return res;
+};
 
-  while (retryCount < maxRetries) {
-    try {
-      if (intake) {
+// Read a blob: the configured endpoint first, the public gateway second, each
+// request bounded by READ_TIMEOUT_MS, the whole read by `deadline` (a
+// Date.now() value) with at least one round. Throws ECError.IPFS_DOWNLOAD_ERROR
+// once the deadline has passed with no answer.
+export const getFromIPFS = async (hash, deadline = Date.now() + 10 * 60 * 1000) => {
+  let last = '';
+  for (;;) {
+    for (const read of [catConfigured, (h) => fetchText(`${PUBLIC_GATEWAY}/${h}`)]) {
+      try {
         // eslint-disable-next-line no-await-in-loop
-        return await catFromIntakeApi(hash);
-      }
-      // eslint-disable-next-line no-restricted-syntax,no-await-in-loop
-      for await (const file of ipfs.cat(hash)) {
-        res += new TextDecoder().decode(file.buffer);
-      }
-
-      return res;
-    } catch (error) {
-      console.error(error.message);
-      retryCount += 1;
-
-      if (retryCount < maxRetries) {
-        // eslint-disable-next-line no-await-in-loop
-        await delay(1000);
-        // eslint-disable-next-line no-continue
-        continue;
-      } else {
-        throw new Error(ECError.IPFS_DOWNLOAD_ERROR);
+        return await read(hash);
+      } catch (error) {
+        last = error.message;
       }
     }
+    if (Date.now() >= deadline) {
+      console.error(`could not read ${hash} before the deadline: ${last}`);
+      throw new Error(ECError.IPFS_DOWNLOAD_ERROR);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await delay(5000);
   }
 };

@@ -224,7 +224,9 @@ export class EthernityCloudSession {
     // 'ok' rows carry the reply; 'error' rows carry an encrypted explanation
     // of why the input was not processed -- fetch both.
     try {
-      const content = await ipfsClient.getFromIPFS(cid);
+      // One round over the endpoints: the row is polled again anyway, so a
+      // payload not yet reachable is reported now rather than waited for.
+      const content = await ipfsClient.getFromIPFS(cid, Date.now());
       if (sha256(content) !== shaHex) {
         this.runner.dispatchECEvent(
           `Session output ${seq}: content does not match the signed digest -- DISCARDING`, 2);

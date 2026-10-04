@@ -225,3 +225,7 @@ const runner = new EthernityCloudRunner(
 ### Wallet options
 
 The second constructor argument chooses the wallet: `{ privateKey, rpcUrl }` signs with a raw key on the network's RPC (or `rpcUrl`); `{ signer }` and/or `{ provider }` use a wallet you already hold; with neither, the runner uses the browser wallet at `window.ethereum`. `encryptionPublicKey` (hex) supplies the key results are encrypted to when the wallet cannot answer `eth_getEncryptionPublicKey`. The runner is built on ethers 6, so a `signer` or `provider` you pass must be an ethers 6 object; with a provider alone, the runner asks it for its account the first time it needs one.
+
+### Storage and the result read
+
+Uploads go to the IPFS API given to `initializeStorage`, or, with `initializePublicIntake()`, are computed locally and delivered to the bootnode's payload intake once the DO request is on chain. A result is read from the configured endpoint first and from the public gateway `https://ipfs.io` second, without credentials; each request is abandoned after 60 seconds, and the read is repeated until the order's deadline (its duration plus 15 minutes, and at least two minutes after it closed) before the task is reported as `IPFS download result error`.
