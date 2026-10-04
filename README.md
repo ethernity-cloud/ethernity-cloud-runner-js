@@ -171,7 +171,7 @@ After `ECStatus.SUCCESS`, call `await runner.getResult()` to obtain the decrypte
 ```
 The `resources` parameter is the **first** argument to the `run` method and is an object that defines the resource requirements for executing a new task using the Python/Node.js template. It specifies the amount of various resources needed for the task to be processed on the EthernityCloud network. The `resources` object contains the following properties:
 
-1. `taskPrice`: This represents the price in tETNY that a user is willing to pay for the task execution. It determines the priority and readiness of the task for processing.
+1. `taskPrice`: the most the user pays per hour of the task, in whole tokens (tETNY on bloxberg). A node takes the order when this covers its own price plus the fees the network adds to it: 5% for Ethernity, 2% for the validator, and the publishers' fees of the two images the task runs with (the trustedzone template's, 10% unless its publisher set another, and the securelock's, 0 unless its publisher set one), so a node asking 1 token is taken from a price of 2 with the default fees.
 
 2. `cpu`: This specifies the amount of CPU (Central Processing Unit) resources required for the task. It indicates the computational power needed to execute the task's code.
 
