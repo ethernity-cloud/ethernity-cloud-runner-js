@@ -97,9 +97,8 @@ const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) =
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
-// Fallback IPFS endpoint used when the app did not call initializeStorage()
-// before run(); prevents "Cannot read properties of null (reading 'add')".
-// Plain HTTPS on the default port (443), no custom port.
+// The public API a run on a network without an agent network name uses when
+// the app configured no storage before run() (initializeDefaultStorage).
 const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud';
 
 class EthernityCloudRunner extends EventTarget {
@@ -1405,6 +1404,21 @@ class EthernityCloudRunner extends EventTarget {
     ipfsClient.initializeIntake(network, baseUrl);
   }
 
+  // The storage a run uses when the application configured none before run():
+  // the bootnode's payload intake on a network with an agent network name,
+  // else the public API, whose add is closed to callers without a token
+  // (ethernity-cas TESTNET-HARDENING-PLAN M4). An initializeStorage() or
+  // initializePublicIntake() call before run() takes precedence. Called once
+  // the network context is resolved, which the intake's network name needs.
+  initializeDefaultStorage() {
+    if (ipfsClient.isInitialized()) return;
+    if (this.networkConfig && this.networkConfig.agentNetwork) {
+      this.initializePublicIntake();
+    } else {
+      this.initializeStorage(DEFAULT_IPFS_ADDRESS);
+    }
+  }
+
   // use this in order to reset the instance and have a new runner
   static resetInstance() {
     EthernityCloudRunner.instance = null;
@@ -1511,10 +1525,8 @@ class EthernityCloudRunner extends EventTarget {
     this._runInFlight = true;
     try {
       this.resources = resources;
-      if (!ipfsClient.isInitialized()) {
-        this.initializeStorage(DEFAULT_IPFS_ADDRESS);
-      }
       await this.resolveNetworkContext();
+      this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
@@ -1610,15 +1622,10 @@ class EthernityCloudRunner extends EventTarget {
       // maxRetries times; failures caused by the submitted code never retry.
       this.maxTaskRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2;
       this.taskRetryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 30000;
-      // If the app never configured storage, fall back to the default IPFS
-      // endpoint so the challenge/code upload doesn't fail with a null client.
-      // An explicit initializeStorage() call before run() takes precedence.
-      if (!ipfsClient.isInitialized()) {
-        this.initializeStorage(DEFAULT_IPFS_ADDRESS);
-      }
       // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
       // live provider before any contract call depends on the PoX address.
       await this.resolveNetworkContext();
+      this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
       await this.verifyNodeAddress(nodeAddress);
