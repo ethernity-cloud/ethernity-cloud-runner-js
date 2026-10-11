@@ -97,9 +97,6 @@ const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) =
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
-// The public API a run on a network without an agent network name uses when
-// the app configured no storage before run() (initializeDefaultStorage).
-const DEFAULT_IPFS_ADDRESS = 'https://ipfs.ethernity.cloud';
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
@@ -253,6 +250,7 @@ class EthernityCloudRunner extends EventTarget {
   resetState() {
     this.nodeAddress = '';
     this.challengeHash = '';
+    this.challengeIPFSHash = '';
     this.publicKey = '';
     this.orderId = -1;
     this.order = null;
@@ -712,49 +710,27 @@ class EthernityCloudRunner extends EventTarget {
     // generating encrypted base64 hash of the challenge
     const base64EncryptedChallenge = await encryptWithCertificate(challengeHash, this.enclavePublicKey);
 
-    // uploading to IPFS the base64 encrypted challenge
-    const challengeIPFSHash = await ipfsClient.uploadToIPFS(base64EncryptedChallenge);
-
-    // The challenge hash is a REQUIRED field of the DO-request metadata. If the
-    // IPFS upload failed we must NOT build a request with a null/empty hash: it
-    // serializes on-chain as the literal "null", the node cannot fetch it, the
-    // (already paid) order gets cancelled, and the task never completes. Abort
-    // here instead so no gas is spent on a doomed request.
-    if (!challengeIPFSHash || challengeIPFSHash === 'null') {
-      throw new Error(
-        'Failed to upload the challenge to IPFS (got no hash). Aborting before submitting the request. ' +
-        'Check IPFS connectivity.'
-      );
-    }
-
-    this.dispatchECEvent(`Uploaded challenge to IPFS: ${challengeIPFSHash}`);
+    // The encrypted challenge's CID through the configured storage; uploadToIPFS
+    // throws when the storage does not take it, so the request is never built
+    // without one.
+    this.challengeIPFSHash = await ipfsClient.uploadToIPFS(base64EncryptedChallenge);
+    this.dispatchECEvent(`Encrypted challenge: ${this.challengeIPFSHash}`);
 
     const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
     // image metadata for v3 format v3:image_ipfs_hash:trustedzone_name:docker_compose_ipfs_hash:client_challenge_ipfs_hash:public_key
     // The trustedzone named here is the one whose certificate sealed the challenge.
     return `${VERSION}:${this.enclaveImageIPFSHash}:${this.resolveTrustedZoneImage()}:${
       this.enclaveDockerComposeIPFSHash
-    }:${challengeIPFSHash}:${publicKey}`;
+    }:${this.challengeIPFSHash}:${publicKey}`;
   }
 
   async getV3CodeMetadata(code) {
     // extracting code from all the code cells
     let scriptChecksum = sha256(code);
-    // uploading all node js code to IPFS and received hash of transaction
+    // The encrypted code's CID through the configured storage.
     const base64EncryptedScript = await encryptWithCertificate(code, this.enclavePublicKey);
     this.scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
-
-    // The payload (code) hash is REQUIRED -- it is the program the enclave
-    // executes. As with the challenge, refuse to build/submit a request if the
-    // upload produced no hash (see getV3ImageMetadata for the full rationale).
-    if (!this.scriptHash || this.scriptHash === 'null') {
-      throw new Error(
-        'Failed to upload the task code to IPFS (got no hash). Aborting before submitting the request. ' +
-        'Check IPFS connectivity.'
-      );
-    }
-
-    this.dispatchECEvent(`Uploaded encrypted code to IPFS: ${this.scriptHash}`);
+    this.dispatchECEvent(`Encrypted code: ${this.scriptHash}`);
 
     // scriptChecksum = await this.tokenContract.signMessage(scriptChecksum);
     // v3:code_ipfs_hash:code_checksum
@@ -780,24 +756,6 @@ class EthernityCloudRunner extends EventTarget {
 
   createDORequest = async (imageMetadata, codeMetadata, inputMetadata) => {
     try {
-      // Belt-and-suspenders: never submit a (paid) request whose metadata carries
-      // a null/empty required IPFS hash. imageMetadata is
-      //   v3:image:name:compose:challenge:pubkey   (challenge required, index 4)
-      // codeMetadata is
-      //   v3:code:checksum                          (code required, index 1)
-      // inputMetadata is v3::checksum -- the input hash is legitimately optional.
-      // A "null"/empty in a required slot means an upstream upload failed; abort
-      // now so the node never gets a request it cannot fulfill.
-      const _imgParts = String(imageMetadata).split(':');
-      const _codeParts = String(codeMetadata).split(':');
-      const _bad = (h) => !h || h === 'null';
-      if (_bad(_imgParts[4])) {
-        throw new Error(`Refusing to submit DO request: challenge IPFS hash is "${_imgParts[4]}" (upload failed).`);
-      }
-      if (_bad(_codeParts[1])) {
-        throw new Error(`Refusing to submit DO request: code IPFS hash is "${_codeParts[1]}" (upload failed).`);
-      }
-
       this.ordersOffset = Number(await this.protocolContract.getContract()._getOrdersCount());
 
       this.progress = ECEvent.SENDING;
@@ -825,9 +783,9 @@ class EthernityCloudRunner extends EventTarget {
       this.doRequest = requestId;
 
       this.dispatchECEvent(`Request ${this.doRequest} was created successfully.`);
-      // With the public intake, the artefacts named in the request are
-      // delivered now that the request they belong to is on chain.
-      await ipfsClient.flushPending(this.doRequest);
+      // With the intake, the artefacts this request names (its challenge and
+      // code) are delivered now that the request is on chain.
+      await ipfsClient.flushPending(this.doRequest, [this.challengeIPFSHash, this.scriptHash]);
 
       return true;
     } catch (e) {
@@ -1221,7 +1179,11 @@ class EthernityCloudRunner extends EventTarget {
     }
 
     // Miss / stale / forced: run one state-fetch task, cache from its envelope.
+    // The task is submitted as run() submits one: on the resolved network, with
+    // the configured storage or the default.
     const code = readCode || `esrFetch('${key}')`;
+    await this.resolveNetworkContext();
+    this.initializeDefaultStorage();
     await this.processTask(code);
     const structured = this.getStructuredResult();
     const esrAtt = (structured && structured.esr) || null;
@@ -1357,6 +1319,7 @@ class EthernityCloudRunner extends EventTarget {
     this.orderId = -1;
     this.doHash = null;
     this.doRequest = -1;
+    this.challengeIPFSHash = '';
     this.scriptHash = '';
     this.fileSetHash = '';
     this.interval = null;
@@ -1395,28 +1358,40 @@ class EthernityCloudRunner extends EventTarget {
 
   // Upload through the bootnode's payload intake and read through its public
   // API: artefact CIDs are computed locally and the bytes are delivered once
-  // the DO request is on chain. Needs the network descriptor's agentNetwork.
+  // the DO request is on chain. Routed by the network descriptor's
+  // agentNetwork, which only the networks the intake serves carry.
   initializePublicIntake(baseUrl = ipfsClient.PUBLIC_INTAKE) {
     const network = this.networkConfig && this.networkConfig.agentNetwork;
     if (!network) {
-      throw new Error('initializePublicIntake: this network has no agent network name');
+      throw new Error('initializePublicIntake: this network has no payload intake route');
     }
     ipfsClient.initializeIntake(network, baseUrl);
   }
 
   // The storage a run uses when the application configured none before run():
-  // the bootnode's payload intake on a network with an agent network name,
-  // else the public API, whose add is closed to callers without a token
-  // (ethernity-cas TESTNET-HARDENING-PLAN M4). An initializeStorage() or
-  // initializePublicIntake() call before run() takes precedence. Called once
-  // the network context is resolved, which the intake's network name needs.
+  // the bootnode's payload intake, routed by the network descriptor's agent
+  // network name, which only the networks the intake serves carry (enums.js
+  // ECNetworkConfig). On every other network the run is refused here, before
+  // any transaction, until the storage is configured: the application's own
+  // Kubo RPC API, or the public API with its writer token (its add is closed
+  // without one). An initializeStorage() or initializePublicIntake() call
+  // before run() takes precedence. Called once the network context is
+  // resolved, which the intake's network name needs.
   initializeDefaultStorage() {
     if (ipfsClient.isInitialized()) return;
-    if (this.networkConfig && this.networkConfig.agentNetwork) {
-      this.initializePublicIntake();
-    } else {
-      this.initializeStorage(DEFAULT_IPFS_ADDRESS);
+    const cfg = this.networkConfig;
+    if (!(cfg && cfg.agentNetwork)) {
+      const network = cfg && cfg.networkKey
+        ? `${cfg.networkKey} ${cfg.isMainnet ? 'MAINNET' : 'TESTNET'}`
+        : 'This network';
+      throw new Error(
+        `${network} has no payload intake route: configure the storage before submitting a task, with ` +
+          "initializeStorage('http://127.0.0.1:5001') for your own Kubo RPC API, or " +
+          `initializeStorage('${ipfsClient.PUBLIC_INTAKE}', undefined, undefined, token) for the public API ` +
+          'with your writer token.'
+      );
     }
+    this.initializePublicIntake();
   }
 
   // use this in order to reset the instance and have a new runner
@@ -1567,6 +1542,7 @@ class EthernityCloudRunner extends EventTarget {
    */
   async attachSession(orderId, secureLockEnclave = null) {
     await this.resolveNetworkContext();
+    this.initializeDefaultStorage();
     const contract = this.protocolContract.getContract();
     const order = await contract._getOrder(orderId);
     const wallet = this.tokenContract.getCurrentWallet();

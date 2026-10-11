@@ -8,7 +8,7 @@ import { delay } from './utils.js';
  * attachSession(). Wraps one running session order:
  *
  *   const session = await runner.runSession(resources, enclave, code);
- *   const seq = await session.sendInput('hello');   // etny-si row + IPFS
+ *   const seq = await session.sendInput('hello');   // input via storage + etny-si row
  *   const [msg] = await session.waitOutputs(1);     // verified etny-so row
  *   const final = await session.close();            // close row -> summary
  *
@@ -136,8 +136,9 @@ export class EthernityCloudSession {
 
   /* ------------------------------------------------------------------- input */
 
-  /** Encrypt for the enclave, pin to IPFS, commit the etny-si row. Returns
-      the input seq. Refuses when the session cannot answer any more. */
+  /** Encrypt for the enclave, deliver the ciphertext through the configured
+      storage (the bootnode's intake by default), commit the etny-si row.
+      Returns the input seq. Refuses when the session cannot answer any more. */
   async sendInput(data) {
     if (this.closed) throw new SessionError('session is closed');
     if (this.inputSeq >= MAX_SESSION_MESSAGES) {
@@ -152,15 +153,16 @@ export class EthernityCloudSession {
       throw new SessionError('session order is no longer processing');
     }
     const ciphertext = await encryptWithCertificate(String(data), this.runner.enclavePublicKey);
+    // The ciphertext's CID through the configured storage; uploadToIPFS throws
+    // when the storage does not take it.
     const cid = await ipfsClient.uploadToIPFS(ciphertext);
-    if (!cid || cid === 'null') throw new SessionError('could not pin the input to IPFS');
     const digest = sha256(ciphertext);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
     await tx.wait();
-    // With the public intake, the row is on chain now, so the bytes it names
-    // can be delivered.
-    await ipfsClient.flushPending(this.doReq);
+    // With the intake, the row is on chain now, so the input it names is
+    // delivered.
+    await ipfsClient.flushPending(this.doReq, [cid]);
     const seq = this.inputSeq;
     this.inputSeq += 1;
     this.runner.dispatchECEvent(`Session input ${seq} committed (${cid})`);

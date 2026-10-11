@@ -293,6 +293,14 @@ export const ECNetworkName1Dictionary = {
 //   imageRegistry:   { PYNITHY, NODENITHY } on-chain Image Registry addresses.
 //   isMainnet:       production network (CAS attestation, real funds).
 //   networkName:     short name returned by getNetworkName() (chain-id dict).
+//   agentNetwork:    the network's name in the node agent (mvp-pox-node
+//                    config.py), which is its segment of the bootnode's payload
+//                    intake route, POST /payload/<agentNetwork>/<doRequestId>/<cid>.
+//                    Carried only by the networks the public intake serves in
+//                    this release: the Bloxberg testnet. A run on a descriptor
+//                    without it has no default storage and is refused before
+//                    any transaction until initializeStorage() is called
+//                    (runner.initializeDefaultStorage).
 // ---------------------------------------------------------------------------
 export const ECNetworkConfig = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: {
@@ -316,8 +324,7 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'bloxberg',
-    networkKey: 'BLOXBERG',
-    agentNetwork: 'bloxberg_mainnet'
+    networkKey: 'BLOXBERG'
   },
   [ECAddress.POLYGON.MAINNET_ADDRESS]: {
     family: 'ecld',
@@ -328,8 +335,7 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'matic',
-    networkKey: 'POLYGON',
-    agentNetwork: 'polygon_mainnet'
+    networkKey: 'POLYGON'
   },
   [ECAddress.POLYGON.TESTNET_ADDRESS]: {
     family: 'ecld',
@@ -340,8 +346,7 @@ export const ECNetworkConfig = {
     },
     isMainnet: false,
     networkName: 'amoy',
-    networkKey: 'POLYGON',
-    agentNetwork: 'polygon_amoy'
+    networkKey: 'POLYGON'
   }
 };
 

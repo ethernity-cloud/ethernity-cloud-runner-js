@@ -66,7 +66,6 @@ import EthernityCloudRunner from "@ethernity-cloud/runner";
 import { ECRunner, ECStatus, ECAddress } from "@ethernity-cloud/runner/enums";
 
 const executeTask = async () => {
-    const ipfsAddress = 'https://ipfs.ethernity.cloud';
     const code = `___etny_result___("Hello, World!")`;
 
     // Progress updates (encrypting, submitting, matching, downloading, ...).
@@ -88,7 +87,10 @@ const executeTask = async () => {
     // To target another network pass its token address, e.g.
     //   new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS);
     const runner = new EthernityCloudRunner();
-    runner.initializeStorage(ipfsAddress);
+    // On the Bloxberg testnet the task's artefacts are delivered through the
+    // bootnode's payload intake: no storage call is needed. Every other network
+    // needs your own Kubo RPC API, which also replaces the intake here:
+    //   runner.initializeStorage('http://127.0.0.1:5001');
 
     // Events are dispatched named by task status (the ECStatus values).
     runner.addEventListener(ECStatus.DEFAULT, onProgress); // "Running" updates
@@ -222,10 +224,26 @@ const runner = new EthernityCloudRunner(
 );
 ```
 
+In this release the bootnode's payload intake serves the Bloxberg testnet only. On every other network in the table (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX, Sepolia and LitVM) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
+
 ### Wallet options
 
 The second constructor argument chooses the wallet: `{ privateKey, rpcUrl }` signs with a raw key on the network's RPC (or `rpcUrl`); `{ signer }` and/or `{ provider }` use a wallet you already hold; with neither, the runner uses the browser wallet at `window.ethereum`. `encryptionPublicKey` (hex) supplies the key results are encrypted to when the wallet cannot answer `eth_getEncryptionPublicKey`. The runner is built on ethers 6, so a `signer` or `provider` you pass must be an ethers 6 object; with a provider alone, the runner asks it for its account the first time it needs one.
 
 ### Storage and the result read
 
-Uploads go to the IPFS API given to `initializeStorage`, or, with `initializePublicIntake()`, are computed locally and delivered to the bootnode's payload intake once the DO request is on chain. A result is read from the configured endpoint first and from the public gateway `https://ipfs.io` second, without credentials; each request is abandoned after 60 seconds, and the read is repeated until the order's deadline (its duration plus 15 minutes, and at least two minutes after it closed) before the task is reported as `IPFS download result error`.
+A task's artefacts (the encrypted challenge and code, and a session's inputs) are delivered through the bootnode's payload intake by default: the runner computes their CIDs locally and, once the DO request is on chain, POSTs the bytes to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>`, which takes no token. The intake serves the networks the bootnode's agent runs, and the runner routes to it only the Bloxberg testnet in this release: on every other network (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX, Sepolia and LitVM) `run()` fails before any transaction is sent, until a storage is configured. On the Bloxberg testnet, `runner.initializePublicIntake(baseUrl)` selects the intake explicitly, at another base URL when needed.
+
+`initializeStorage` delivers through an IPFS API of your own instead, as a URL or as host, protocol and port, and takes precedence over the intake:
+
+```javascript
+// Your own Kubo RPC API.
+runner.initializeStorage('http://127.0.0.1:5001');
+// The same, by host.
+runner.initializeStorage('127.0.0.1', 'http', 5001);
+// The public API, which answers add and pin with 403 without a writer token.
+// The token is sent as given in the Authorization header of every request.
+runner.initializeStorage('https://ipfs.ethernity.cloud', undefined, undefined, writerToken);
+```
+
+A result is read from the configured endpoint first and from the public gateway `https://ipfs.io` second, without credentials; each request is abandoned after 60 seconds, and the read is repeated until the order's deadline (its duration plus 15 minutes, and at least two minutes after it closed) before the task is reported as `IPFS download result error`.

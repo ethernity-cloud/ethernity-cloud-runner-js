@@ -10,39 +10,27 @@ let ipfs = null;
 // POST {intake}/payload/<network>/<doRequestId>/<cid> once the DO request is
 // on chain (mvp-pox-node ipfs_intake.py). Reads go to {intake}/api/v0.
 let intake = null;
-// cid -> Uint8Array awaiting delivery to the intake.
+// cid -> Uint8Array awaiting delivery to the intake. The queue is shared by
+// every runner instance of the process; flushPending delivers only the CIDs
+// its caller names, so one request's blobs never go out under another's id.
 const pending = new Map();
 
 export const PUBLIC_INTAKE = 'https://ipfs.ethernity.cloud';
 
-// Lets the runner detect whether a storage endpoint was already configured
-// (via initializeStorage or initializeIntake) so it can fall back to a default
-// instead of calling ipfs.add on a null client.
+// Whether a storage endpoint is configured (initialize or initializeIntake).
 export const isInitialized = () => ipfs !== null || intake !== null;
 
+// The application's own Kubo RPC API, as a URL (`http://127.0.0.1:5001`) or as
+// host, protocol and port. A non-empty `token` is sent as given in the
+// Authorization header of every request, so a "Bearer " prefix is the caller's
+// choice; the public API's add and pin answer 403 without a writer token.
 export const initialize = (host, protocol, port, token) => {
   intake = null;
+  const headers = token ? { authorization: token } : undefined;
   if (host.search('http') !== -1) {
-    ipfs = create(host);
-  } else if (token === '') {
-    ipfs = create({
-      host,
-      protocol,
-      port
-    });
+    ipfs = create({ url: host, headers });
   } else {
-    // example of authorization headers
-    // headers: {
-    //     authorization: 'Bearer ' + TOKEN
-    //   }
-    // const auth =
-    //     'Basic ' + Buffer.from(INFURA_ID + ':' + INFURA_SECRET_KEY).toString('base64');
-    ipfs = create({
-      host,
-      protocol,
-      port,
-      headers: { authorization: token }
-    });
+    ipfs = create({ host, protocol, port, headers });
   }
 };
 
@@ -87,11 +75,19 @@ export const cidv1Raw = (bytes) => {
 
 const toBytes = (data) => (data instanceof Uint8Array ? data : ethers.toUtf8Bytes(String(data)));
 
-// An add the API does not answer within `timeoutMs` is aborted and retried
-// `attempts` times; without the bound an unanswered add held the run with no
-// DO request placed. The bound is an abort signal: ipfs-http-client sends a
-// per-call `timeout` option to the server as a query parameter instead of
-// applying it to the request.
+// The HTTP status an ipfs-http-client error carries (ipfs-utils HTTPError), or
+// undefined for a failure with no response.
+const responseStatus = (e) => e && e.response && e.response.status;
+
+// The CID of `code` through the configured storage: queued for the intake, or
+// added to the Kubo RPC API. An add the API does not answer within `timeoutMs`
+// is aborted and retried `attempts` times. The bound is an abort signal:
+// ipfs-http-client sends a per-call `timeout` option to the server as a query
+// parameter instead of applying it to the request. A 401 or 403 ends the
+// attempts at once: the API refuses this caller, which the same request cannot
+// change. Always returns a CID or throws: callers interpolate the CID into the
+// on-chain DO-request metadata, and the request must not be submitted (and paid
+// for) without it.
 export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs = 60000) => {
   if (intake) {
     const bytes = toBytes(code);
@@ -99,12 +95,6 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
     pending.set(cid, bytes);
     return cid;
   }
-  // NOTE: this MUST NOT silently return null on failure. Callers interpolate the
-  // returned hash into the on-chain DO-request metadata; a null there gets
-  // serialized as the literal string "null", the node then can't fetch it,
-  // cancels the (already paid) order, and the task can never complete. Throw so
-  // the caller aborts BEFORE submitting the request. Also validate the response
-  // actually contains a path.
   let last = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
@@ -114,6 +104,14 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
       if (response && response.path) return response.path;
       last = new Error('IPFS add returned no path');
     } catch (e) {
+      const status = responseStatus(e);
+      if (status === 401 || status === 403) {
+        throw new Error(
+          `uploadToIPFS: the IPFS API refused the add (${status}). Its add takes a writer token, the token ` +
+            "parameter of initializeStorage(); without one, deliver through the bootnode's intake " +
+            "(initializePublicIntake()) or your own Kubo RPC API (initializeStorage('http://127.0.0.1:5001'))."
+        );
+      }
       last = controller.signal.aborted ? new Error(`no answer within ${timeoutMs} ms`) : e;
     } finally {
       clearTimeout(timer);
@@ -123,13 +121,19 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
   throw new Error(`uploadToIPFS: upload failed after ${attempts} attempts: ${last?.message || last}`);
 };
 
-// Deliver every queued blob to the intake for `doRequest`. A blob the intake
+// Deliver the queued blobs `cids` names to the intake for `doRequest`: the
+// artefacts that request carries, which its caller uploaded. A blob the intake
 // confirms (200) leaves the queue; one it refuses (4xx other than 409) throws
 // at once, since retrying the same bytes cannot change the answer; a network
-// failure or 5xx is retried. No-op without an intake.
-export const flushPending = async (doRequest, attempts = 3, delayMs = 5000) => {
-  if (!intake || pending.size === 0) return;
-  for (const [cid, bytes] of Array.from(pending.entries())) {
+// failure or 5xx is retried. A CID with no queued blob throws: nothing was
+// uploaded through the intake under it. No-op without an intake.
+export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000) => {
+  if (!intake) return;
+  for (const cid of cids) {
+    const bytes = pending.get(cid);
+    if (!bytes) {
+      throw new Error(`flushPending: ${cid} was not uploaded through the intake`);
+    }
     const url = `${intake.baseUrl}/payload/${intake.network}/${doRequest}/${cid}`;
     let last = '';
     let delivered = false;
