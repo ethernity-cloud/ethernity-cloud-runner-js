@@ -234,9 +234,11 @@ export const ECAddress = {
     }
   },
   LITVM: {
-    // LitVM LiteForge reuses the Sepolia-family protocol + registry contracts.
+    // LitVM LiteForge: the PoX is the EthernityImplementationV2 1.1 of
+    // 2026-10-11, the one LitVM's CAS set validates orders on; the token and
+    // the image registry are the Sepolia-family deployments on chain 4441.
     TESTNET_ADDRESS: '0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50',
-    TESTNET_PROTOCOL_ADDRESS: '0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2',
+    TESTNET_PROTOCOL_ADDRESS: '0xE35991de1f2A435e29E70406FA2781b1AffCb168',
     IMAGE_REGISTRY: {
       PYNITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' },
       NODENITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' }
