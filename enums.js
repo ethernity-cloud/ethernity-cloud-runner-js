@@ -239,9 +239,10 @@ export const ECAddress = {
     // the image registry are the Sepolia-family deployments on chain 4441.
     TESTNET_ADDRESS: '0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50',
     TESTNET_PROTOCOL_ADDRESS: '0xE35991de1f2A435e29E70406FA2781b1AffCb168',
+    // The ECImageRegistryV3 of 2026-10-12.
     IMAGE_REGISTRY: {
-      PYNITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' },
-      NODENITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' }
+      PYNITHY: { TESTNET_ADDRESS: '0xAf8Ce29103E1f59feDD49688ff070Ffc2346AF1D' },
+      NODENITHY: { TESTNET_ADDRESS: '0xAf8Ce29103E1f59feDD49688ff070Ffc2346AF1D' }
     }
   }
 };
@@ -299,7 +300,8 @@ export const ECNetworkName1Dictionary = {
 //                    config.py), which is its segment of the bootnode's payload
 //                    intake route, POST /payload/<agentNetwork>/<doRequestId>/<cid>.
 //                    Carried only by the networks the public intake serves in
-//                    this release: the Bloxberg testnet. A run on a descriptor
+//                    this release: the Bloxberg testnet and LitVM LiteForge
+//                    (each with its -unsafe twin). A run on a descriptor
 //                    without it has no default storage and is refused before
 //                    any transaction until initializeStorage() is called
 //                    (runner.initializeDefaultStorage).
@@ -387,7 +389,8 @@ export const ECEcldTestnetConfig = {
     },
     isMainnet: false,
     networkName: 'litvm',
-    networkKey: 'LITVM'
+    networkKey: 'LITVM',
+    agentNetwork: 'litvm_liteforge'
   }
 };
 

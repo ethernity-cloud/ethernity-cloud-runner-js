@@ -16,10 +16,11 @@ const messageMatching = (pattern) => (e) => {
   return true;
 };
 
-test('the Bloxberg testnet is the only network routed to the intake in this release', () => {
+test('the Bloxberg testnet and LitVM LiteForge are the networks routed to the intake in this release', () => {
   const routed = Object.values(ECNetworkConfig).filter((cfg) => cfg.agentNetwork).map((cfg) => cfg.agentNetwork);
   assert.deepEqual(routed, ['bloxberg_testnet']);
-  assert.ok(Object.values(ECEcldTestnetConfig).every((cfg) => cfg.agentNetwork === undefined));
+  const ecld = Object.entries(ECEcldTestnetConfig).filter(([, cfg]) => cfg.agentNetwork).map(([chainId, cfg]) => [chainId, cfg.agentNetwork]);
+  assert.deepEqual(ecld, [['4441', 'litvm_liteforge']]);
 });
 
 // The tests run in this order: the storage module is unconfigured until the
