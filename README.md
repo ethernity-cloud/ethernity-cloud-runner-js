@@ -203,6 +203,8 @@ The network is chosen by passing the network's token contract address (from `ECA
 | Ethereum Sepolia | testnet | 11155111 | `ECAddress.SEPOLIA.TESTNET_ADDRESS` |
 | LitVM LiteForge | testnet | 4441 | `ECAddress.LITVM.TESTNET_ADDRESS` |
 
+A testnet that has an ethernity-cas validator set -- Bloxberg testnet and LitVM LiteForge -- comes in two kinds. The table's entry runs the securelock in an enclave the set attests, on nodes whose platform it can attest (DCAP), and the set validates the order in full, as on mainnet. Beside each is an `-unsafe` network, chosen by name with `await runner.setNetwork('BLOXBERG', 'TESTNET_UNSAFE')` or `('LITVM', 'TESTNET_UNSAFE')`: the same chain and contracts, for hardware SGX platforms the CAS cannot attest (EPID-only, SGX1); its enclaves are debug-signed and self-signed from their measurement, so a result proves which image ran, not that an enclave ran it, and the validators judge such an order without the challenge-derived signer check. Its enclaves are the `*_TESTNET_UNSAFE` entries of `ECRunner` (see "Choosing the trustedzone"). Mainnet has no `-unsafe` network.
+
 ```javascript
 import { ECAddress, ECRunner } from "@ethernity-cloud/runner/enums";
 
@@ -232,7 +234,7 @@ The second constructor argument chooses the wallet: `{ privateKey, rpcUrl }` sig
 
 ### Storage and the result read
 
-A task's artefacts (the encrypted challenge and code, and a session's inputs) are delivered through the bootnode's payload intake by default: the runner computes their CIDs locally and, once the DO request is on chain, POSTs the bytes to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>`, which takes no token. The intake serves the networks the bootnode's agent runs, and the runner routes to it only the Bloxberg testnet in this release: on every other network (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX, Sepolia and LitVM) `run()` fails before any transaction is sent, until a storage is configured. On the Bloxberg testnet, `runner.initializePublicIntake(baseUrl)` selects the intake explicitly, at another base URL when needed.
+A task's artefacts (the encrypted challenge and code, and a session's inputs) are delivered through the bootnode's payload intake by default: the runner computes their CIDs locally and, once the DO request is on chain, POSTs the bytes to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>`, which takes no token. The intake serves the networks the bootnode's agent runs, and the runner routes to it the Bloxberg testnet and LitVM LiteForge, each with its -unsafe twin: on every other network (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX and Sepolia) `run()` fails before any transaction is sent, until a storage is configured. On the Bloxberg testnet, `runner.initializePublicIntake(baseUrl)` selects the intake explicitly, at another base URL when needed.
 
 `initializeStorage` delivers through an IPFS API of your own instead, as a URL or as host, protocol and port, and takes precedence over the intake:
 
