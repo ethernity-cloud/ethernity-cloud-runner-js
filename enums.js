@@ -136,7 +136,8 @@ export const ECNetwork = {
     TESTNET: 'IoTeX TESTNET'
   },
   SEPOLIA: {
-    TESTNET: 'Sepolia TESTNET'
+    TESTNET: 'Sepolia TESTNET',
+    TESTNET_UNSAFE: 'Sepolia TESTNET_UNSAFE'
   },
   LITVM: {
     TESTNET: 'LitVM TESTNET',
@@ -165,7 +166,9 @@ export const ECRunner = {
   },
   SEPOLIA: {
     PYNITHY_RUNNER_TESTNET: 'ecld-pynithy-ethereum-sepolia',
-    NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-ethereum-sepolia'
+    NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-ethereum-sepolia',
+    PYNITHY_RUNNER_TESTNET_UNSAFE: 'ecld-pynithy-ethereum-sepolia-unsafe',
+    NODENITHY_RUNNER_TESTNET_UNSAFE: 'ecld-nodenithy-ethereum-sepolia-unsafe'
   },
   LITVM: {
     PYNITHY_RUNNER_TESTNET: 'ecld-pynithy-litvm-testnet',
@@ -226,11 +229,16 @@ export const ECAddress = {
     }
   },
   SEPOLIA: {
-    TESTNET_ADDRESS: '0x95Aa17fCFaAB75e8ed7d7DF218045795dCeB9c50',
-    TESTNET_PROTOCOL_ADDRESS: '0x29D3eC870565B6A1510232bd950A8Bc8336f0EB2',
+    // Ethereum Sepolia: the PoX is the EthernityImplementationV2 1.1 of
+    // 2026-10-14, the one Sepolia's CAS set validates orders on; the token is
+    // that family's own tECLD (the previous family's 0x95Aa17fC... is the
+    // address IoTeX and LitVM still use), and the image registry is the
+    // ECImageRegistryV3 of the same day.
+    TESTNET_ADDRESS: '0x2E27677fb67531eb09134fE331C27899f87ADe10',
+    TESTNET_PROTOCOL_ADDRESS: '0x798975F9FdD90A21Cb11Ac26F1377e1542c58f9c',
     IMAGE_REGISTRY: {
-      PYNITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' },
-      NODENITHY: { TESTNET_ADDRESS: '0x55e0ad455Be85162b71a790f00Fc305680E3CE53' }
+      PYNITHY: { TESTNET_ADDRESS: '0xa7E43a269E3307cf9d246b07df2B89CAA1b4C42F' },
+      NODENITHY: { TESTNET_ADDRESS: '0xa7E43a269E3307cf9d246b07df2B89CAA1b4C42F' }
     }
   },
   LITVM: {
@@ -354,9 +362,10 @@ export const ECNetworkConfig = {
   }
 };
 
-// IOTEX / SEPOLIA / LITVM all share the same ECLD token address, so they cannot
-// be keyed by token address alone. They are resolved by (chainId) at runtime;
-// see resolveNetworkConfig. Their descriptors:
+// IOTEX and LITVM share the same tECLD address (0x95Aa17fC..., Sepolia's too
+// until its family of 2026-10-14), so these testnets cannot be keyed by token
+// address alone. They are resolved by (chainId) at runtime; see
+// resolveNetworkConfig. Their descriptors:
 export const ECEcldTestnetConfig = {
   4690: {
     family: 'ecld',
