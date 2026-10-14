@@ -308,8 +308,8 @@ export const ECNetworkName1Dictionary = {
 //                    config.py), which is its segment of the bootnode's payload
 //                    intake route, POST /payload/<agentNetwork>/<doRequestId>/<cid>.
 //                    Carried only by the networks the public intake serves in
-//                    this release: the Bloxberg testnet and LitVM LiteForge
-//                    (each with its -unsafe twin). A run on a descriptor
+//                    this release: the Bloxberg testnet, LitVM LiteForge and
+//                    Ethereum Sepolia (each with its -unsafe twin). A run on a descriptor
 //                    without it has no default storage and is refused before
 //                    any transaction until initializeStorage() is called
 //                    (runner.initializeDefaultStorage).
@@ -387,7 +387,8 @@ export const ECEcldTestnetConfig = {
     },
     isMainnet: false,
     networkName: 'sepolia',
-    networkKey: 'SEPOLIA'
+    networkKey: 'SEPOLIA',
+    agentNetwork: 'ethereum_sepolia'
   },
   4441: {
     family: 'ecld',
@@ -403,9 +404,10 @@ export const ECEcldTestnetConfig = {
   }
 };
 
-// The ERC-20 token address shared by every ECLD-family testnet deployed from
-// pox-smart-contract (IoTeX / Sepolia / LitVM). It cannot be mapped to a single
-// network, so it resolves to a provisional descriptor until a chainId is known.
+// The ERC-20 token address shared by the ECLD-family testnets deployed from
+// pox-smart-contract by the same wallet (IoTeX / LitVM; Sepolia's too until its
+// family of 2026-10-14). It cannot be mapped to a single network, so it
+// resolves to a provisional descriptor until a chainId is known.
 export const ECLD_SHARED_TESTNET_TOKEN = ECAddress.IOTEX.TESTNET_ADDRESS;
 
 // Provisional descriptor for the shared-token ECLD testnets before the chainId
@@ -424,7 +426,8 @@ const ECLD_PROVISIONAL_CONFIG = {
 /**
  * Resolve a network descriptor from the token `networkAddress`, optionally
  * disambiguated by `chainId` for the ECLD-family testnets that share a token
- * address (IoTeX / Sepolia / LitVM). When the shared token is used without a
+ * address (IoTeX / LitVM). Sepolia's token is its own since 2026-10-14 and
+ * names its descriptor directly. When the shared token is used without a
  * chainId, returns a provisional ECLD descriptor (protocol/registry unresolved)
  * so the token contract can still be built; call again with a chainId to get the
  * full descriptor. Returns undefined for genuinely unknown networks.
@@ -433,6 +436,7 @@ export function resolveNetworkConfig(networkAddress, chainId) {
   if (chainId && ECEcldTestnetConfig[chainId]) return ECEcldTestnetConfig[chainId];
   const direct = ECNetworkConfig[networkAddress];
   if (direct) return direct;
+  if (networkAddress === ECAddress.SEPOLIA.TESTNET_ADDRESS) return ECEcldTestnetConfig[ECNetworkByChainId.SEPOLIA.TESTNET];
   if (networkAddress === ECLD_SHARED_TESTNET_TOKEN) return ECLD_PROVISIONAL_CONFIG;
   return undefined;
 }

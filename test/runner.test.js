@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import EthernityCloudRunner from '../runner.js';
-import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig } from '../enums.js';
+import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, resolveNetworkConfig } from '../enums.js';
 import { isInitialized } from '../ipfs.js';
 
 // A provider that answers the chain id and nothing else: the runner reads it
@@ -16,11 +16,19 @@ const messageMatching = (pattern) => (e) => {
   return true;
 };
 
-test('the Bloxberg testnet and LitVM LiteForge are the networks routed to the intake in this release', () => {
+test('the Bloxberg testnet, LitVM LiteForge and Ethereum Sepolia are the networks routed to the intake in this release', () => {
   const routed = Object.values(ECNetworkConfig).filter((cfg) => cfg.agentNetwork).map((cfg) => cfg.agentNetwork);
   assert.deepEqual(routed, ['bloxberg_testnet']);
   const ecld = Object.entries(ECEcldTestnetConfig).filter(([, cfg]) => cfg.agentNetwork).map(([chainId, cfg]) => [chainId, cfg.agentNetwork]);
-  assert.deepEqual(ecld, [['4441', 'litvm_liteforge']]);
+  assert.deepEqual(ecld, [['4441', 'litvm_liteforge'], ['11155111', 'ethereum_sepolia']]);
+});
+
+test("Sepolia's own token names its descriptor without a chainId; the shared token still needs one", () => {
+  assert.equal(resolveNetworkConfig(ECAddress.SEPOLIA.TESTNET_ADDRESS), ECEcldTestnetConfig[11155111]);
+  assert.equal(resolveNetworkConfig(ECAddress.SEPOLIA.TESTNET_ADDRESS, 11155111), ECEcldTestnetConfig[11155111]);
+  assert.notEqual(ECAddress.SEPOLIA.TESTNET_ADDRESS, ECLD_SHARED_TESTNET_TOKEN);
+  assert.equal(resolveNetworkConfig(ECLD_SHARED_TESTNET_TOKEN).protocolAddress, undefined);
+  assert.equal(resolveNetworkConfig(ECLD_SHARED_TESTNET_TOKEN, 4441), ECEcldTestnetConfig[4441]);
 });
 
 // The tests run in this order: the storage module is unconfigured until the
