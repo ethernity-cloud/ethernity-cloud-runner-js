@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import EthernityCloudRunner from '../runner.js';
 import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, resolveNetworkConfig } from '../enums.js';
 import { isInitialized } from '../ipfs.js';
+import { resolveWalletContext } from '../walletContext.js';
+import { ethers } from 'ethers';
 
 // A provider that answers the chain id and nothing else: the runner reads it
 // to resolve the network and makes no other call before the storage is chosen.
@@ -92,4 +94,17 @@ test('a storage configured before run() takes precedence on every network', asyn
   const runner = new EthernityCloudRunner(ECAddress.IOTEX.TESTNET_ADDRESS, { provider: providerOn(4690) }, 4690);
   await runner.resolveNetworkContext();
   assert.doesNotThrow(() => runner.initializeDefaultStorage());
+});
+
+test("Sepolia's own token selects its RPC on the raw-key path; the shared token falls back to the Bloxberg testnet's", () => {
+  const key = ethers.Wallet.createRandom().privateKey;
+  const sepolia = resolveWalletContext(ECAddress.SEPOLIA.TESTNET_ADDRESS, { privateKey: key });
+  assert.equal(sepolia.provider._getConnection().url, 'https://ethereum-sepolia-rpc.publicnode.com');
+  sepolia.provider.destroy();
+  const shared = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key });
+  assert.equal(shared.provider._getConnection().url, 'https://bloxberg.ethernity.cloud');
+  shared.provider.destroy();
+  const litvm = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key, rpcUrl: 'https://liteforge.rpc.caldera.xyz/infra-partner-http' });
+  assert.equal(litvm.provider._getConnection().url, 'https://liteforge.rpc.caldera.xyz/infra-partner-http');
+  litvm.provider.destroy();
 });

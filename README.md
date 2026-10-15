@@ -216,7 +216,7 @@ await runner.run(resources, ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET, code);
 
 The `ECRunner` enclave-image enum is keyed by network, so use the entry matching the network you constructed the runner with (e.g. `ECRunner.IOTEX.PYNITHY_RUNNER_TESTNET`). Mainnet variants drop the `_TESTNET` suffix.
 
-The IoTeX, Sepolia, and LitVM testnets share a single ECLD token address, so the runner reads the chain ID from your wallet/provider to distinguish them — automatic with a browser wallet or an injected `provider`. On the raw-private-key path, pass the chain ID as the **third** constructor argument and an `rpcUrl` in the wallet options:
+The IoTeX and LitVM testnets share a single ECLD token address, so the runner reads the chain ID from your wallet/provider to distinguish them — automatic with a browser wallet or an injected `provider`. Ethereum Sepolia has a token of its own, so the runner selects its RPC (`https://ethereum-sepolia-rpc.publicnode.com`) without an `rpcUrl`. On the raw-private-key path for IoTeX and LitVM, pass the chain ID as the **third** constructor argument and an `rpcUrl` in the wallet options:
 
 ```javascript
 const runner = new EthernityCloudRunner(
@@ -226,7 +226,7 @@ const runner = new EthernityCloudRunner(
 );
 ```
 
-In this release the bootnode's payload intake serves the Bloxberg testnet and LitVM LiteForge (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX and Sepolia) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
+In this release the bootnode's payload intake serves the Bloxberg testnet, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet, Polygon Amoy and IoTeX) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
 
 ### Wallet options
 
