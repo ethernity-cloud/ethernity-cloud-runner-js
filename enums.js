@@ -445,7 +445,10 @@ export const ZERO_CHECKSUM = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4
 
 export const ECError = {
   PARSE_ERROR: 'EtnyParseError',
-  IPFS_DOWNLOAD_ERROR: 'ECIPFSDownloadError'
+  IPFS_DOWNLOAD_ERROR: 'ECIPFSDownloadError',
+  // No node placed an order on the DO request within the wait; the request
+  // was cancelled and its escrow returned.
+  NO_NODE: 'ECNoNodeError'
 };
 
 

@@ -97,6 +97,10 @@ const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) =
 
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
+// How long findOrder waits for a node to place an order on the DO request
+// before it cancels the request; run() takes options.orderWaitSeconds.
+export const DEFAULT_ORDER_WAIT_SECONDS = 600;
+const ORDER_WAIT_TIMED_OUT = Symbol('order wait timed out');
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
@@ -865,17 +869,74 @@ class EthernityCloudRunner extends EventTarget {
       return -1;
     })();
 
+    // DEADLINE: a request no node takes within orderWaitSeconds is cancelled
+    // (cancelUnclaimedRequest), so its escrow does not stay locked behind an
+    // order nobody approves.
+    const waitSeconds = Number.isFinite(this.orderWaitSeconds) ? this.orderWaitSeconds : DEFAULT_ORDER_WAIT_SECONDS;
+    let deadlineTimer;
+    const viaDeadline = new Promise((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(ORDER_WAIT_TIMED_OUT), waitSeconds * 1000);
+    });
+
     try {
-      const orderId = await Promise.race([viaEvent, viaPoll]);
+      let orderId = await Promise.race([viaEvent, viaPoll, viaDeadline]);
+      if (orderId === ORDER_WAIT_TIMED_OUT) {
+        stopPolling = true;
+        stopWatching();
+        orderId = await this.cancelUnclaimedRequest(doReq, waitSeconds);
+      }
       this.orderId = orderId;
       this.order = await protocolContract._getOrder(orderId);
       this.progress = ECEvent.ORDER_PLACED;
       this.dispatchECEvent(`Connected! (order ${orderId}, request ${doReq})`);
       return true;
     } finally {
+      clearTimeout(deadlineTimer);
       stopPolling = true;
       stopWatching();
     }
+  }
+
+  // The DO request had no order after the wait: cancel it, which returns its
+  // escrow, and fail the task with ECError.NO_NODE. The contract refuses the
+  // cancel once a node has booked the request; the order that node placed is
+  // then returned and the task goes on with it.
+  async cancelUnclaimedRequest(doReq, waitSeconds) {
+    this.dispatchECEvent(`No node took request ${doReq} within ${waitSeconds} s; cancelling it`, ECLog.WARNING);
+    let cancelError;
+    try {
+      const tx = await this.protocolContract.cancelDORequest(doReq);
+      this.dispatchECEvent(`${tx.hash} is pending...`);
+      const receipt = await tx.wait();
+      if (receipt && receipt.status === 1) {
+        this.dispatchECEvent(`Request ${doReq} cancelled; its escrow is returned`);
+        const err = new Error(`No node took request ${doReq} within ${waitSeconds} s; the request was cancelled and its escrow returned`);
+        err.code = ECError.NO_NODE;
+        throw err;
+      }
+      cancelError = new Error(`cancel transaction ${tx.hash} failed`);
+    } catch (e) {
+      if (e.code === ECError.NO_NODE) throw e;
+      cancelError = e;
+    }
+    const orderId = await this.orderForRequest(doReq);
+    if (orderId >= 0) {
+      this.dispatchECEvent(`Request ${doReq} was booked meanwhile (order ${orderId}); continuing with it`);
+      return orderId;
+    }
+    throw new Error(`No node took request ${doReq} within ${waitSeconds} s and it could not be cancelled: ${cancelError.shortMessage || cancelError.message}`);
+  }
+
+  // The order placed on a DO request, or -1, scanning the orders placed since
+  // the request was created.
+  async orderForRequest(doReq) {
+    const protocolContract = this.protocolContract.getContract();
+    const count = Number(await protocolContract._getOrdersCount());
+    for (let i = count - 1; i >= Math.max(0, this.ordersOffset); i--) {
+      const order = await protocolContract._getOrder(i);
+      if (parseInt(order.doRequest) === doReq) return i;
+    }
+    return -1;
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -1598,6 +1659,7 @@ class EthernityCloudRunner extends EventTarget {
       // maxRetries times; failures caused by the submitted code never retry.
       this.maxTaskRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2;
       this.taskRetryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 30000;
+      this.orderWaitSeconds = Number.isFinite(options.orderWaitSeconds) ? options.orderWaitSeconds : DEFAULT_ORDER_WAIT_SECONDS;
       // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
       // live provider before any contract call depends on the PoX address.
       await this.resolveNetworkContext();

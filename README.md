@@ -189,6 +189,8 @@ The `resources` parameter is the **first** argument to the `run` method and is a
 
 By providing these resource requirements in the `resources` object, the task execution engine (EthernityCloudRunner) can use this information to allocate the necessary resources and process the task accordingly on the selected network.
 
+When no node places an order on the request within `options.orderWaitSeconds` (the sixth argument of `run`, default 600), the runner cancels the request, which returns its escrow, and the task fails with `ECError.NO_NODE`. If a node booked the request just before the cancel, the cancel is refused by the contract and the task goes on with that node's order.
+
 ### Networks
 
 The network is chosen by passing the network's token contract address (from `ECAddress`) as the first argument to the constructor. With no argument, the runner targets the **Bloxberg testnet**.

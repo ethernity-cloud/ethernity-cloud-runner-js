@@ -64,6 +64,10 @@ class BloxbergProtocolContract {
     return this.etnyContract._approveOrder(orderId);
   }
 
+  async cancelDORequest(doRequestId) {
+    return this.etnyContract._cancelDORequest(doRequestId);
+  }
+
   async getResultFromOrder(orderId) {
     return this.etnyContract._getResultFromOrder(orderId);
   }

@@ -109,6 +109,10 @@ class PolygonProtocolContract {
     return this.protocolContract._approveOrder(orderId);
   }
 
+  async cancelDORequest(doRequestId) {
+    return this.protocolContract._cancelDORequest(doRequestId);
+  }
+
   async getResultFromOrder(orderId) {
     return this.protocolContract._getResultFromOrder(orderId);
   }

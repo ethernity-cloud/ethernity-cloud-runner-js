@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import EthernityCloudRunner from '../runner.js';
-import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, resolveNetworkConfig } from '../enums.js';
+import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, ECError, resolveNetworkConfig } from '../enums.js';
 import { isInitialized } from '../ipfs.js';
 import { resolveWalletContext } from '../walletContext.js';
 import { ethers } from 'ethers';
@@ -107,4 +107,51 @@ test("Sepolia's own token selects its RPC on the raw-key path; the shared token 
   const litvm = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key, rpcUrl: 'https://liteforge.rpc.caldera.xyz/infra-partner-http' });
   assert.equal(litvm.provider._getConnection().url, 'https://liteforge.rpc.caldera.xyz/infra-partner-http');
   litvm.provider.destroy();
+});
+
+// cancelUnclaimedRequest, on a stand-in for the runner: the protocol contract
+// and the order scan are replaced, nothing touches a chain.
+const unclaimed = ({ cancel, orders = [] }) => {
+  const events = [];
+  const self = {
+    ordersOffset: 0,
+    dispatchECEvent: (m) => events.push(m),
+    protocolContract: {
+      cancelDORequest: cancel,
+      getContract: () => ({
+        _getOrdersCount: async () => BigInt(orders.length),
+        _getOrder: async (i) => ({ doRequest: BigInt(orders[i]) })
+      })
+    }
+  };
+  self.orderForRequest = EthernityCloudRunner.prototype.orderForRequest.bind(self);
+  return { self, events };
+};
+
+test('a request no node took is cancelled and the task fails with NO_NODE', async () => {
+  let cancelled = null;
+  const { self } = unclaimed({
+    cancel: async (id) => { cancelled = id; return { hash: '0xc', wait: async () => ({ status: 1 }) }; },
+    orders: [3, 4]
+  });
+  await assert.rejects(EthernityCloudRunner.prototype.cancelUnclaimedRequest.call(self, 9, 600),
+    (e) => e.code === ECError.NO_NODE && /cancelled and its escrow returned/.test(e.message));
+  assert.equal(cancelled, 9);
+});
+
+test('a request a node booked before the cancel goes on with that order', async () => {
+  const { self } = unclaimed({
+    cancel: async () => { const e = new Error('execution reverted: status must be available'); e.code = 'CALL_EXCEPTION'; throw e; },
+    orders: [3, 9, 4]
+  });
+  assert.equal(await EthernityCloudRunner.prototype.cancelUnclaimedRequest.call(self, 9, 600), 1);
+});
+
+test('a cancel that fails with no order on the request fails the task with the reason', async () => {
+  const { self } = unclaimed({
+    cancel: async () => { throw new Error('nonce too low'); },
+    orders: [3]
+  });
+  await assert.rejects(EthernityCloudRunner.prototype.cancelUnclaimedRequest.call(self, 9, 600),
+    /could not be cancelled: nonce too low/);
 });
