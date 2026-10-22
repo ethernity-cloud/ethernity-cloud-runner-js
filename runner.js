@@ -98,8 +98,9 @@ const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) =
 const LAST_BLOCKS = 20;
 const VERSION = 'v3';
 // How long findOrder waits for a node to place an order on the DO request
-// before it cancels the request; run() takes options.orderWaitSeconds.
-export const DEFAULT_ORDER_WAIT_SECONDS = 600;
+// before it cancels the request; run() takes options.orderWaitSeconds. A mainnet
+// node defers a request by up to (registered nodes / 25) blocks to spread orders.
+export const DEFAULT_ORDER_WAIT_SECONDS = 1800;
 const ORDER_WAIT_TIMED_OUT = Symbol('order wait timed out');
 
 class EthernityCloudRunner extends EventTarget {
