@@ -26,6 +26,13 @@ export const SESSION_INPUT_KEY = 'etny-si';
 export const SESSION_OUTPUT_KEY = 'etny-so';
 export const SESSION_WALLET_KEY = 'etny-sw';
 export const SESSION_WIRE_VERSION = 'v1';
+// An output row whose payload no endpoint serves yet, or serves under its CID
+// with other bytes, is read again on later polls for this long before it is
+// given up: the node pins the payload in the background and the gateway may
+// lag the row.
+export const PAYLOAD_RETRY_MS = 600000;
+// _verifyOutputRow's answer for such a row.
+const PAYLOAD_PENDING = Symbol('payload pending');
 export const MAX_SESSION_MESSAGES = 256;
 // Mirror of the enclave's input-acceptance margin (M3): sending inside this
 // window would only earn a signed 'late' notice, so refuse client-side.
@@ -57,6 +64,9 @@ export class EthernityCloudSession {
     // the signer every output row is checked against. null until that row has
     // been read and verified.
     this.attestedWallet = null;
+    // Row index -> when its payload was first found not readable; the row is
+    // retried until PAYLOAD_RETRY_MS after that.
+    this.payloadWaits = {};
   }
 
   static async create(runner, orderId) {
@@ -207,7 +217,9 @@ export class EthernityCloudSession {
       row is verified against it, its payload fetched, digest-checked and
       decrypted. Returns only the NEW verified messages (also appended to
       this.outputs). An output row before any attestation is discarded: its
-      signer cannot be checked. */
+      signer cannot be checked. A verified row whose payload is not readable
+      yet is kept, and the rows after it with it, for the next poll, up to
+      PAYLOAD_RETRY_MS. */
   async pollOutputs() {
     let count;
     try {
@@ -229,13 +241,23 @@ export class EthernityCloudSession {
         this.rowsSeen = i + 1;
         continue;
       }
-      this.rowsSeen = i + 1;
       if (this.attestedWallet === null) {
+        this.rowsSeen = i + 1;
         this.runner.dispatchECEvent(
           `Session: output row ${i} precedes the task wallet attestation; its signer cannot be checked -- DISCARDING`, 1);
         continue;
       }
-      const msg = await this._verifyOutputRow(String(value || ''));
+      let msg = await this._verifyOutputRow(String(value || ''));
+      if (msg === PAYLOAD_PENDING) {
+        if (!(i in this.payloadWaits)) this.payloadWaits[i] = Date.now();
+        const waited = Date.now() - this.payloadWaits[i];
+        if (waited < PAYLOAD_RETRY_MS) break;
+        this.runner.dispatchECEvent(
+          `Session output row ${i}: payload not readable in ${Math.round(waited / 1000)} s -- DISCARDING`, 1);
+        msg = null;
+      }
+      this.rowsSeen = i + 1;
+      delete this.payloadWaits[i];
       if (msg !== null) {
         this.outputs.push(msg);
         fresh.push(msg);
@@ -272,30 +294,39 @@ export class EthernityCloudSession {
     if (!cid) return msg; // signed notice row without payload (late)
     // 'ok' rows carry the reply; 'error' rows carry an encrypted explanation
     // of why the input was not processed -- fetch both.
+    let content;
     try {
-      // One round over the endpoints: the row is polled again anyway, so a
-      // payload not yet reachable is reported now rather than waited for.
-      const content = await ipfsClient.getFromIPFS(cid, Date.now());
-      if (sha256(content) !== shaHex) {
-        this.runner.dispatchECEvent(
-          `Session output ${seq}: content does not match the signed digest -- DISCARDING`, 2);
-        return null;
-      }
-      const decrypted = await decryptWithPrivateKey(
-        content,
-        this.runner.tokenContract.getCurrentWallet(),
-        this.runner.walletContext ? this.runner.walletContext.privateKey : null
-      );
-      if (!decrypted.success) {
-        this.runner.dispatchECEvent(`Session output ${seq}: could not decrypt`, 2);
-        return null;
-      }
-      msg.data = decrypted.data;
+      content = await this._fetchPayload(cid);
     } catch (e) {
       this.runner.dispatchECEvent(`Session output ${seq}: payload not readable yet (${e.message})`, 2);
+      return PAYLOAD_PENDING;
+    }
+    if (sha256(content) !== shaHex) {
+      this.runner.dispatchECEvent(`Session output ${seq}: payload not served under its CID yet; retrying`, 2);
+      return PAYLOAD_PENDING;
+    }
+    const decrypted = await this._decryptPayload(content);
+    if (!decrypted.success) {
+      this.runner.dispatchECEvent(`Session output ${seq}: could not decrypt -- DISCARDING`, 2);
       return null;
     }
+    msg.data = decrypted.data;
     return msg;
+  }
+
+  /** The bytes an output row's CID names, in one round over the endpoints;
+      throws when none served them. */
+  async _fetchPayload(cid) {
+    return ipfsClient.getFromIPFS(cid, Date.now());
+  }
+
+  /** The payload decrypted with this wallet's key: { success, data }. */
+  _decryptPayload(content) {
+    return decryptWithPrivateKey(
+      content,
+      this.runner.tokenContract.getCurrentWallet(),
+      this.runner.walletContext ? this.runner.walletContext.privateKey : null
+    );
   }
 
   /** Block until `count` new verified outputs arrive (or timeout). */
