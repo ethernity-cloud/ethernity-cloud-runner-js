@@ -99,6 +99,23 @@ export const encryptWithCertificate = async (message, certificate) => {
   return encrypt(pubKey, message);
 };
 
+// Whether `signatureHex` (ECDSA, SHA-256, DER) over the string `message` was
+// made with the key of the certificate `certificate` carries: the signatures a
+// trustedzone makes with its certificate key, its session's task wallet
+// attestation among them.
+export const verifyCertificateSignature = (certificate, message, signatureHex) => {
+  try {
+    const c = new jsrsasign.X509();
+    c.readCertPEM(certificate);
+    const signature = new jsrsasign.KJUR.crypto.Signature({ alg: 'SHA256withECDSA' });
+    signature.init(c.getPublicKey());
+    signature.updateString(message);
+    return signature.verify(signatureHex.startsWith('0x') ? signatureHex.slice(2) : signatureHex);
+  } catch (e) {
+    return false;
+  }
+};
+
 // Decrypts an enclave result (x25519-xsalsa20-poly1305 / NaCl box).
 //   encryptedMessage - hex string: ephemPublicKey(32) | nonce(24) | ciphertext
 //   account          - wallet address (used for the MetaMask eth_decrypt path)

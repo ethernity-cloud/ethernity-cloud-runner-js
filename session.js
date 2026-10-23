@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
-import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
+import { decryptWithPrivateKey, encryptWithCertificate, sha256, verifyCertificateSignature } from './crypto.js';
 import { delay } from './utils.js';
 
 /**
@@ -14,14 +14,17 @@ import { delay } from './utils.js';
  *
  * Trust model, mirrored from the enclave side: inputs are transactions from
  * THIS wallet (the contract only accepts the data owner) carrying the
- * ciphertext digest; every output row's signature is verified against
- * order.dproc -- the task wallet the enclave anchored on-chain -- BEFORE its
- * payload is fetched, digest-checked, decrypted and delivered; liveness
- * derives from chain state alone.
+ * ciphertext digest; every output row's signature is verified against the
+ * task wallet the trustedzone attests in the session's 'etny-sw' row, signed
+ * with the key of the certificate the Image Registry holds for it (the
+ * certificate the challenge was sealed with) -- BEFORE its payload is
+ * fetched, digest-checked, decrypted and delivered; liveness derives from
+ * chain state alone.
  */
 
 export const SESSION_INPUT_KEY = 'etny-si';
 export const SESSION_OUTPUT_KEY = 'etny-so';
+export const SESSION_WALLET_KEY = 'etny-sw';
 export const SESSION_WIRE_VERSION = 'v1';
 export const MAX_SESSION_MESSAGES = 256;
 // Mirror of the enclave's input-acceptance margin (M3): sending inside this
@@ -50,6 +53,10 @@ export class EthernityCloudSession {
     this.rowsSeen = 0;
     this.outputs = [];
     this.closed = false;
+    // The task wallet the trustedzone attested in the session's 'etny-sw' row:
+    // the signer every output row is checked against. null until that row has
+    // been read and verified.
+    this.attestedWallet = null;
   }
 
   static async create(runner, orderId) {
@@ -95,11 +102,36 @@ export class EthernityCloudSession {
     return seq;
   }
 
-  /** order.dproc: the enclave task wallet, anchored on-chain by
-      _addProcessorToOrder -- the signature authority for output rows. */
-  async _taskWallet() {
-    const order = await this._contract()._getOrder(this.orderId);
-    return String(order[1]);
+  /** The task wallet the output rows are signed with: attested by the
+      trustedzone in the session's 'etny-sw' row, signed with the key of the
+      certificate the Image Registry holds for it. null until that row has
+      been read and verified. */
+  _taskWallet() {
+    return this.attestedWallet;
+  }
+
+  /** Verify an 'etny-sw' row, 'v1:<orderId>:<taskWallet>:<sigDerHex>', against
+      the trustedzone's certificate (the one the challenge was sealed with) and
+      keep its wallet. A row that does not verify is ignored: a node cannot
+      name the signer of this session's outputs. */
+  _acceptWalletAttestation(value) {
+    const parts = value.split(':');
+    if (parts.length !== 4 || parts[0] !== SESSION_WIRE_VERSION || Number(parts[1]) !== this.orderId) return false;
+    const [, , wallet, sig] = parts;
+    const message = `${SESSION_WALLET_KEY}|${this.orderId}|${wallet}`;
+    if (!verifyCertificateSignature(this.runner.enclavePublicKey, message, sig)) {
+      this.runner.dispatchECEvent(
+        `Session: the task wallet attestation of ${wallet} does not verify against the trustedzone's certificate -- IGNORING`, 1);
+      return false;
+    }
+    if (this.attestedWallet !== null && this.attestedWallet.toLowerCase() !== wallet.toLowerCase()) {
+      this.runner.dispatchECEvent(
+        `Session: a second task wallet attestation (${wallet}) differs from the first (${this.attestedWallet}) -- IGNORING`, 1);
+      return false;
+    }
+    this.attestedWallet = wallet;
+    this.runner.dispatchECEvent(`Session: task wallet attested by the trustedzone: ${wallet}`);
+    return true;
   }
 
   /* ------------------------------------------------------------------ status */
@@ -171,9 +203,11 @@ export class EthernityCloudSession {
 
   /* ------------------------------------------------------------------ output */
 
-  /** Read new etny-so rows, verify each signature against the on-chain task
-      wallet, fetch + digest-check + decrypt the payload. Returns only the
-      NEW verified messages (also appended to this.outputs). */
+  /** Read new rows: the 'etny-sw' row attests the task wallet, each 'etny-so'
+      row is verified against it, its payload fetched, digest-checked and
+      decrypted. Returns only the NEW verified messages (also appended to
+      this.outputs). An output row before any attestation is discarded: its
+      signer cannot be checked. */
   async pollOutputs() {
     let count;
     try {
@@ -186,8 +220,21 @@ export class EthernityCloudSession {
       try {
         [key, value] = await this._contract()._getMetadataValueForDPRequest(this.dpReq, i);
       } catch (e) { break; }
+      if (key === SESSION_WALLET_KEY) {
+        this._acceptWalletAttestation(String(value || ''));
+        this.rowsSeen = i + 1;
+        continue;
+      }
+      if (key !== SESSION_OUTPUT_KEY) {
+        this.rowsSeen = i + 1;
+        continue;
+      }
       this.rowsSeen = i + 1;
-      if (key !== SESSION_OUTPUT_KEY) continue;
+      if (this.attestedWallet === null) {
+        this.runner.dispatchECEvent(
+          `Session: output row ${i} precedes the task wallet attestation; its signer cannot be checked -- DISCARDING`, 1);
+        continue;
+      }
       const msg = await this._verifyOutputRow(String(value || ''));
       if (msg !== null) {
         this.outputs.push(msg);
@@ -214,10 +261,10 @@ export class EthernityCloudSession {
       this.runner.dispatchECEvent(`Session output ${seq}: bad signature encoding`, 2);
       return null;
     }
-    const taskWallet = await this._taskWallet();
-    if (signer.toLowerCase() !== taskWallet.toLowerCase()) {
+    const taskWallet = this._taskWallet();
+    if (taskWallet === null || signer.toLowerCase() !== taskWallet.toLowerCase()) {
       this.runner.dispatchECEvent(
-        `Session output ${seq}: signature by ${signer}, expected the task wallet ` +
+        `Session output ${seq}: signature by ${signer}, expected the attested task wallet ` +
         `${taskWallet} -- DISCARDING (operator forgery?)`, 2);
       return null;
     }
