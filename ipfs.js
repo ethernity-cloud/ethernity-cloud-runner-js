@@ -42,10 +42,12 @@ export const initializeIntake = (network, baseUrl = PUBLIC_INTAKE) => {
 };
 
 // Every blob the runner adds (challenge, code, input, session rows) is stored
-// as a CIDv1 raw sha256 block: the CID is base32(0x01 0x55 0x12 0x20 ||
-// sha256(content)), computable from the bytes alone. The node pins results
-// with the same recipe (mvp-pox-node utils.py cidv1_raw).
-const RAW_BLOCK_OPTIONS = { cidVersion: 1, rawLeaves: true };
+// as CIDv1 raw sha256 blocks of at most RAW_BLOCK_MAX bytes, Kubo's largest
+// chunk: a blob of up to one block has the CID base32(0x01 0x55 0x12 0x20 ||
+// sha256(content)), computable from the bytes alone. The node adds with the
+// same parameters (mvp-pox-node utils.py add_bytes_raw).
+export const RAW_BLOCK_MAX = 1048576;
+const RAW_BLOCK_OPTIONS = { cidVersion: 1, rawLeaves: true, chunker: `size-${RAW_BLOCK_MAX}` };
 
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
@@ -87,10 +89,20 @@ const responseStatus = (e) => e && e.response && e.response.status;
 // attempts at once: the API refuses this caller, which the same request cannot
 // change. Always returns a CID or throws: callers interpolate the CID into the
 // on-chain DO-request metadata, and the request must not be submitted (and paid
-// for) without it.
+// for) without it. Through the intake, a blob above RAW_BLOCK_MAX throws: its
+// CID is a DAG root only an IPFS node computes, so the intake, which checks the
+// bytes against the CID the request names, would refuse it after the request
+// had been paid for.
 export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs = 60000) => {
   if (intake) {
     const bytes = toBytes(code);
+    if (bytes.length > RAW_BLOCK_MAX) {
+      throw new Error(
+        `uploadToIPFS: a ${bytes.length}-byte artefact is above the ${RAW_BLOCK_MAX}-byte limit of the payload ` +
+          "intake; deliver it through an IPFS API of your own (initializeStorage('http://127.0.0.1:5001')) " +
+          'or the public API with a writer token.'
+      );
+    }
     const cid = cidv1Raw(bytes);
     pending.set(cid, bytes);
     return cid;

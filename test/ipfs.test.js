@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw } from '../ipfs.js';
+import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, RAW_BLOCK_MAX } from '../ipfs.js';
 
 // A loopback HTTP server standing in for a Kubo RPC API and for the intake:
 // every request it receives is recorded, and `answer` decides the reply.
@@ -123,6 +123,21 @@ test('flushPending refuses a CID that was not uploaded through the intake', asyn
   await assert.rejects(flushPending(10, [cid]), /was not uploaded through the intake/);
   await assert.rejects(flushPending(10, [cidOf('never')]), /was not uploaded through the intake/);
   assert.equal(requests.length, 1);
+});
+
+test('the intake takes an artefact of one block and refuses a larger one before any request', async () => {
+  initializeIntake('bloxberg_testnet', base);
+  const block = 'x'.repeat(RAW_BLOCK_MAX);
+  assert.equal(await uploadToIPFS(block), cidOf(block));
+  await assert.rejects(uploadToIPFS(`${block}x`), /above the 1048576-byte limit of the payload intake/);
+  assert.equal(requests.length, 0);
+});
+
+test('an add to an IPFS API uses chunks of Kubo\'s largest block', async () => {
+  initialize(`${base}/api/v0`);
+  answer = () => addAnswer(cidOf('epsilon'));
+  await uploadToIPFS('epsilon');
+  assert.match(requests[0].url, /chunker=size-1048576/);
 });
 
 test('flushPending throws at once when the intake refuses a blob', async () => {
