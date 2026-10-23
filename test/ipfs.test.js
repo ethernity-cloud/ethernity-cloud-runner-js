@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, RAW_BLOCK_MAX } from '../ipfs.js';
+import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, unixfsCid, BLOCK_SIZE } from '../ipfs.js';
 
 // A loopback HTTP server standing in for a Kubo RPC API and for the intake:
 // every request it receives is recorded, and `answer` decides the reply.
@@ -125,19 +125,46 @@ test('flushPending refuses a CID that was not uploaded through the intake', asyn
   assert.equal(requests.length, 1);
 });
 
-test('the intake takes an artefact of one block and refuses a larger one before any request', async () => {
+// The first n bytes of the byte values 0..250 repeated: the files Kubo 0.36.0
+// and 0.42.0 named the CIDs below, through `add --cid-version=1 --raw-leaves`,
+// with the default chunker and with the chunker passed.
+const pattern = (n) => {
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i += 1) out[i] = i % 251;
+  return out;
+};
+
+test('content up to one block is named by its raw CID', () => {
+  assert.equal(BLOCK_SIZE, 262144);
+  const content = pattern(BLOCK_SIZE);
+  assert.equal(unixfsCid(content), cidv1Raw(content));
+  assert.equal(unixfsCid(content), 'bafkreibruh455iawsviqslif5c7uurdcfdemh22mtnytyzvnzn75kpejxy');
+});
+
+test('content above one block is named by its UnixFS root', () => {
+  assert.equal(unixfsCid(pattern(BLOCK_SIZE + 1)), 'bafybeiexg2oqkfnj56l7fcmawswqbijt5shq4b5rg6a546uwpkqqzwjioi');
+  assert.equal(unixfsCid(pattern(648000)), 'bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu');
+  assert.equal(unixfsCid(pattern(1048576)), 'bafybeiedpcapwld4tkgtzwahfofgn4wex5ryysf4se6hwpmlrsh4ntnrau');
+  assert.equal(unixfsCid(pattern(2621440)), 'bafybeichq3thyi62tokqze6l4467yvja3nw7w34y7w52vn6h7lyo7qgxoy');
+});
+
+test('more blocks than a node links make a second level', () => {
+  // 184330 bytes in 1 KiB blocks are 181 leaves: 174 under one node and 7
+  // under another, both under the root (Kubo, chunker=size-1024).
+  assert.equal(unixfsCid(pattern(184330), 1024), 'bafybeids2yxkrcqqq6cpa7lgs6hv5xpsfn2bctwvljcrq73hhhzhszxkvy');
+});
+
+test('the intake queues an artefact of any size under its CID', async () => {
   initializeIntake('bloxberg_testnet', base);
-  const block = 'x'.repeat(RAW_BLOCK_MAX);
-  assert.equal(await uploadToIPFS(block), cidOf(block));
-  await assert.rejects(uploadToIPFS(`${block}x`), /above the 1048576-byte limit of the payload intake/);
+  assert.equal(await uploadToIPFS(pattern(648000)), 'bafybeicnawjqvxvtindqftaj5acjkqb6lh5sove2uqkdrzjkwooypl56zu');
   assert.equal(requests.length, 0);
 });
 
-test('an add to an IPFS API uses chunks of Kubo\'s largest block', async () => {
+test("an add to an IPFS API passes Kubo's default chunk size", async () => {
   initialize(`${base}/api/v0`);
   answer = () => addAnswer(cidOf('epsilon'));
   await uploadToIPFS('epsilon');
-  assert.match(requests[0].url, /chunker=size-1048576/);
+  assert.match(requests[0].url, /chunker=size-262144/);
 });
 
 test('flushPending throws at once when the intake refuses a blob', async () => {

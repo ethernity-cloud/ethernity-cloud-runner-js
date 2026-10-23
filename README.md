@@ -172,6 +172,8 @@ A task the enclave reports with a non-zero task code, such as `BASE_EXCEPTION` f
 
 `run(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, { inputData })` sends a string to the task as its input dataset, read in the payload as `___etny_data_set___` (`ecld.input`). It is encrypted for the trustedzone and stored like the code, and the request carries its sha256, which the trustedzone verifies before the securelock receives it. An interactive session takes its inputs through `sendInput` instead.
 
+Every artefact (challenge, code, input) is stored as an IPFS node with its default settings stores a file added with `--cid-version=1 --raw-leaves`: in blocks of 256 KiB, a single block as it is, several under a UnixFS tree. The runner computes that CID itself, so an artefact of any size is named in the request before it is uploaded, and the bootnode's payload intake takes it up to its 100 MiB body cap.
+
 ### Task resources
 
 ```javascript

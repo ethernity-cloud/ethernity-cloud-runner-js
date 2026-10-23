@@ -42,12 +42,17 @@ export const initializeIntake = (network, baseUrl = PUBLIC_INTAKE) => {
 };
 
 // Every blob the runner adds (challenge, code, input, session rows) is stored
-// as CIDv1 raw sha256 blocks of at most RAW_BLOCK_MAX bytes, Kubo's largest
-// chunk: a blob of up to one block has the CID base32(0x01 0x55 0x12 0x20 ||
-// sha256(content)), computable from the bytes alone. The node adds with the
+// as Kubo's `add --cid-version=1 --raw-leaves` stores it with its default
+// chunker: in raw sha256 blocks of BLOCK_SIZE bytes (the last one shorter), a
+// single block as it is, several under a balanced UnixFS tree of at most
+// LINKS_PER_NODE blocks per node. unixfsCid() computes the resulting CID from
+// the bytes alone, without an IPFS node, and an IPFS node adding the same
+// bytes with its default settings names them the same; the chunker is passed
+// all the same, for a node whose default was changed. The node adds with the
 // same parameters (mvp-pox-node utils.py add_bytes_raw).
-export const RAW_BLOCK_MAX = 1048576;
-const RAW_BLOCK_OPTIONS = { cidVersion: 1, rawLeaves: true, chunker: `size-${RAW_BLOCK_MAX}` };
+export const BLOCK_SIZE = 262144;
+const LINKS_PER_NODE = 174;
+const RAW_BLOCK_OPTIONS = { cidVersion: 1, rawLeaves: true, chunker: `size-${BLOCK_SIZE}` };
 
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
@@ -67,13 +72,74 @@ const base32Lower = (bytes) => {
   return out;
 };
 
-export const cidv1Raw = (bytes) => {
-  const digest = ethers.getBytes(ethers.sha256(bytes));
-  const raw = new Uint8Array(4 + digest.length);
-  raw.set([0x01, 0x55, 0x12, 0x20], 0);
-  raw.set(digest, 4);
-  return `b${base32Lower(raw)}`;
+const concat = (parts) => {
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 };
+
+const varint = (n) => {
+  const out = [];
+  for (;;) {
+    const byte = n % 128;
+    n = Math.floor(n / 128);
+    if (n === 0) {
+      out.push(byte);
+      return Uint8Array.from(out);
+    }
+    out.push(byte | 0x80);
+  }
+};
+
+// A protobuf field: varint (wire 0) or length-delimited (wire 2).
+const field = (number, wire, payload) => {
+  const tag = varint(number * 8 + wire);
+  return wire === 2 ? concat([tag, varint(payload.length), payload]) : concat([tag, payload]);
+};
+
+// CIDv1, codec raw (0x55), sha2-256 (0x12, 32 bytes).
+const rawCidBytes = (bytes) => concat([Uint8Array.from([0x01, 0x55, 0x12, 0x20]), ethers.getBytes(ethers.sha256(bytes))]);
+
+// A dag-pb UnixFS File node over `children`, each [cid, tsize, filesize];
+// returns [cid, tsize, filesize]. Links come before Data in dag-pb; a link
+// carries the child's CID, an empty Name and its Tsize, the size of the
+// child's subtree; Data is UnixFS Type=File(2), filesize, blocksizes.
+const fileNode = (children) => {
+  const links = concat(children.map(([cid, tsize]) =>
+    field(2, 2, concat([field(1, 2, cid), field(2, 2, new Uint8Array(0)), field(3, 0, varint(tsize))]))));
+  const filesize = children.reduce((n, [, , size]) => n + size, 0);
+  const data = concat([field(1, 0, varint(2)), field(3, 0, varint(filesize)),
+    ...children.map(([, , size]) => field(4, 0, varint(size)))]);
+  const block = concat([links, field(1, 2, data)]);
+  const cid = concat([Uint8Array.from([0x01, 0x70, 0x12, 0x20]), ethers.getBytes(ethers.sha256(block))]);
+  return [cid, block.length + children.reduce((n, [, tsize]) => n + tsize, 0), filesize];
+};
+
+// The CID Kubo gives `bytes` for `add` with RAW_BLOCK_OPTIONS: the raw block's
+// CID up to one block, else the root of the balanced UnixFS tree over the
+// blocks, LINKS_PER_NODE to a node, every node full but the last.
+export const unixfsCid = (bytes, blockSize = BLOCK_SIZE) => {
+  if (bytes.length <= blockSize) return `b${base32Lower(rawCidBytes(bytes))}`;
+  let nodes = [];
+  for (let i = 0; i < bytes.length; i += blockSize) {
+    const chunk = bytes.subarray(i, i + blockSize);
+    nodes.push([rawCidBytes(chunk), chunk.length, chunk.length]);
+  }
+  while (nodes.length > 1) {
+    const next = [];
+    for (let i = 0; i < nodes.length; i += LINKS_PER_NODE) next.push(fileNode(nodes.slice(i, i + LINKS_PER_NODE)));
+    nodes = next;
+  }
+  return `b${base32Lower(nodes[0][0])}`;
+};
+
+// The CID of `bytes` as one raw block: its CID through RAW_BLOCK_OPTIONS up to
+// BLOCK_SIZE bytes.
+export const cidv1Raw = (bytes) => `b${base32Lower(rawCidBytes(bytes))}`;
 
 const toBytes = (data) => (data instanceof Uint8Array ? data : ethers.toUtf8Bytes(String(data)));
 
@@ -89,21 +155,12 @@ const responseStatus = (e) => e && e.response && e.response.status;
 // attempts at once: the API refuses this caller, which the same request cannot
 // change. Always returns a CID or throws: callers interpolate the CID into the
 // on-chain DO-request metadata, and the request must not be submitted (and paid
-// for) without it. Through the intake, a blob above RAW_BLOCK_MAX throws: its
-// CID is a DAG root only an IPFS node computes, so the intake, which checks the
-// bytes against the CID the request names, would refuse it after the request
-// had been paid for.
+// for) without it. Through the intake the CID is computed here (unixfsCid) and
+// the bytes are delivered by flushPending once the request names the CID.
 export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs = 60000) => {
   if (intake) {
     const bytes = toBytes(code);
-    if (bytes.length > RAW_BLOCK_MAX) {
-      throw new Error(
-        `uploadToIPFS: a ${bytes.length}-byte artefact is above the ${RAW_BLOCK_MAX}-byte limit of the payload ` +
-          "intake; deliver it through an IPFS API of your own (initializeStorage('http://127.0.0.1:5001')) " +
-          'or the public API with a writer token.'
-      );
-    }
-    const cid = cidv1Raw(bytes);
+    const cid = unixfsCid(bytes);
     pending.set(cid, bytes);
     return cid;
   }
