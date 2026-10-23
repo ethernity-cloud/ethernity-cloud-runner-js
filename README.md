@@ -166,6 +166,12 @@ runner.addEventListener(ECStatus.ERROR, onError);
 
 After `ECStatus.SUCCESS`, call `await runner.getResult()` to obtain the decrypted task result.
 
+A task the enclave reports with a non-zero task code, such as `BASE_EXCEPTION` for an exception raised in the dApp, ends in `ECStatus.ERROR`: `runner.getLastError()` names the code, `runner.getResultTaskCode()` returns `{ code, name }`, and `await runner.getResult()` still returns the result, whose value is the enclave's error report (for an exception, its traceback).
+
+### Input dataset
+
+`run(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, { inputData })` sends a string to the task as its input dataset, read in the payload as `___etny_data_set___` (`ecld.input`). It is encrypted for the trustedzone and stored like the code, and the request carries its sha256, which the trustedzone verifies before the securelock receives it. An interactive session takes its inputs through `sendInput` instead.
+
 ### Task resources
 
 ```javascript

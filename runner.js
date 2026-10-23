@@ -162,7 +162,7 @@ class EthernityCloudRunner extends EventTarget {
       this.dispatchECEvent(`LOCAL mode: backend functions ${JSON.stringify(health.backend)}`);
       this.progress = ECEvent.IN_PROGRESS;
       this.dispatchECEvent('Executing task on the local test API...');
-      const resp = await post('/v1/task', { payload: code });
+      const resp = await post('/v1/task', { payload: code, input: this.inputData || null });
       this.result = this._applyEnvelope(resp.result);
       this.resultTaskCode = resp.task_code;
       this.resultTaskCodeName = resp.task_code_name;
@@ -172,6 +172,7 @@ class EthernityCloudRunner extends EventTarget {
         this.dispatchECEvent('Task completed successfully (LOCAL mode).');
       } else {
         this.status = ECStatus.ERROR;
+        this.lastError = `The task failed with ${resp.task_code_name} (${resp.task_code})`;
         this.dispatchECEvent(`Task failed (LOCAL mode): ${resp.task_code_name} — ${resp.result}`);
       }
       return resp.task_code === 0;
@@ -264,6 +265,9 @@ class EthernityCloudRunner extends EventTarget {
     this.doRequest = -1;
     this.scriptHash = '';
     this.fileSetHash = '';
+    this.inputData = null;
+    this.resultTaskCode = null;
+    this.resultTaskCodeName = null;
     this.taskHasBeenPickedForApproval = false;
     this.getResultFromOrderRepeats = 1;
     this.orderDeadline = undefined;
@@ -415,6 +419,17 @@ class EthernityCloudRunner extends EventTarget {
 
   getStatus = () => {
     return this.status;
+  }
+
+  // Why the last run ended in ERROR when the enclave reported a non-zero task
+  // code; null otherwise.
+  getLastError = () => {
+    return this.lastError;
+  }
+
+  // The enclave's task code of the last result ({ code, name }), or null.
+  getResultTaskCode = () => {
+    return this.resultTaskCode == null ? null : { code: this.resultTaskCode, name: this.resultTaskCodeName };
   }
 
 
@@ -674,9 +689,20 @@ class EthernityCloudRunner extends EventTarget {
       throw err;
     } else {
       this.result = this._applyEnvelope(parsedOrderResult.result);
-      this.status = ECStatus.SUCCESS;
+      this.resultTaskCode = parsedOrderResult.resultTaskCodeInt;
+      this.resultTaskCodeName = parsedOrderResult.resultTaskCode;
       this.progress = ECEvent.FINISHED;
-      this.dispatchECEvent(`Task completed successfully.`);
+      if (this.resultTaskCode === 0) {
+        this.status = ECStatus.SUCCESS;
+        this.dispatchECEvent(`Task completed successfully.`);
+      } else {
+        // The task's own failure (an exception in the dApp, a checksum
+        // mismatch, ...): the result is kept, its value is the enclave's
+        // error report.
+        this.status = ECStatus.ERROR;
+        this.lastError = `The task failed in the enclave with ${this.resultTaskCodeName} (${this.resultTaskCode})`;
+        this.dispatchECEvent(`${this.lastError}: ${this.result}`, ECLog.ERROR);
+      }
     }
   }
 
@@ -743,19 +769,28 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async getV3InputMedata() {
-    // No-input tasks declare the empty-fileset checksum. ZERO_CHECKSUM is ALREADY
-    // sha256("") -- the value the enclave computes for an empty/absent input. It
-    // must NOT be hashed again: sha256(ZERO_CHECKSUM) yields a different value
-    // (cd372fb8...) that the enclave never produces, so trustedzone rejects every
-    // no-input task with "INPUT CHECKSUM DOESN'T MATCH". Declare ZERO_CHECKSUM
-    // as-is so it matches the enclave's sha256(empty).
-    let fileSetChecksum = ZERO_CHECKSUM;
     // Interactive sessions mark the request with a 'v3s' version tag -- the
     // trustedzone parses it through the same v3 branch but keeps the
-    // enclaves alive for the order duration.
+    // enclaves alive for the order duration. A session takes its inputs
+    // through sendInput, never an input dataset.
     const version = this._sessionRequest ? `${VERSION}s` : VERSION;
-    // v3::filesetchecksum
-    return `${version}::${fileSetChecksum}`;
+    const inputData = this._sessionRequest ? null : this.inputData;
+    if (!inputData) {
+      // No-input tasks declare the empty-fileset checksum. ZERO_CHECKSUM is
+      // ALREADY sha256("") -- the value the enclave computes for an empty
+      // input -- and is declared as-is, not hashed again.
+      this.fileSetHash = '';
+      return `${version}::${ZERO_CHECKSUM}`;
+    }
+    // The input dataset is sealed for the trustedzone and stored like the
+    // code; the node fetches the CID into the task's input.txt and the
+    // trustedzone checks its sha256 against the checksum declared here.
+    const inputChecksum = sha256(inputData);
+    const base64EncryptedInput = await encryptWithCertificate(inputData, this.enclavePublicKey);
+    this.fileSetHash = await ipfsClient.uploadToIPFS(base64EncryptedInput);
+    this.dispatchECEvent(`Encrypted input: ${this.fileSetHash}`);
+    // v3:input_ipfs_hash:input_checksum
+    return `${version}:${this.fileSetHash}:${inputChecksum}`;
   }
 
 
@@ -788,9 +823,12 @@ class EthernityCloudRunner extends EventTarget {
       this.doRequest = requestId;
 
       this.dispatchECEvent(`Request ${this.doRequest} was created successfully.`);
-      // With the intake, the artefacts this request names (its challenge and
-      // code) are delivered now that the request is on chain.
-      await ipfsClient.flushPending(this.doRequest, [this.challengeIPFSHash, this.scriptHash]);
+      // With the intake, the artefacts this request names (its challenge,
+      // code and input dataset, if any) are delivered now that the request is
+      // on chain.
+      const artefacts = [this.challengeIPFSHash, this.scriptHash];
+      if (this.fileSetHash) artefacts.push(this.fileSetHash);
+      await ipfsClient.flushPending(this.doRequest, artefacts);
 
       return true;
     } catch (e) {
@@ -1083,6 +1121,7 @@ class EthernityCloudRunner extends EventTarget {
         fileSetHash: this.fileSetHash,
         resultHash: parsedOrderResult.resultIPFSHash,
         resultTaskCode: transactionResult.taskCodeString,
+        resultTaskCodeInt: Number(transactionResult.taskCode),
         resultValue: ipfsResult,
         result: decryptedData.data
       };
@@ -1516,8 +1555,16 @@ class EthernityCloudRunner extends EventTarget {
   // without a CAS runs on the -unsafe network (setNetwork('BLOXBERG',
   // 'TESTNET_UNSAFE')) against an -unsafe trustedzone, and only there.
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
+    // options.inputData: the task's input dataset, a string the payload reads
+    // as ___etny_data_set___ (ecld.input).
+    const inputData = options.inputData == null ? null : options.inputData;
+    if (inputData !== null && typeof inputData !== 'string') {
+      throw new TypeError('options.inputData must be a string');
+    }
     if (this.localMode) {
       this.resources = resources;
+      this.inputData = inputData;
+      this.lastError = null;
       return this.runLocal(code);
     }
     // SERIALIZE concurrent run() calls on this instance. Task state
@@ -1537,6 +1584,8 @@ class EthernityCloudRunner extends EventTarget {
     await previous.catch(() => {});
     this._runInFlight = true;
     try {
+      this.inputData = inputData;
+      this.lastError = null;
       return await this._runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options);
     } finally {
       this._runInFlight = false;
@@ -1562,6 +1611,7 @@ class EthernityCloudRunner extends EventTarget {
     this._runInFlight = true;
     try {
       this.resources = resources;
+      this.inputData = null;
       await this.resolveNetworkContext();
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
