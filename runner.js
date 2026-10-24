@@ -102,6 +102,12 @@ const VERSION = 'v3';
 // node defers a request by up to (registered nodes / 25) blocks to spread orders.
 export const DEFAULT_ORDER_WAIT_SECONDS = 1800;
 const ORDER_WAIT_TIMED_OUT = Symbol('order wait timed out');
+// How long the read of an order placed moments ago is retried, and how often:
+// a replica of a load-balanced RPC that has not seen the placing block yet
+// reverts _getOrder (bloxberg testnet, 2026-10-24: ten concurrent clients,
+// one run failed on the read right after its _orderPlacedEV).
+export const ORDER_READ_RETRY_MS = 120000;
+export const ORDER_READ_POLL_MS = 2000;
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
@@ -925,7 +931,7 @@ class EthernityCloudRunner extends EventTarget {
         orderId = await this.cancelUnclaimedRequest(doReq, waitSeconds);
       }
       this.orderId = orderId;
-      this.order = await protocolContract._getOrder(orderId);
+      this.order = await this.readOrder(orderId);
       this.progress = ECEvent.ORDER_PLACED;
       this.dispatchECEvent(`Connected! (order ${orderId}, request ${doReq})`);
       return true;
@@ -933,6 +939,24 @@ class EthernityCloudRunner extends EventTarget {
       clearTimeout(deadlineTimer);
       stopPolling = true;
       stopWatching();
+    }
+  }
+
+  // The order `orderId`, read again every ORDER_READ_POLL_MS for up to
+  // ORDER_READ_RETRY_MS while the RPC reverts the read: the order was placed
+  // moments ago and the replica answering may not have its block yet. The
+  // last error is thrown when the time is up.
+  async readOrder(orderId) {
+    const protocolContract = this.protocolContract.getContract();
+    const deadline = Date.now() + ORDER_READ_RETRY_MS;
+    for (;;) {
+      try {
+        return await protocolContract._getOrder(orderId);
+      } catch (e) {
+        if (Date.now() >= deadline) throw e;
+        this.dispatchECEvent(`Order ${orderId} not readable yet (${e.shortMessage || e.message}); retrying`, ECLog.DEBUG);
+        await delay(ORDER_READ_POLL_MS);
+      }
     }
   }
 

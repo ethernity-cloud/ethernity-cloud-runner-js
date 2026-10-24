@@ -72,7 +72,8 @@ export class EthernityCloudSession {
   static async create(runner, orderId) {
     const session = new EthernityCloudSession(runner, orderId);
     const contract = runner.protocolContract.getContract();
-    const order = await contract._getOrder(session.orderId);
+    // Retried: the order was placed moments ago (runner.readOrder).
+    const order = await runner.readOrder(session.orderId);
     session.doReq = Number(order[2]);
     session.dpReq = Number(order[3]);
     const doreq = await contract._getDORequest(session.doReq);
