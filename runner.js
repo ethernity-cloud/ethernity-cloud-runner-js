@@ -108,6 +108,33 @@ const ORDER_WAIT_TIMED_OUT = Symbol('order wait timed out');
 // one run failed on the read right after its _orderPlacedEV).
 export const ORDER_READ_RETRY_MS = 120000;
 export const ORDER_READ_POLL_MS = 2000;
+// A node whose DP request advertises DP_STARTED_ROW_CAPABILITY in its
+// metadata4 adds an ORDER_STARTED_KEY row, 'v1:<order>:<block>', to that DP
+// request when it begins running an order. An order of such a node with no row
+// ORDER_START_WINDOW_BLOCKS blocks after it entered processing is treated as
+// abandoned by its node (operatorFault) and resubmitted.
+export const ORDER_STARTED_KEY = 'etny-st';
+export const ORDER_START_WINDOW_BLOCKS = 10;
+export const DP_STARTED_ROW_CAPABILITY = 'startrow=v1';
+
+// Whether a DP request's metadata4 says its node adds started rows.
+export const startedRowAdvertised = (metadata4) => String(metadata4 || '').split(';').includes(DP_STARTED_ROW_CAPABILITY);
+
+// The order id a started row names, or null for a value of another shape.
+export const startedRowOrder = (value) => {
+  const parts = String(value || '').trim().split(':');
+  if (parts.length !== 3 || parts[0] !== 'v1') return null;
+  const order = Number(parts[1]);
+  return Number.isInteger(order) && parts[2] !== '' && Number.isInteger(Number(parts[2])) ? order : null;
+};
+
+// The verdict on an order's start from its DP request's [key, value] rows:
+// 'started' when a started row names it, 'late' when `block` is past
+// `windowEnd` without one, else 'waiting'.
+export const orderStartVerdict = (rows, orderId, block, windowEnd) => {
+  if (rows.some(([key, value]) => key === ORDER_STARTED_KEY && startedRowOrder(value) === orderId)) return 'started';
+  return block > windowEnd ? 'late' : 'waiting';
+};
 
 class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
@@ -623,6 +650,20 @@ class EthernityCloudRunner extends EventTarget {
     const protocolContract = this.protocolContract.getContract();
     const orderId = parseInt(this.orderId);
 
+    // The node's start, checked when its DP request advertises the started
+    // row: the row must name this order within ORDER_START_WINDOW_BLOCKS.
+    const dpRequest = Number(this.order && this.order.dpRequest);
+    let startWindowEnd = null;
+    try {
+      const dpMeta = await protocolContract._getDPRequestMetadata(dpRequest);
+      if (startedRowAdvertised(dpMeta.metadata4 ?? dpMeta[4])) {
+        startWindowEnd = (await this.protocolContract.getProvider().getBlockNumber()) + ORDER_START_WINDOW_BLOCKS;
+      }
+    } catch (e) {
+      this.dispatchECEvent(`DP request ${dpRequest} not readable (${e.message}); the start of order ${orderId} is not checked`, ECLog.DEBUG);
+    }
+    let started = startWindowEnd === null;
+
     // EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the operator
     // records the result. Like _orderPlacedEV it has no indexed params, so we
     // match the order number in the handler.
@@ -648,6 +689,18 @@ class EthernityCloudRunner extends EventTarget {
           throw err;
         }
         try {
+          if (!started) {
+            const block = await this.protocolContract.getProvider().getBlockNumber();
+            const verdict = orderStartVerdict(await this.dpRequestRows(dpRequest), orderId, block, startWindowEnd);
+            if (verdict === 'started') {
+              started = true;
+              this.dispatchECEvent(`Order ${orderId} started on its node`, ECLog.DEBUG);
+            } else if (verdict === 'late') {
+              const err = new Error(`Order ${this.orderId} was not started by its node within ${ORDER_START_WINDOW_BLOCKS} blocks (operator gone)`);
+              err.operatorFault = true;
+              throw err;
+            }
+          }
           const order = await this.protocolContract.getOrder(this.orderId);
           this.dispatchECEvent(`Order:` + inspect(order), ECLog.DEBUG);
           if (parseInt(order.status) == 1) {
@@ -958,6 +1011,18 @@ class EthernityCloudRunner extends EventTarget {
         await delay(ORDER_READ_POLL_MS);
       }
     }
+  }
+
+  // The [key, value] metadata rows of a DP request.
+  async dpRequestRows(dpRequest) {
+    const contract = this.protocolContract.getContract();
+    const count = Number(await contract._getMetadataCountForDPRequest(dpRequest));
+    const rows = [];
+    for (let i = 0; i < count; i++) {
+      const row = await contract._getMetadataValueForDPRequest(dpRequest, i);
+      rows.push([String(row[0]), String(row[1])]);
+    }
+    return rows;
   }
 
   // The DO request had no order after the wait: cancel it, which returns its
