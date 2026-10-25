@@ -288,6 +288,7 @@ class EthernityCloudRunner extends EventTarget {
 
   resetState() {
     this.nodeAddress = '';
+    this.requestedNodeAddress = '';
     this.challengeHash = '';
     this.challengeIPFSHash = '';
     this.publicKey = '';
@@ -350,6 +351,10 @@ class EthernityCloudRunner extends EventTarget {
     if (!await this.isNodeOperatorAddress(node)) {
       throw new Error('Invalid node operator address');
     }
+    // The node the caller asked for, '' for any: every DO request of this
+    // run, a resubmission included, is pinned to it. nodeAddress is the node
+    // of the current order, set from the order once it is approved.
+    this.requestedNodeAddress = node;
     this.nodeAddress = node;
   }
 
@@ -422,13 +427,14 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async processTaskAttempt(code) {
+    this.nodeAddress = this.requestedNodeAddress;
     this.challengeHash = generateRandomHexOfSize(20);
     const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
     const codeMetadata = await this.getV3CodeMetadata(code);
     const inputMetadata = await this.getV3InputMedata();
     await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
     await this.findOrder();
-    if (!this.nodeAddress) {
+    if (!this.requestedNodeAddress) {
       await this.approveOrder();
     }
     await this.waitforTaskToBeProcessed();
@@ -861,13 +867,16 @@ class EthernityCloudRunner extends EventTarget {
 
       this.dispatchECEvent(`Submitting transaction for DO request`);
       // add here call to SC(smart contract)
-      // Metadata4 is the node the request is pinned to, empty for any node;
-      // the zero address there would pin it to 0x0, which no node can place.
+      // Metadata4 is the node the request is pinned to, the one the caller
+      // asked for (requestedNodeAddress) and empty for any node; the zero
+      // address there would pin it to 0x0, which no node can place. A request
+      // resubmitted after an operator fault is pinned the same way, not to
+      // the node that failed the previous one.
       const tx = await this.protocolContract.addDORequest(
         imageMetadata,
         codeMetadata,
         inputMetadata,
-        normalizeNodeAddress(this.nodeAddress),
+        normalizeNodeAddress(this.requestedNodeAddress),
         this.resources,
       );
 
@@ -1721,7 +1730,7 @@ class EthernityCloudRunner extends EventTarget {
       }
       await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
       await this.findOrder();
-      if (!this.nodeAddress) {
+      if (!this.requestedNodeAddress) {
         await this.approveOrder();
       }
       this.dispatchECEvent(`Session order ${this.orderId} is processing`);
