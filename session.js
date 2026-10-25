@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256, verifyCertificateSignature } from './crypto.js';
-import { delay } from './utils.js';
+import { delay, waitForReceipt } from './utils.js';
 
 /**
  * Interactive session handle -- created by runner.runSession() /
@@ -202,7 +202,7 @@ export class EthernityCloudSession {
     const digest = sha256(ciphertext);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
-    await tx.wait();
+    await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
     // With the intake, the row is on chain now, so the input it names is
     // delivered.
     await ipfsClient.flushPending(this.doReq, [cid]);
@@ -367,7 +367,7 @@ export class EthernityCloudSession {
     if (!this.closed) {
       const value = `${SESSION_WIRE_VERSION}:close:${this.orderId}`;
       const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
-      await tx.wait();
+      await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
       this.closed = true;
       this.runner.dispatchECEvent(`Session close requested for order ${this.orderId}`);
     }

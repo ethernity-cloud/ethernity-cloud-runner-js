@@ -4,6 +4,49 @@ import { sha256 } from './crypto.js';
 
 // eslint-disable-next-line no-promise-executor-return
 export const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// The receipt of transaction `hash`, polled through the provider's raw RPC
+// until the chain carries it, as { hash, blockNumber, status, logs }. ethers'
+// TransactionResponse.wait() looks the transaction up again for a receipt
+// without effectiveGasPrice (every receipt of a pre-London chain such as
+// bloxberg), and when an RPC replica behind the one that served the receipt
+// answers that lookup with nothing, its polling subscriber throws "report
+// this; could not find tx or effectiveGasPrice" outside the awaited promise,
+// which ends the process. Here a null answer and a failing read (reported to
+// `onError`) are both waited through, `pollMs` apart; a reverted transaction
+// is an error; past `timeoutMs` the last error is thrown. The logs are parsed
+// with `iface` (an ethers Interface) when given: a log of its contract gets
+// eventName and args, as in a ContractTransactionReceipt; any other log stays
+// raw.
+export const waitForReceipt = async (provider, hash, { iface = null, pollMs = 1000, timeoutMs = 900000, onError = () => {} } = {}) => {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  for (;;) {
+    let raw = null;
+    try {
+      raw = await provider.send('eth_getTransactionReceipt', [hash]);
+    } catch (e) {
+      lastError = e;
+      onError(e);
+    }
+    if (raw) {
+      const status = raw.status == null ? 1 : Number(raw.status);
+      if (status === 0) throw new Error(`transaction ${hash} reverted`);
+      const logs = (raw.logs || []).map((log) => {
+        let parsed = null;
+        if (iface) {
+          try { parsed = iface.parseLog({ topics: [...log.topics], data: log.data }); } catch (e) { parsed = null; }
+        }
+        return parsed ? { ...log, eventName: parsed.name, args: parsed.args } : { ...log };
+      });
+      return { hash, blockNumber: Number(raw.blockNumber), status, logs };
+    }
+    if (Date.now() >= deadline) {
+      throw lastError || new Error(`transaction ${hash} was not mined within ${Math.round(timeoutMs / 1000)} s`);
+    }
+    await delay(pollMs);
+  }
+};
 export const getCurrentTime = () => {
   const today = new Date();
   const dd = String(today.getDate()).padStart(2, '0');

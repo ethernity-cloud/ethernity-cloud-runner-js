@@ -118,6 +118,7 @@ const unclaimed = ({ cancel, orders = [] }) => {
     dispatchECEvent: (m) => events.push(m),
     protocolContract: {
       cancelDORequest: cancel,
+      getProvider: () => ({ send: async () => ({ status: '0x1', blockNumber: '0x1', logs: [] }) }),
       getContract: () => ({
         _getOrdersCount: async () => BigInt(orders.length),
         _getOrder: async (i) => ({ doRequest: BigInt(orders[i]) })

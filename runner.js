@@ -7,7 +7,8 @@ import {
   isAddress,
   isNullOrEmpty,
   normalizeNodeAddress,
-  parseTransactionBytes
+  parseTransactionBytes,
+  waitForReceipt
 } from './utils.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
 import { resolveWalletContext } from './walletContext.js';
@@ -567,33 +568,22 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   // Waits for `tx` to be mined and returns { receipt, result }, result being
-  // the arguments of the protocolEvent it emitted. A reverted or replaced
-  // transaction ends the wait with an error; any other failure is the
-  // provider not answering yet, and the wait goes on.
+  // the arguments of the protocolEvent it emitted. The receipt is polled by
+  // utils.waitForReceipt: a reverted transaction ends the wait with an error,
+  // a read the provider fails is retried.
   async waitForTransactionToBeProcessed(tx, protocolEvent) {
-    while (true) {
-      let txReceipt;
-      try {
-        this.dispatchECEvent(`TX:` + inspect(tx), ECLog.DEBUG);
-        txReceipt = await tx.wait();
-      } catch (e) {
-        if (e.code === 'CALL_EXCEPTION' || e.code === 'TRANSACTION_REPLACED') {
-          throw new Error(e.shortMessage || e.message);
-        }
-        this.dispatchECEvent('Transaction not confirmed yet: ' + e.message, ECLog.WARNING);
-        await delay(1000);
-        continue;
-      }
-      this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
-      // A contract transaction's receipt carries its own contract's logs
-      // decoded, with eventName and args.
-      const event = txReceipt.logs.find((log) => log.eventName === protocolEvent);
-      if (!event) {
-        throw new Error(`transaction ${txReceipt.hash} emitted no ${protocolEvent}`);
-      }
-      this.dispatchECEvent(`EVENTS:` + inspect(event.args), ECLog.DEBUG);
-      return { receipt: txReceipt, result: event.args };
+    this.dispatchECEvent(`TX:` + inspect(tx), ECLog.DEBUG);
+    const txReceipt = await waitForReceipt(this.protocolContract.getProvider(), tx.hash, {
+      iface: this.protocolContract.getContract().interface,
+      onError: (e) => this.dispatchECEvent('Transaction not confirmed yet: ' + e.message, ECLog.WARNING),
+    });
+    this.dispatchECEvent(`RECEIPT:` + inspect(txReceipt), ECLog.DEBUG);
+    const event = txReceipt.logs.find((log) => log.eventName === protocolEvent);
+    if (!event) {
+      throw new Error(`transaction ${txReceipt.hash} emitted no ${protocolEvent}`);
     }
+    this.dispatchECEvent(`EVENTS:` + inspect(event.args), ECLog.DEBUG);
+    return { receipt: txReceipt, result: event.args };
   }
 
 
@@ -1044,8 +1034,8 @@ class EthernityCloudRunner extends EventTarget {
     try {
       const tx = await this.protocolContract.cancelDORequest(doReq);
       this.dispatchECEvent(`${tx.hash} is pending...`);
-      const receipt = await tx.wait();
-      if (receipt && receipt.status === 1) {
+      const receipt = await waitForReceipt(this.protocolContract.getProvider(), tx.hash);
+      if (receipt.status === 1) {
         this.dispatchECEvent(`Request ${doReq} cancelled; its escrow is returned`);
         const err = new Error(`No node took request ${doReq} within ${waitSeconds} s; the request was cancelled and its escrow returned`);
         err.code = ECError.NO_NODE;

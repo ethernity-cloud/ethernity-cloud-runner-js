@@ -21,10 +21,14 @@ const runnerWith = () => {
   let approvals = 0;
   runner.protocolContract = {
     isNodeOperator: async () => true,
-    getContract: () => ({ _getOrdersCount: async () => 0 }),
+    getContract: () => ({
+      _getOrdersCount: async () => 0,
+      interface: { parseLog: () => ({ name: '_addDORequestEV', args: ['0xclient', 4349n] }) },
+    }),
+    getProvider: () => ({ send: async () => ({ status: '0x1', blockNumber: '0x1', logs: [{ topics: [], data: '0x' }] }) }),
     addDORequest: async (image, code, input, node) => {
       pinned.push(node);
-      return { hash: '0xtx', wait: async () => ({ logs: [{ eventName: '_addDORequestEV', args: ['0xclient', 4349n] }] }) };
+      return { hash: '0xtx' };
     },
   };
   runner.getV3ImageMetadata = async () => 'image';
