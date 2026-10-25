@@ -196,6 +196,12 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
 // at once, since retrying the same bytes cannot change the answer; a network
 // failure or 5xx is retried. A CID with no queued blob throws: nothing was
 // uploaded through the intake under it. No-op without an intake.
+// The intake answers 403 with this text while its own RPC replica has not yet
+// seen the row that names the cid; the row is on chain (its receipt came
+// back before the delivery), so the answer changes within seconds.
+export const INTAKE_NOT_NAMED = 'does not name this cid';
+export const INTAKE_NOT_NAMED_ATTEMPTS = 12;
+
 export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000) => {
   if (!intake) return;
   for (const cid of cids) {
@@ -206,7 +212,8 @@ export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000
     const url = `${intake.baseUrl}/payload/${intake.network}/${doRequest}/${cid}`;
     let last = '';
     let delivered = false;
-    for (let attempt = 0; attempt < attempts && !delivered; attempt += 1) {
+    let allowed = attempts;
+    for (let attempt = 0; attempt < allowed && !delivered; attempt += 1) {
       try {
         // eslint-disable-next-line no-await-in-loop
         const response = await fetch(url, {
@@ -221,7 +228,9 @@ export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000
         }
         // eslint-disable-next-line no-await-in-loop
         const text = (await response.text()).slice(0, 200);
-        if (response.status >= 400 && response.status < 500 && response.status !== 409) {
+        const notNamedYet = response.status === 403 && text.includes(INTAKE_NOT_NAMED);
+        if (notNamedYet) allowed = Math.max(allowed, INTAKE_NOT_NAMED_ATTEMPTS);
+        if (response.status >= 400 && response.status < 500 && response.status !== 409 && !notNamedYet) {
           throw new Error(`intake refused ${cid} for request ${doRequest}: ${response.status} ${text}`);
         }
         last = `${response.status} ${text}`;
@@ -230,10 +239,10 @@ export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000
         last = e.message;
       }
       // eslint-disable-next-line no-await-in-loop
-      if (attempt + 1 < attempts) await delay(delayMs);
+      if (attempt + 1 < allowed) await delay(delayMs);
     }
     if (!delivered) {
-      throw new Error(`intake did not accept ${cid} for request ${doRequest} after ${attempts} attempts: ${last}`);
+      throw new Error(`intake did not accept ${cid} for request ${doRequest} after ${allowed} attempts: ${last}`);
     }
   }
 };

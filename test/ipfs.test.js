@@ -1,7 +1,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, unixfsCid, BLOCK_SIZE } from '../ipfs.js';
+import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, unixfsCid, BLOCK_SIZE, INTAKE_NOT_NAMED_ATTEMPTS } from '../ipfs.js';
 
 // A loopback HTTP server standing in for a Kubo RPC API and for the intake:
 // every request it receives is recorded, and `answer` decides the reply.
@@ -173,4 +173,28 @@ test('flushPending throws at once when the intake refuses a blob', async () => {
   answer = () => ({ status: 404, body: 'no such request' });
   await assert.rejects(flushPending(11, [cid], 3, 10), /intake refused .* 404/);
   assert.equal(requests.length, 1);
+});
+
+// The intake answers 403 "does not name this cid" while its RPC replica has
+// not yet seen the row the client just had the receipt of (bloxberg testnet,
+// 2026-10-25: a session's seventh input was refused this way and the session
+// died).
+test('flushPending waits through the 403 the intake answers before its replica sees the row', async () => {
+  initializeIntake('bloxberg_testnet', base);
+  const cid = await uploadToIPFS('zeta');
+  let answers = 0;
+  answer = () => {
+    answers += 1;
+    return answers <= 2 ? { status: 403, body: '{"error": "the DO request does not name this cid"}' } : { status: 200, body: '{}' };
+  };
+  await flushPending(12, [cid], 3, 10);
+  assert.equal(requests.length, 3);
+});
+
+test('a 403 that persists past the attempts allowed for it is reported with the attempts made', async () => {
+  initializeIntake('bloxberg_testnet', base);
+  const cid = await uploadToIPFS('eta');
+  answer = () => ({ status: 403, body: '{"error": "the DO request does not name this cid"}' });
+  await assert.rejects(flushPending(13, [cid], 3, 1), new RegExp(`did not accept .* after ${INTAKE_NOT_NAMED_ATTEMPTS} attempts: 403`));
+  assert.equal(requests.length, INTAKE_NOT_NAMED_ATTEMPTS);
 });
