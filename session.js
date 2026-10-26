@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256, verifyCertificateSignature } from './crypto.js';
-import { delay, waitForReceipt } from './utils.js';
+import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
 
 /**
  * Interactive session handle -- created by runner.runSession() /
@@ -201,7 +201,7 @@ export class EthernityCloudSession {
     const cid = await ipfsClient.uploadToIPFS(ciphertext);
     const digest = sha256(ciphertext);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
-    const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
+    const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
     await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
     // With the intake, the row is on chain now, so the input it names is
     // delivered.
@@ -330,6 +330,22 @@ export class EthernityCloudSession {
     );
   }
 
+  /** The verified output answering input `seq` (the row whose ack is `seq`;
+      an 'ok' reply, or an 'error' or 'late' notice), polled for until it
+      arrives or `timeoutMs` passes: null then. Outputs answering other
+      inputs that arrive meanwhile stay in this.outputs. This is the wait for
+      a request-reply exchange; waitOutputs returns any new output, so there
+      a late answer to an earlier input would be taken for the current one's. */
+  async awaitOutput(seq, timeoutMs = 300000, pollMs = 5000) {
+    const answer = () => this.outputs.find((m) => m.ack === seq) || null;
+    const deadline = Date.now() + timeoutMs;
+    while (answer() === null && Date.now() < deadline) {
+      await this.pollOutputs();
+      if (answer() === null) await delay(pollMs);
+    }
+    return answer();
+  }
+
   /** Block until `count` new verified outputs arrive (or timeout). */
   async waitOutputs(count = 1, timeoutMs = 300000, pollMs = 5000) {
     const collected = [];
@@ -366,7 +382,7 @@ export class EthernityCloudSession {
   async close(wait = true, timeoutMs = 900000) {
     if (!this.closed) {
       const value = `${SESSION_WIRE_VERSION}:close:${this.orderId}`;
-      const tx = await this._contract()._addMetadataToRequest(this.doReq, SESSION_INPUT_KEY, value);
+      const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
       await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
       this.closed = true;
       this.runner.dispatchECEvent(`Session close requested for order ${this.orderId}`);

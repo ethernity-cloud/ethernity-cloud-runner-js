@@ -47,6 +47,19 @@ export const waitForReceipt = async (provider, hash, { iface = null, pollMs = 10
     await delay(pollMs);
   }
 };
+// Gas limit for a contract write: the node's estimate plus
+// GAS_HEADROOM_PERCENT. The estimate is made on the previous block's state,
+// and a transaction that reaches the same contract earlier in the block
+// raises what the write costs (bloxberg testnet, 2026-10-25: a session close
+// estimated at 82782 gas needed 86982 once the node's output row had landed
+// first in its block, and reverted at the estimate). `fn` is an ethers
+// contract method, `args` its arguments, `overrides` its transaction
+// overrides; returns the sent transaction.
+export const GAS_HEADROOM_PERCENT = 25;
+export const withGasHeadroom = async (fn, args, overrides = {}) => {
+  const estimate = await fn.estimateGas(...args, overrides);
+  return fn(...args, { ...overrides, gasLimit: estimate + (estimate * BigInt(GAS_HEADROOM_PERCENT)) / 100n });
+};
 export const getCurrentTime = () => {
   const today = new Date();
   const dd = String(today.getDate()).padStart(2, '0');

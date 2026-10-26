@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import contract from '../abi/polygonProtocolAbi.js';
 import { contractRunners } from '../../walletContext.js';
+import { withGasHeadroom } from '../../utils.js';
 
 // process.env is undefined in non-React browser bundles; guard so the module
 // loads there and the gas params fall back to their defaults.
@@ -85,7 +86,7 @@ class PolygonProtocolContract {
       );
     }
     // eslint-disable-next-line no-underscore-dangle
-    return this.protocolContract._addDORequest(
+    return withGasHeadroom(this.protocolContract._addDORequest, [
       cpu,
       memory,
       storage,
@@ -97,8 +98,7 @@ class PolygonProtocolContract {
       payloadMetadata,
       inputMetadata,
       nodeAddress
-      // this.getEIP1559GasOptions()
-    );
+    ]);
   }
 
   async getOrder(orderId) {
@@ -110,7 +110,7 @@ class PolygonProtocolContract {
   }
 
   async cancelDORequest(doRequestId) {
-    return this.protocolContract._cancelDORequest(doRequestId);
+    return withGasHeadroom(this.protocolContract._cancelDORequest, [doRequestId]);
   }
 
   async getResultFromOrder(orderId) {
