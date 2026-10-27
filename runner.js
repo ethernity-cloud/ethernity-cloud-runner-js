@@ -794,12 +794,10 @@ class EthernityCloudRunner extends EventTarget {
 
   async getV3ImageMetadata(challengeHash) {
     // generating encrypted base64 hash of the challenge
-    const base64EncryptedChallenge = await encryptWithCertificate(challengeHash, this.enclavePublicKey);
-
-    // The encrypted challenge's CID through the configured storage; uploadToIPFS
-    // throws when the storage does not take it, so the request is never built
-    // without one.
-    this.challengeIPFSHash = await this._uploadArtefact(base64EncryptedChallenge);
+    // The encrypted challenge's CID through the configured storage;
+    // _sealArtefact throws when the storage does not take it, so the request
+    // is never built without one.
+    this.challengeIPFSHash = (await this._sealArtefact(challengeHash)).cid;
     this.dispatchECEvent(`Encrypted challenge: ${this.challengeIPFSHash}`);
 
     const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
@@ -814,8 +812,7 @@ class EthernityCloudRunner extends EventTarget {
     // extracting code from all the code cells
     let scriptChecksum = sha256(code);
     // The encrypted code's CID through the configured storage.
-    const base64EncryptedScript = await encryptWithCertificate(code, this.enclavePublicKey);
-    this.scriptHash = await this._uploadArtefact(base64EncryptedScript);
+    this.scriptHash = (await this._sealArtefact(code)).cid;
     this.dispatchECEvent(`Encrypted code: ${this.scriptHash}`);
 
     // scriptChecksum = await this.tokenContract.signMessage(scriptChecksum);
@@ -841,8 +838,7 @@ class EthernityCloudRunner extends EventTarget {
     // code; the node fetches the CID into the task's input.txt and the
     // trustedzone checks its sha256 against the checksum declared here.
     const inputChecksum = sha256(inputData);
-    const base64EncryptedInput = await encryptWithCertificate(inputData, this.enclavePublicKey);
-    this.fileSetHash = await this._uploadArtefact(base64EncryptedInput);
+    this.fileSetHash = (await this._sealArtefact(inputData)).cid;
     this.dispatchECEvent(`Encrypted input: ${this.fileSetHash}`);
     // v3:input_ipfs_hash:input_checksum
     return `${version}:${this.fileSetHash}:${inputChecksum}`;
@@ -887,6 +883,8 @@ class EthernityCloudRunner extends EventTarget {
       const artefacts = [this.challengeIPFSHash, this.scriptHash];
       if (this.fileSetHash) artefacts.push(this.fileSetHash);
       await ipfsClient.flushPending(this.doRequest, artefacts);
+      // An artefact the held cache carried is referenced on chain now.
+      await ipfsClient.releaseHeld(artefacts);
 
       return true;
     } catch (e) {
@@ -1541,13 +1539,32 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   // eslint-disable-next-line class-methods-use-this
-  // The CID of an artefact (challenge, code, input, session input) through the
-  // configured storage. A blob the intake does not take (ipfs.INTAKE_MAX_BYTES)
-  // is held in the runner's local cache, reported as a warning event and
-  // thrown as ipfs.StorageLimitError, before any transaction names it.
-  async _uploadArtefact(content) {
+  // The CID and ciphertext digest of an artefact (challenge, code, input,
+  // session input) sealed for the enclave's certificate, through the
+  // configured storage. An artefact the intake does not take
+  // (ipfs.INTAKE_MAX_BYTES) is held in the runner's held cache under the key
+  // of its plaintext and the enclave key, reported as a warning event and
+  // thrown as ipfs.StorageLimitError before any transaction names it; once an
+  // IPFS endpoint of the application's own has uploaded it (initializeStorage,
+  // or here when one is set), the same plaintext sealed for the same enclave
+  // resolves to the held ciphertext's CID without a new seal, which a new
+  // nonce would give a new CID.
+  async _sealArtefact(plaintext) {
+    const key = `${sha256(String(plaintext))}|${sha256(String(this.enclavePublicKey))}`;
+    const held = await ipfsClient.heldEntry(key);
+    if (held) {
+      if (held.uploaded) return { cid: held.cid, digest: held.digest };
+      if (ipfsClient.intakeNetwork() === null && ipfsClient.isInitialized()) {
+        const { uploaded } = await ipfsClient.uploadHeld();
+        if (uploaded.includes(held.cid)) return { cid: held.cid, digest: held.digest };
+      }
+      const refused = new ipfsClient.StorageLimitError(held.cid, held.size, ipfsClient.intakeLimit(), ipfsClient.heldLocation());
+      this.dispatchECEvent(refused.message, 2);
+      throw refused;
+    }
+    const ciphertext = await encryptWithCertificate(String(plaintext), this.enclavePublicKey);
     try {
-      return await ipfsClient.uploadToIPFS(content);
+      return await ipfsClient.uploadArtefact(ciphertext, key);
     } catch (e) {
       if (e instanceof ipfsClient.StorageLimitError) this.dispatchECEvent(e.message, 2);
       throw e;

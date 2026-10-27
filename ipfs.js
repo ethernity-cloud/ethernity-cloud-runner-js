@@ -2,6 +2,7 @@ import { create } from 'ipfs-http-client';
 import { ethers } from 'ethers';
 import { delay } from './utils.js';
 import { ECError } from './enums.js';
+import { openHeldCache } from './heldCache.js';
 
 let ipfs = null;
 
@@ -20,19 +21,20 @@ export const PUBLIC_INTAKE = 'https://ipfs.ethernity.cloud';
 // What the public intake takes per blob (mvp-pox-node ipfs_intake.py,
 // max_bytes); the limit of an intake of the application's own is given to
 // initializeIntake. A blob above it is not sent to the intake: it is held in
-// the runner's local cache (`held`, cid -> bytes), uploadToIPFS throws
-// StorageLimitError before any transaction names the blob, and the held blobs
-// are uploaded by uploadHeld() once an IPFS endpoint of the application's own
-// is set (runner.initializeStorage calls it).
+// the runner's held cache (heldCache.js: IndexedDB in a browser, files under
+// ~/.ethernity-cloud/held in Node), uploadToIPFS and uploadArtefact throw
+// StorageLimitError before any transaction names it, uploadHeld() uploads the
+// held blobs once an IPFS endpoint of the application's own is set
+// (runner.initializeStorage calls it), and releaseHeld() forgets a blob once a
+// transaction on chain names it.
 export const INTAKE_MAX_BYTES = 100 * 1024 * 1024;
-const held = new Map();
 
 export class StorageLimitError extends Error {
-  constructor(cid, size, limit) {
+  constructor(cid, size, limit, location) {
     super(
-      `the intake takes a blob of up to ${limit} bytes and this one is ${size} bytes; it is held in the ` +
-        `runner's local cache as ${cid} and is uploaded when an IPFS endpoint of the application's own is set ` +
-        '(initializeStorage(url, token)); then run or send again'
+      `the intake takes a blob of up to ${limit} bytes and this one is ${size} bytes; it is held in ${location} ` +
+        `as ${cid} and is uploaded when an IPFS endpoint of the application's own is set (initializeStorage(url, token)); ` +
+        'then run or send again'
     );
     this.name = 'StorageLimitError';
     this.cid = cid;
@@ -41,32 +43,85 @@ export class StorageLimitError extends Error {
   }
 }
 
-// The blobs held in the local cache, as [{ cid, size }].
-export const heldBlobs = () => Array.from(held, ([cid, bytes]) => ({ cid, size: bytes.length }));
+// The limit of the configured intake, INTAKE_MAX_BYTES without one.
+export const intakeLimit = () => (intake ? intake.maxBytes : INTAKE_MAX_BYTES);
+// Where the held cache keeps its blobs, for messages.
+export const heldLocation = () => openHeldCache().location();
+// The held cache's entry under the artefact `key` (runner._sealArtefact):
+// { cid, size, digest, uploaded } or null.
+export const heldEntry = (key) => openHeldCache().get(key);
+// The blobs held, as [{ cid, size, uploaded }].
+export const heldBlobs = async () => (await openHeldCache().entries()).map(({ cid, size, uploaded }) => ({ cid, size, uploaded }));
 
-// Upload the held blobs through the IPFS API configured by initialize(); each
-// one the API takes leaves the cache. Returns { uploaded: [cid], failed: { cid:
-// reason } }; nothing is uploaded while the storage is the intake, which does
-// not take them.
+// The held bytes of `cid`, as a Blob where the platform has one (a browser)
+// and a Uint8Array otherwise, for an application that offers to save them.
+export const heldBlob = async (cid) => {
+  const chunks = [];
+  for await (const chunk of openHeldCache().read(cid)) chunks.push(chunk);
+  if (typeof Blob !== 'undefined') return new Blob(chunks);
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+};
+
+const sha256Hex = (bytes) => ethers.sha256(bytes).slice(2);
+
+// Hold `bytes` under `key` (the artefact key, or the CID itself) and throw
+// the StorageLimitError that names them.
+const holdAndRefuse = async (key, cid, bytes) => {
+  await openHeldCache().put(key, cid, bytes, sha256Hex(bytes));
+  throw new StorageLimitError(cid, bytes.length, intake.maxBytes, openHeldCache().location());
+};
+
+// Upload the held blobs through the IPFS API configured by initialize(),
+// streamed in their chunks; each one the API takes is marked uploaded and
+// stays held until releaseHeld, so the run that references it finds it.
+// Returns { uploaded: [cid], failed: { cid: reason } }; nothing is uploaded
+// while the storage is the intake, which does not take them.
 export const uploadHeld = async () => {
   const uploaded = [];
   const failed = {};
   if (!ipfs) return { uploaded, failed };
-  for (const [cid, bytes] of Array.from(held)) {
+  for (const entry of await openHeldCache().entries()) {
+    if (entry.uploaded) continue;
     try {
       // eslint-disable-next-line no-await-in-loop
-      const added = await uploadToIPFS(bytes);
-      if (added !== cid) {
-        failed[cid] = `the API named the bytes ${added}`;
+      const response = await ipfs.add(openHeldCache().read(entry.cid), RAW_BLOCK_OPTIONS);
+      const added = response && response.cid ? response.cid.toString() : response && response.path;
+      if (added !== entry.cid) {
+        failed[entry.cid] = `the API named the bytes ${added}`;
         continue;
       }
-      held.delete(cid);
-      uploaded.push(cid);
+      // eslint-disable-next-line no-await-in-loop
+      await openHeldCache().markUploaded(entry.cid);
+      uploaded.push(entry.cid);
     } catch (e) {
-      failed[cid] = e.message;
+      failed[entry.cid] = e.message;
     }
   }
   return { uploaded, failed };
+};
+
+// Forget the held blobs among `cids`: a transaction on chain names them now.
+export const releaseHeld = async (cids) => {
+  for (const cid of cids) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await openHeldCache().byCid(cid)) await openHeldCache().release(cid);
+  }
+};
+
+// The CID and the digest (sha256, hex) of the artefact `content` through the
+// configured storage, held under the artefact `key` with StorageLimitError
+// when the intake does not take it (runner._sealArtefact finds it there).
+export const uploadArtefact = async (content, key) => {
+  const bytes = toBytes(content);
+  const digest = sha256Hex(bytes);
+  if (intake && bytes.length > intake.maxBytes) await holdAndRefuse(key, unixfsCid(bytes), bytes);
+  return { cid: await uploadToIPFS(bytes), digest };
 };
 
 // Whether a storage endpoint is configured (initialize or initializeIntake).
@@ -215,10 +270,7 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
   if (intake) {
     const bytes = toBytes(code);
     const cid = unixfsCid(bytes);
-    if (bytes.length > intake.maxBytes) {
-      held.set(cid, bytes);
-      throw new StorageLimitError(cid, bytes.length, intake.maxBytes);
-    }
+    if (bytes.length > intake.maxBytes) await holdAndRefuse(cid, cid, bytes);
     pending.set(cid, bytes);
     return cid;
   }

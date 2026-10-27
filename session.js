@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
-import { decryptWithPrivateKey, encryptWithCertificate, sha256, verifyCertificateSignature } from './crypto.js';
+import { decryptWithPrivateKey, sha256, verifyCertificateSignature } from './crypto.js';
 import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
 
 /**
@@ -230,19 +230,20 @@ export class EthernityCloudSession {
     if (!await this.isRunning()) {
       throw new SessionError('session order is no longer processing');
     }
-    const ciphertext = await encryptWithCertificate(String(data), this.runner.enclavePublicKey);
-    // The ciphertext's CID through the configured storage; uploadToIPFS throws
-    // when the storage does not take it.
-    const cid = await this.runner._uploadArtefact(ciphertext);
+    // The input sealed for the enclave, its CID and digest through the
+    // configured storage; _sealArtefact throws when the storage does not take
+    // it, before any transaction.
+    const { cid, digest } = await this.runner._sealArtefact(String(data));
     // The bytes reach the intake before the row that names them, under the
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.
     const lodged = await this._lodgeInput(cid);
-    const digest = sha256(ciphertext);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
     await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
     if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
+    // An input the held cache carried is referenced on chain now.
+    await ipfsClient.releaseHeld([cid]);
     const seq = this.inputSeq;
     this.inputSeq += 1;
     this.runner.dispatchECEvent(`Session input ${seq} committed (${cid})`);
