@@ -202,6 +202,63 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
 export const INTAKE_NOT_NAMED = 'does not name this cid';
 export const INTAKE_NOT_NAMED_ATTEMPTS = 12;
 
+// A blob the DO request does not name yet is lodged with the intake under the
+// request owner's EIP-191 signature of ownerSignatureMessage(network, doRequest)
+// (header OWNER_SIGNATURE_HEADER; one signature serves every blob of the
+// request), so the bytes are at the bootnode before the row that names them is
+// committed: a runner that stops between the two leaves no row without bytes,
+// and the node reads the bytes the moment it reads the row (mvp-pox-node
+// ipfs_intake.py).
+export const OWNER_SIGNATURE_HEADER = 'X-Etny-Owner-Signature';
+export const ownerSignatureMessage = (network, doRequest) => `etny-intake|${network}|${doRequest}`;
+// The network the intake is configured for, null without an intake.
+export const intakeNetwork = () => (intake ? intake.network : null);
+// The text of the 403 an intake without the signed path answers a lodged blob
+// with: its row path still delivers the blob, after the row.
+export const INTAKE_UNSIGNED_PATH = INTAKE_NOT_NAMED;
+
+// Deliver the queued blobs `cids` names to the intake for `doRequest` under
+// the owner's `signature`, before the request names them, each tried
+// `attempts` times `delayMs` apart through connection failures and 5xx.
+// Returns the CIDs the intake took (`delivered`), which leave the queue, and
+// the answer for each it did not take (`refused`, cid -> text), which stays
+// queued for flushPending after the row. Never throws for an intake answer.
+// Nothing without an intake.
+export const deliverSigned = async (doRequest, cids, signature, attempts = 3, delayMs = 5000) => {
+  const delivered = [];
+  const refused = {};
+  if (!intake) return { delivered, refused };
+  for (const cid of cids) {
+    const bytes = pending.get(cid);
+    if (!bytes) continue;
+    const url = `${intake.baseUrl}/payload/${intake.network}/${doRequest}/${cid}`;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream', [OWNER_SIGNATURE_HEADER]: signature },
+          body: bytes
+        });
+        if (response.status === 200) {
+          pending.delete(cid);
+          delivered.push(cid);
+          delete refused[cid];
+          break;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        refused[cid] = `${response.status} ${(await response.text()).slice(0, 200)}`;
+        if (response.status < 500) break;
+      } catch (e) {
+        refused[cid] = e.message;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      if (attempt < attempts) await delay(delayMs);
+    }
+  }
+  return { delivered, refused };
+};
+
 export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000) => {
   if (!intake) return;
   for (const cid of cids) {

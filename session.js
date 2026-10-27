@@ -67,6 +67,10 @@ export class EthernityCloudSession {
     // Row index -> when its payload was first found not readable; the row is
     // retried until PAYLOAD_RETRY_MS after that.
     this.payloadWaits = {};
+    // The owner's signature that lodges this session's inputs with the intake
+    // before their rows (_lodgeInput): undefined until asked for, null when
+    // the wallet refused to sign.
+    this.ownerSignature = undefined;
   }
 
   static async create(runner, orderId) {
@@ -179,6 +183,37 @@ export class EthernityCloudSession {
 
   /* ------------------------------------------------------------------- input */
 
+  /** Lodge input `cid`'s queued bytes with the intake before the row that
+      names them, under the request owner's signature, asked of the wallet
+      once per session (one prompt in a browser wallet). True when the intake
+      took them. False when the bytes are to go after the row instead: no
+      intake, no wallet, a wallet that did not sign, or an intake without the
+      signed path (its 403 INTAKE_UNSIGNED_PATH). Throws when the intake
+      refused the lodged bytes otherwise, or could not be reached: the row is
+      not committed without its bytes in place, and the input can be sent
+      again. */
+  async _lodgeInput(cid) {
+    const network = ipfsClient.intakeNetwork();
+    if (network === null || !this.runner.walletContext) return false;
+    if (this.ownerSignature === undefined) {
+      try {
+        this.ownerSignature = await this.runner.walletContext.signMessage(ipfsClient.ownerSignatureMessage(network, this.doReq));
+      } catch (e) {
+        this.ownerSignature = null;
+        this.runner.dispatchECEvent(
+          `Session: the wallet did not sign for lodging inputs before their rows (${e.message}); inputs go out after their rows`, 2);
+      }
+    }
+    if (!this.ownerSignature) return false;
+    const { delivered, refused } = await ipfsClient.deliverSigned(this.doReq, [cid], this.ownerSignature);
+    if (delivered.includes(cid)) return true;
+    if (String(refused[cid]).includes(ipfsClient.INTAKE_UNSIGNED_PATH)) {
+      this.runner.dispatchECEvent(`Session input ${this.inputSeq}: the intake takes no lodged bytes; delivered after its row`, 2);
+      return false;
+    }
+    throw new SessionError(`input ${this.inputSeq} was not lodged with the intake (${refused[cid]}); not committed, send it again`);
+  }
+
   /** Encrypt for the enclave, deliver the ciphertext through the configured
       storage (the bootnode's intake by default), commit the etny-si row.
       Returns the input seq. Refuses when the session cannot answer any more. */
@@ -199,13 +234,15 @@ export class EthernityCloudSession {
     // The ciphertext's CID through the configured storage; uploadToIPFS throws
     // when the storage does not take it.
     const cid = await ipfsClient.uploadToIPFS(ciphertext);
+    // The bytes reach the intake before the row that names them, under the
+    // owner's signature; an input is complete only once its row is on chain,
+    // so a client that stops before that leaves no row without bytes.
+    const lodged = await this._lodgeInput(cid);
     const digest = sha256(ciphertext);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
     await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
-    // With the intake, the row is on chain now, so the input it names is
-    // delivered.
-    await ipfsClient.flushPending(this.doReq, [cid]);
+    if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
     const seq = this.inputSeq;
     this.inputSeq += 1;
     this.runner.dispatchECEvent(`Session input ${seq} committed (${cid})`);
