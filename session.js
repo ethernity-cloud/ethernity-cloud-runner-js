@@ -233,7 +233,7 @@ export class EthernityCloudSession {
     const ciphertext = await encryptWithCertificate(String(data), this.runner.enclavePublicKey);
     // The ciphertext's CID through the configured storage; uploadToIPFS throws
     // when the storage does not take it.
-    const cid = await ipfsClient.uploadToIPFS(ciphertext);
+    const cid = await this.runner._uploadArtefact(ciphertext);
     // The bytes reach the intake before the row that names them, under the
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.

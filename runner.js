@@ -799,7 +799,7 @@ class EthernityCloudRunner extends EventTarget {
     // The encrypted challenge's CID through the configured storage; uploadToIPFS
     // throws when the storage does not take it, so the request is never built
     // without one.
-    this.challengeIPFSHash = await ipfsClient.uploadToIPFS(base64EncryptedChallenge);
+    this.challengeIPFSHash = await this._uploadArtefact(base64EncryptedChallenge);
     this.dispatchECEvent(`Encrypted challenge: ${this.challengeIPFSHash}`);
 
     const publicKey = this.publicKey ? this.publicKey : await this.getWalletPublicKey();
@@ -815,7 +815,7 @@ class EthernityCloudRunner extends EventTarget {
     let scriptChecksum = sha256(code);
     // The encrypted code's CID through the configured storage.
     const base64EncryptedScript = await encryptWithCertificate(code, this.enclavePublicKey);
-    this.scriptHash = await ipfsClient.uploadToIPFS(base64EncryptedScript);
+    this.scriptHash = await this._uploadArtefact(base64EncryptedScript);
     this.dispatchECEvent(`Encrypted code: ${this.scriptHash}`);
 
     // scriptChecksum = await this.tokenContract.signMessage(scriptChecksum);
@@ -842,7 +842,7 @@ class EthernityCloudRunner extends EventTarget {
     // trustedzone checks its sha256 against the checksum declared here.
     const inputChecksum = sha256(inputData);
     const base64EncryptedInput = await encryptWithCertificate(inputData, this.enclavePublicKey);
-    this.fileSetHash = await ipfsClient.uploadToIPFS(base64EncryptedInput);
+    this.fileSetHash = await this._uploadArtefact(base64EncryptedInput);
     this.dispatchECEvent(`Encrypted input: ${this.fileSetHash}`);
     // v3:input_ipfs_hash:input_checksum
     return `${version}:${this.fileSetHash}:${inputChecksum}`;
@@ -1541,8 +1541,31 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   // eslint-disable-next-line class-methods-use-this
-  initializeStorage(ipfsAddress, protocol, port, token) {
+  // The CID of an artefact (challenge, code, input, session input) through the
+  // configured storage. A blob the intake does not take (ipfs.INTAKE_MAX_BYTES)
+  // is held in the runner's local cache, reported as a warning event and
+  // thrown as ipfs.StorageLimitError, before any transaction names it.
+  async _uploadArtefact(content) {
+    try {
+      return await ipfsClient.uploadToIPFS(content);
+    } catch (e) {
+      if (e instanceof ipfsClient.StorageLimitError) this.dispatchECEvent(e.message, 2);
+      throw e;
+    }
+  }
+
+  // Upload and read through a Kubo RPC API of the application's own (or the
+  // public API with a writer token). The blobs the intake did not take and the
+  // runner holds in its local cache are uploaded through it at once; resolves
+  // to their outcome, { uploaded: [cid], failed: { cid: reason } }.
+  async initializeStorage(ipfsAddress, protocol, port, token) {
     ipfsClient.initialize(ipfsAddress, protocol, port, token);
+    const outcome = await ipfsClient.uploadHeld();
+    for (const cid of outcome.uploaded) this.dispatchECEvent(`Held blob ${cid} uploaded to the IPFS endpoint`);
+    for (const [cid, reason] of Object.entries(outcome.failed)) {
+      this.dispatchECEvent(`Held blob ${cid} was not taken by the IPFS endpoint: ${reason}`, 2);
+    }
+    return outcome;
   }
 
   // Upload through the bootnode's payload intake and read through its public

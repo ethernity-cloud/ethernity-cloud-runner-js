@@ -17,6 +17,58 @@ const pending = new Map();
 
 export const PUBLIC_INTAKE = 'https://ipfs.ethernity.cloud';
 
+// What the public intake takes per blob (mvp-pox-node ipfs_intake.py,
+// max_bytes); the limit of an intake of the application's own is given to
+// initializeIntake. A blob above it is not sent to the intake: it is held in
+// the runner's local cache (`held`, cid -> bytes), uploadToIPFS throws
+// StorageLimitError before any transaction names the blob, and the held blobs
+// are uploaded by uploadHeld() once an IPFS endpoint of the application's own
+// is set (runner.initializeStorage calls it).
+export const INTAKE_MAX_BYTES = 100 * 1024 * 1024;
+const held = new Map();
+
+export class StorageLimitError extends Error {
+  constructor(cid, size, limit) {
+    super(
+      `the intake takes a blob of up to ${limit} bytes and this one is ${size} bytes; it is held in the ` +
+        `runner's local cache as ${cid} and is uploaded when an IPFS endpoint of the application's own is set ` +
+        '(initializeStorage(url, token)); then run or send again'
+    );
+    this.name = 'StorageLimitError';
+    this.cid = cid;
+    this.size = size;
+    this.limit = limit;
+  }
+}
+
+// The blobs held in the local cache, as [{ cid, size }].
+export const heldBlobs = () => Array.from(held, ([cid, bytes]) => ({ cid, size: bytes.length }));
+
+// Upload the held blobs through the IPFS API configured by initialize(); each
+// one the API takes leaves the cache. Returns { uploaded: [cid], failed: { cid:
+// reason } }; nothing is uploaded while the storage is the intake, which does
+// not take them.
+export const uploadHeld = async () => {
+  const uploaded = [];
+  const failed = {};
+  if (!ipfs) return { uploaded, failed };
+  for (const [cid, bytes] of Array.from(held)) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const added = await uploadToIPFS(bytes);
+      if (added !== cid) {
+        failed[cid] = `the API named the bytes ${added}`;
+        continue;
+      }
+      held.delete(cid);
+      uploaded.push(cid);
+    } catch (e) {
+      failed[cid] = e.message;
+    }
+  }
+  return { uploaded, failed };
+};
+
 // Whether a storage endpoint is configured (initialize or initializeIntake).
 export const isInitialized = () => ipfs !== null || intake !== null;
 
@@ -34,10 +86,12 @@ export const initialize = (host, protocol, port, token) => {
   }
 };
 
-// `network` is the name the node agent uses (`bloxberg_testnet`, ...).
-export const initializeIntake = (network, baseUrl = PUBLIC_INTAKE) => {
+// `network` is the name the node agent uses (`bloxberg_testnet`, ...);
+// `maxBytes` is what this intake takes per blob (INTAKE_MAX_BYTES for the
+// public one).
+export const initializeIntake = (network, baseUrl = PUBLIC_INTAKE, maxBytes = INTAKE_MAX_BYTES) => {
   ipfs = null;
-  intake = { baseUrl: baseUrl.replace(/\/+$/, ''), network };
+  intake = { baseUrl: baseUrl.replace(/\/+$/, ''), network, maxBytes };
   pending.clear();
 };
 
@@ -161,6 +215,10 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
   if (intake) {
     const bytes = toBytes(code);
     const cid = unixfsCid(bytes);
+    if (bytes.length > intake.maxBytes) {
+      held.set(cid, bytes);
+      throw new StorageLimitError(cid, bytes.length, intake.maxBytes);
+    }
     pending.set(cid, bytes);
     return cid;
   }
