@@ -130,6 +130,7 @@ export const ECNetwork = {
   },
   POLYGON: {
     TESTNET: 'Polygon TESTNET',
+    TESTNET_UNSAFE: 'Polygon TESTNET_UNSAFE',
     MAINNET: 'Polygon MAINNET'
   },
   IOTEX: {
@@ -157,6 +158,8 @@ export const ECRunner = {
   POLYGON: {
     PYNITHY_RUNNER_TESTNET: 'ecld-pynithy-amoy',
     NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-amoy',
+    PYNITHY_RUNNER_TESTNET_UNSAFE: 'ecld-pynithy-amoy-unsafe',
+    NODENITHY_RUNNER_TESTNET_UNSAFE: 'ecld-nodenithy-amoy-unsafe',
     PYNITHY_RUNNER: 'ecld-pynithy',
     NODENITHY_RUNNER: 'ecld-nodenithy'
   },
@@ -201,20 +204,23 @@ export const ECAddress = {
     }
   },
   POLYGON: {
-    // TESTNET_ADDRESS is the ERC-20 token (ECLD) contract; TESTNET_PROTOCOL_ADDRESS
+    // TESTNET_ADDRESS is the ERC-20 token (tECLD) contract; TESTNET_PROTOCOL_ADDRESS
     // is the PoX protocol contract. Testnet = Polygon Amoy (Mumbai is sunset).
-    // Token verified on-chain via the Amoy PoX contract's erc20Address().
+    // The protocol is the separate-ERC20 EthernityImplementationV2 1.1 of
+    // 2026-10-28, on the storage and token of the previous implementation
+    // 0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3; its erc20Address() is the
+    // token below. The image registry is the ECImageRegistryV3 of the same day.
     TESTNET_ADDRESS: '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
-    TESTNET_PROTOCOL_ADDRESS: '0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3',
+    TESTNET_PROTOCOL_ADDRESS: '0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3',
     MAINNET_ADDRESS: '0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba',
     MAINNET_PROTOCOL_ADDRESS: '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
     IMAGE_REGISTRY: {
       PYNITHY: {
-        TESTNET_ADDRESS: '0xeFA33c3976f31961285Ae4f5D10188616C912728',
+        TESTNET_ADDRESS: '0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706',
         MAINNET_ADDRESS: ECLD_IMAGE_REGISTRY
       },
       NODENITHY: {
-        TESTNET_ADDRESS: '0xeFA33c3976f31961285Ae4f5D10188616C912728',
+        TESTNET_ADDRESS: '0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706',
         MAINNET_ADDRESS: ECLD_IMAGE_REGISTRY
       }
     }
