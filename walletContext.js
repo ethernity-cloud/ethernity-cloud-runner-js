@@ -11,7 +11,7 @@ const DEFAULT_RPC_BY_ADDRESS = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: 'https://bloxberg.ethernity.cloud',
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: 'https://bloxberg.ethernity.cloud',
   [ECAddress.POLYGON.MAINNET_ADDRESS]: 'https://polygon-rpc.com',
-  [ECAddress.POLYGON.TESTNET_ADDRESS]: 'https://rpc-amoy.polygon.technology',
+  [ECAddress.POLYGON.TESTNET_ADDRESS]: 'https://polygon-amoy-bor-rpc.publicnode.com',
   [ECAddress.SEPOLIA.TESTNET_ADDRESS]: 'https://ethereum-sepolia-rpc.publicnode.com'
   // NOTE: the IoTeX and LitVM testnets share one ECLD token address, so they
   // cannot be keyed here by networkAddress. For the raw-privateKey path on those

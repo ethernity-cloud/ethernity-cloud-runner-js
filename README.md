@@ -236,7 +236,7 @@ const runner = new EthernityCloudRunner(
 );
 ```
 
-In this release the bootnode's payload intake serves the Bloxberg testnet, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet, Polygon Amoy and IoTeX) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
+In this release the bootnode's payload intake serves the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet and IoTeX) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
 
 ### Wallet options
 

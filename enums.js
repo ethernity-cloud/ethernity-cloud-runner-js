@@ -314,10 +314,11 @@ export const ECNetworkName1Dictionary = {
 //                    config.py), which is its segment of the bootnode's payload
 //                    intake route, POST /payload/<agentNetwork>/<doRequestId>/<cid>.
 //                    Carried only by the networks the public intake serves in
-//                    this release: the Bloxberg testnet, LitVM LiteForge and
-//                    Ethereum Sepolia (each with its -unsafe twin). A run on a descriptor
-//                    without it has no default storage and is refused before
-//                    any transaction until initializeStorage() is called
+//                    this release: the Bloxberg testnet, Polygon Amoy, LitVM
+//                    LiteForge and Ethereum Sepolia (each with its -unsafe twin,
+//                    which the intake takes under the same route). A run on a
+//                    descriptor without it has no default storage and is refused
+//                    before any transaction until initializeStorage() is called
 //                    (runner.initializeDefaultStorage).
 // ---------------------------------------------------------------------------
 export const ECNetworkConfig = {
@@ -364,7 +365,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: false,
     networkName: 'amoy',
-    networkKey: 'POLYGON'
+    networkKey: 'POLYGON',
+    agentNetwork: 'polygon_amoy'
   }
 };
 

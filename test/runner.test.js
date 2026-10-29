@@ -18,9 +18,9 @@ const messageMatching = (pattern) => (e) => {
   return true;
 };
 
-test('the Bloxberg testnet, LitVM LiteForge and Ethereum Sepolia are the networks routed to the intake in this release', () => {
+test('the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia are the networks routed to the intake in this release', () => {
   const routed = Object.values(ECNetworkConfig).filter((cfg) => cfg.agentNetwork).map((cfg) => cfg.agentNetwork);
-  assert.deepEqual(routed, ['bloxberg_testnet']);
+  assert.deepEqual(routed, ['bloxberg_testnet', 'polygon_amoy']);
   const ecld = Object.entries(ECEcldTestnetConfig).filter(([, cfg]) => cfg.agentNetwork).map(([chainId, cfg]) => [chainId, cfg.agentNetwork]);
   assert.deepEqual(ecld, [['4441', 'litvm_liteforge'], ['11155111', 'ethereum_sepolia']]);
 });
@@ -52,16 +52,11 @@ test('a network without an intake route refuses to run with no storage configure
   assert.equal(isInitialized(), false);
 });
 
-test('Polygon Amoy has no intake route: a run with no storage configured is refused before any transaction', async () => {
+test('Polygon Amoy is routed to the intake under the agent name polygon_amoy', async () => {
   const runner = new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS, { provider: providerOn(80002) });
   await runner.resolveNetworkContext();
   assert.equal(runner.networkConfig.networkName, 'amoy');
-  assert.equal(runner.networkConfig.agentNetwork, undefined);
-  assert.throws(() => runner.initializeDefaultStorage(), messageMatching(/^POLYGON TESTNET has no payload intake route/));
-  assert.throws(
-    () => runner.initializePublicIntake(),
-    messageMatching(/^initializePublicIntake: this network has no payload intake route/)
-  );
+  assert.equal(runner.networkConfig.agentNetwork, 'polygon_amoy');
   assert.equal(isInitialized(), false);
 });
 
@@ -83,11 +78,16 @@ test('Bloxberg mainnet and Polygon mainnet have no intake route either', async (
 });
 
 test('a network with an agent network name gets the intake by default', async () => {
-  const runner = new EthernityCloudRunner(ECAddress.BLOXBERG.TESTNET_ADDRESS, { provider: providerOn(8995) });
-  await runner.resolveNetworkContext();
-  assert.equal(runner.networkConfig.agentNetwork, 'bloxberg_testnet');
-  runner.initializeDefaultStorage();
-  assert.equal(isInitialized(), true);
+  for (const [address, chainId, agentNetwork] of [
+    [ECAddress.BLOXBERG.TESTNET_ADDRESS, 8995, 'bloxberg_testnet'],
+    [ECAddress.POLYGON.TESTNET_ADDRESS, 80002, 'polygon_amoy']
+  ]) {
+    const runner = new EthernityCloudRunner(address, { provider: providerOn(chainId) });
+    await runner.resolveNetworkContext();
+    assert.equal(runner.networkConfig.agentNetwork, agentNetwork);
+    runner.initializeDefaultStorage();
+    assert.equal(isInitialized(), true);
+  }
 });
 
 test('a storage configured before run() takes precedence on every network', async () => {
