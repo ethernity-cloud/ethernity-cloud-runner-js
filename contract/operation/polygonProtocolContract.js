@@ -23,7 +23,7 @@ class PolygonProtocolContract {
     this.networkAddress = networkAddress;
     ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.protocolContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
-    this.protocolContractWithProvider = new ethers.Contract(contract.address, contract.abi, this.provider);
+    this.protocolContractWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
   }
 
   // eslint-disable-next-line class-methods-use-this
