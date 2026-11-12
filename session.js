@@ -40,10 +40,25 @@ export const SEND_CUTOFF_SECONDS = 600;
 
 export class SessionError extends Error {}
 
+// The session status byte of a v5 result (field 11), the fixture's
+// constants.sessionStatusCodes: 0f (15) is an order without a session or a
+// status outside this table.
+export const SESSION_STATUS_NAMES = {
+  0: 'closed',
+  1: 'complete-at-timeout',
+  2: 'expired-idle',
+  3: 'expired-unprocessed',
+  4: 'flooded',
+  5: 'unsupported-securelock',
+  6: 'transferred',
+  7: 'transfer-forced',
+};
+
 // Codes carried by 'error' output rows (msg.code): task codes for payload
 // failures (5 = no ___etny_on_input___ handler defined, 1 = handler raised)
-// and session notices 50-53 (malformed row, out-of-order seq, undecryptable
-// input, securelock build without session support). 0 for ok/late rows.
+// and session notices 50-54 (malformed row, out-of-order seq, undecryptable
+// input, securelock build without session support, a replayed input the
+// successor trustedzone could not serve after a handover). 0 for ok/late rows.
 export const SESSION_ERROR_CODE_NAMES = {
   1: 'handler-error',
   5: 'handler-not-defined',
@@ -51,6 +66,7 @@ export const SESSION_ERROR_CODE_NAMES = {
   51: 'input-out-of-order',
   52: 'input-undecryptable',
   53: 'unsupported-securelock',
+  54: 'session-replay-unavailable',
 };
 
 export class EthernityCloudSession {

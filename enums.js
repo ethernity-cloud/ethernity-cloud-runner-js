@@ -27,7 +27,9 @@ export const ECOrderTaskStatus = {
   // Extended diagnostics emitted by newer enclave builds (canonical registry:
   // the trustedzone TaskStatus enum, etny_exec.py and task_status.js). 20-36
   // and 38 are customer-side outcomes; 37, 39 and 40 are node-side faults the
-  // validator refunds, listed in OPERATOR_FAULT_CODES below.
+  // validator refunds, listed in OPERATOR_FAULT_CODES below; 41 and 42 are a
+  // session's handover outcomes and 43 a plain task's termination, asserted by
+  // the trustedzone alone and refunded by nobody.
   20: 'SIGNATURE_ERROR',
   21: 'SYNTAX_ERROR',
   22: 'MEMORY_ERROR',
@@ -48,14 +50,23 @@ export const ECOrderTaskStatus = {
                            // securelock and/or the trustedzone re-adjudication
   36: 'ESR_NONCE_VIOLATION', // a commit's idempotency nonce was already used -- duplicate suppressed
   37: 'ESR_RELAY_TIMEOUT', // signed state commits did not land on the registry -- node relay failure; refundable
-  38: 'ESR_COMMIT_LIMIT_EXCEEDED', // more than 100 state commits in one run (per-run cap); dApp fault, no refund
+  38: 'ESR_COMMIT_LIMIT_EXCEEDED', // more than 256 state commits in one run (per-run cap); dApp fault, no refund
   39: 'SESSION_RELAY_FAULT', // the node withheld session input delivery or failed to relay; refundable
   // The CAS that provisioned the enclave presented a quote the enclave could
   // not bind to its own injected environment; the enclave terminated the
-  // order for refund. Codes above 40 are not defined by any enclave and the
-  // node emits no task codes of its own, so nothing on the network produces
-  // them.
-  40: 'CAS_ATTESTATION_FAULT'
+  // order for refund.
+  40: 'CAS_ATTESTATION_FAULT',
+  // A reserved order's session handed over at its window's switch; the session
+  // continues on the successor's own order (a new order id on the same
+  // request). The trustedzone signs the code from the outputs it holds at the
+  // switch, whichever control (close or transfer) it wrote: 41 when every input
+  // it forwarded has its output, 42 when the input in hand, and any forwarded
+  // behind it, went unanswered when the securelock stopped.
+  41: 'SERVICE_TRANSFERRED',
+  42: 'SERVICE_TRANSFER_FORCED',
+  // A plain task ended by orderTerminatedAt while still running: the result is
+  // the securelock's when it arrived inside the idle tail, else empty.
+  43: 'TERMINATED'
 };
 
 // Name for a task code, tolerant of codes newer than this runner.
