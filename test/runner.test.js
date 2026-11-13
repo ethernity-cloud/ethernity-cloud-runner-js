@@ -104,8 +104,9 @@ test("Sepolia's own token selects its RPC on the raw-key path; the shared token 
   const shared = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key });
   assert.equal(shared.provider._getConnection().url, 'https://bloxberg.ethernity.cloud');
   shared.provider.destroy();
-  const litvm = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key, rpcUrl: 'https://liteforge.rpc.caldera.xyz/infra-partner-http' });
-  assert.equal(litvm.provider._getConnection().url, 'https://liteforge.rpc.caldera.xyz/infra-partner-http');
+  // The LiteForge testnet is hosted by Zeeve since 2026-11-12.
+  const litvm = resolveWalletContext(ECLD_SHARED_TESTNET_TOKEN, { privateKey: key, rpcUrl: 'https://rpc.testnet.liteforge.zeeve.net/' });
+  assert.equal(litvm.provider._getConnection().url, 'https://rpc.testnet.liteforge.zeeve.net/');
   litvm.provider.destroy();
 });
 

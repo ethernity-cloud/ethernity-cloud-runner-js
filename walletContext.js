@@ -17,7 +17,8 @@ const DEFAULT_RPC_BY_ADDRESS = {
   // cannot be keyed here by networkAddress. For the raw-privateKey path on those
   // two, pass an explicit { rpcUrl } (or { provider }) in walletOptions:
   //   IoTeX   : https://babel-api.testnet.iotex.io
-  //   LitVM   : https://liteforge.rpc.caldera.xyz/infra-partner-http
+  //   LitVM   : https://rpc.testnet.liteforge.zeeve.net/ (the LiteForge
+  //             testnet is hosted by Zeeve since 2026-11-12)
 };
 
 /**

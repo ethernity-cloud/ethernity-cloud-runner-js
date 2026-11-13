@@ -47,6 +47,26 @@ export const waitForReceipt = async (provider, hash, { iface = null, pollMs = 10
     await delay(pollMs);
   }
 };
+
+// The widest block range one eth_getLogs call spans. The LiteForge testnet's
+// Zeeve RPC (https://rpc.testnet.liteforge.zeeve.net/) refuses a wider one
+// with "eth_getLogs range exceeds 3000 blocks; split the range".
+export const LOG_RANGE_BLOCKS = 3000;
+
+// The logs of `filter` on `contract` from `fromBlock` to `toBlock`, both
+// inclusive, read with contract.queryFilter over consecutive ranges of at most
+// LOG_RANGE_BLOCKS blocks and concatenated in range order. An empty range
+// (fromBlock past toBlock) reads nothing; a failing range throws, and the
+// ranges before it are read again on the next call.
+export const queryFilterChunked = async (contract, filter, fromBlock, toBlock) => {
+  const logs = [];
+  for (let from = fromBlock; from <= toBlock; from += LOG_RANGE_BLOCKS) {
+    const to = Math.min(from + LOG_RANGE_BLOCKS - 1, toBlock);
+    for (const log of await contract.queryFilter(filter, from, to)) logs.push(log);
+  }
+  return logs;
+};
+
 // Gas limit for a contract write: the node's estimate plus
 // GAS_HEADROOM_PERCENT. The estimate is made on the previous block's state,
 // and a transaction that reaches the same contract earlier in the block

@@ -8,6 +8,7 @@ import {
   isNullOrEmpty,
   normalizeNodeAddress,
   parseTransactionBytes,
+  queryFilterChunked,
   waitForReceipt
 } from './utils.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
@@ -71,7 +72,11 @@ const inspect = (value) => {
 // subscription reads its logs in a promise ethers never handles, so one failed
 // eth_getLogs -- a load-balanced RPC whose backend has not reached the block
 // yet -- is an unhandled rejection, which ends a Node process. Here a failed
-// read is retried over the same range on the next tick.
+// read is retried over the same range on the next tick. The range is read in
+// LOG_RANGE_BLOCKS chunks (queryFilterChunked): the Zeeve RPC of the LiteForge
+// testnet refuses an eth_getLogs range wider than 3000 blocks, and a watcher
+// whose last tick is further behind the head than that catches up chunk by
+// chunk.
 const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) => {
   let stopped = false;
   let from = null;
@@ -82,7 +87,7 @@ const watchEvent = (contract, provider, eventName, handler, intervalMs = 4000) =
         const head = await provider.getBlockNumber();
         if (from === null) from = head;
         if (head >= from) {
-          const logs = await contract.queryFilter(filter, from, head);
+          const logs = await queryFilterChunked(contract, filter, from, head);
           if (stopped) return;
           logs.forEach((log) => { if (log.args) handler(...log.args); });
           from = head + 1;
@@ -914,13 +919,15 @@ class EthernityCloudRunner extends EventTarget {
     };
     const stopWatching = watchEvent(protocolContract, this.protocolContract.getProvider(), '_orderPlacedEV', eventHandler);
 
-    // CATCH-UP: one log query over the recent past covers the race where the
-    // placement fired before the listener attached -- no struct scanning.
+    // CATCH-UP: a log query over the recent past covers the race where the
+    // placement fired before the listener attached -- no struct scanning. It
+    // goes through queryFilterChunked, so no single eth_getLogs call spans
+    // more than the 3000 blocks the Zeeve RPC of the LiteForge testnet allows.
     (async () => {
       try {
         const current = await this.protocolContract.getProvider().getBlockNumber();
         const filter = protocolContract.filters._orderPlacedEV();
-        const logs = await protocolContract.queryFilter(filter, Math.max(0, current - 300), current);
+        const logs = await queryFilterChunked(protocolContract, filter, Math.max(0, current - 300), current);
         for (const lg of logs) {
           if (parseInt(lg.args._doRequestId) === doReq) {
             this.dispatchECEvent(`_orderPlacedEV (catch-up): order ${lg.args._orderNumber} for request ${doReq}`, ECLog.DEBUG);
