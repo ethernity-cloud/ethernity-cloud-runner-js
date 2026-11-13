@@ -217,12 +217,14 @@ export const ECAddress = {
   POLYGON: {
     // TESTNET_ADDRESS is the ERC-20 token (tECLD) contract; TESTNET_PROTOCOL_ADDRESS
     // is the PoX protocol contract. Testnet = Polygon Amoy (Mumbai is sunset).
-    // The protocol is the separate-ERC20 EthernityImplementationV2 1.1 of
-    // 2026-10-28, on the storage and token of the previous implementation
-    // 0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3; its erc20Address() is the
-    // token below. The image registry is the ECImageRegistryV3 of the same day.
+    // The protocol is the EthernityImplementationV2 1.2 of 2026-11-12, on the
+    // storage and token of the implementations 1.1 0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3
+    // and 0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3 (a DO request is escrowed
+    // by the implementation it was posted through, so only this one is served);
+    // its erc20Address() is the token below. The image registry is the
+    // ECImageRegistryV3 of 2026-10-28.
     TESTNET_ADDRESS: '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
-    TESTNET_PROTOCOL_ADDRESS: '0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3',
+    TESTNET_PROTOCOL_ADDRESS: '0x3Aa1A0d7A8A9DaE9e13345D3261afe86D67326A4',
     MAINNET_ADDRESS: '0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba',
     MAINNET_PROTOCOL_ADDRESS: '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
     IMAGE_REGISTRY: {
