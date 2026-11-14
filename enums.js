@@ -198,7 +198,17 @@ const ECLD_IMAGE_REGISTRY = '0x689f3806874d3c8A973f419a4eB24e6fBA7E830F';
 
 export const ECAddress = {
   BLOXBERG: {
+    // TESTNET_ADDRESS is the tETNY token: the legacy proxy, which is also the
+    // PoX of the orders placed through it and is not served by the 1.2.
+    // TESTNET_PROTOCOL_ADDRESS is the testnet's PoX since 2026-11-14, the
+    // EthernityImplementationV2 1.2 of pox-smart-contract-litvm on its own
+    // EthernityCloudStorage 0xEE3aAa1A7a8C00BeBBb5DfC570F80f6FA12a968d; its
+    // erc20Address() is the token, and it pulls a DO request's escrow from the
+    // client with transferFrom, so the client approves it on the token before
+    // the request (runner.checkAllowance). MAINNET_ADDRESS is the ETNY token
+    // and the mainnet's PoX in one proxy.
     TESTNET_ADDRESS: '0x02882F03097fE8cD31afbdFbB5D72a498B41112c',
+    TESTNET_PROTOCOL_ADDRESS: '0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b',
     MAINNET_ADDRESS: '0x549A6E06BB2084100148D50F51CF77a3436C3Ae7',
     // The testnet reads ECImageRegistryV3, where its trustedzones and the
     // securelocks published against them are registered: the deployment of
@@ -314,12 +324,17 @@ export const ECNetworkName1Dictionary = {
 // address. `resolveNetworkConfig(networkAddress)` returns that descriptor and
 // the runner/contracts consume it instead of hardcoding pairs.
 //
-//   family:          'bloxberg' (ETNY token, Bloxberg protocol/ABI) or
-//                    'ecld' (ECLD token, Polygon protocol/ABI) — the two
-//                    contract families the runner knows how to talk to.
-//   protocolAddress: PoX protocol contract (for the ecld family this differs
-//                    from the token address; for bloxberg it IS the token
-//                    address, matching the legacy EtnyContract behaviour).
+//   family:          'bloxberg' (the ETNY token, EtnyContract) or 'ecld' (the
+//                    ECLD token, EcldContract): the token contract the task is
+//                    paid with.
+//   protocolAddress: the PoX contract. Equal to the token address where the
+//                    PoX is the token's own proxy (bloxberg mainnet), read
+//                    with the legacy ABI; otherwise an EthernityImplementationV2
+//                    apart from the token (the ecld family, the bloxberg
+//                    testnet), read with the V2 ABI, which pulls a DO request's
+//                    escrow with transferFrom and is approved on the token
+//                    before the request (hasSeparateProtocol,
+//                    runner.checkAllowance).
 //   imageRegistry:   { PYNITHY, NODENITHY } on-chain Image Registry addresses.
 //   isMainnet:       production network (CAS attestation, real funds).
 //   networkName:     short name returned by getNetworkName() (chain-id dict).
@@ -337,7 +352,7 @@ export const ECNetworkName1Dictionary = {
 export const ECNetworkConfig = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: {
     family: 'bloxberg',
-    protocolAddress: ECAddress.BLOXBERG.TESTNET_ADDRESS,
+    protocolAddress: ECAddress.BLOXBERG.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
       NODENITHY: ECAddress.BLOXBERG.IMAGE_REGISTRY.NODENITHY.TESTNET_ADDRESS
@@ -461,6 +476,18 @@ export function resolveNetworkConfig(networkAddress, chainId) {
   if (networkAddress === ECLD_SHARED_TESTNET_TOKEN) return ECLD_PROVISIONAL_CONFIG;
   return undefined;
 }
+
+// Whether the descriptor's PoX is a contract apart from the token at
+// `tokenAddress`. Such a PoX is an EthernityImplementationV2 (the ecld family,
+// the bloxberg testnet since its 1.2 of 2026-11-14): it pulls a DO request's
+// escrow from the client with transferFrom, so the runner approves it on the
+// token before the request and reads it with the V2 ABI. Where the PoX is the
+// token's own proxy (bloxberg mainnet) the request takes the escrow in the same
+// call and the proxy is read with the legacy ABI. False while the protocol
+// address is unresolved (a shared-token testnet before its chainId is known).
+export const hasSeparateProtocol = (cfg, tokenAddress) =>
+  Boolean(cfg && cfg.protocolAddress && tokenAddress) &&
+  cfg.protocolAddress.toLowerCase() !== String(tokenAddress).toLowerCase();
 
 export const ZERO_CHECKSUM = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 

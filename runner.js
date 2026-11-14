@@ -32,6 +32,7 @@ import {
   ECRunner,
   UNSAFE_NETWORK_SUFFIX,
   UNSAFE_TRUSTEDZONE_SUFFIX,
+  hasSeparateProtocol,
   resolveNetworkConfig,
   taskStatusName,
   isOperatorFaultCode
@@ -227,20 +228,33 @@ class EthernityCloudRunner extends EventTarget {
       throw new Error('Invalid network address');
     }
     this.networkConfig = cfg;
-    if (cfg.family === 'bloxberg') {
-      this.tokenContract = new EtnyContract(this.networkAddress, wc);
+    // The token the task is paid with: ETNY on the bloxberg family, ECLD on
+    // Polygon mainnet/Amoy and the IoTeX / Sepolia / LitVM testnets.
+    this.tokenContract = cfg.family === 'bloxberg'
+      ? new EtnyContract(this.networkAddress, wc)
+      : new EcldContract(this.networkAddress, wc);
+    // For the shared-token testnets the PoX address isn't known until a
+    // chainId is read (resolveNetworkContext); build the protocol contract
+    // now only when we already have the address.
+    if (cfg.protocolAddress) {
+      this.initializeProtocolContract(cfg);
+    }
+  }
+
+  // The PoX contract of the descriptor and the ABI its result transaction is
+  // decoded with. A PoX apart from the token (hasSeparateProtocol: the ecld
+  // family, the bloxberg testnet) is an EthernityImplementationV2 at the
+  // protocol address, read with the V2 ABI; where the protocol address is the
+  // token address (bloxberg mainnet) the PoX is the token's own proxy, read
+  // with the legacy ABI.
+  initializeProtocolContract(cfg) {
+    const wc = this.walletContext;
+    if (hasSeparateProtocol(cfg, this.networkAddress)) {
+      this.protocolContract = new PolygonProtocolContract(cfg.protocolAddress, wc);
+      this.protocolAbi = protocolContractPolygon.abi;
+    } else {
       this.protocolContract = new BloxbergProtocolContract(this.networkAddress, wc);
       this.protocolAbi = contractBloxberg.abi;
-    } else {
-      // ECLD family: Polygon mainnet/Amoy + IoTeX / Sepolia / LitVM testnets.
-      this.tokenContract = new EcldContract(this.networkAddress, wc);
-      this.protocolAbi = protocolContractPolygon.abi;
-      // For the shared-token testnets the PoX address isn't known until a
-      // chainId is read (resolveNetworkContext); build the protocol contract
-      // now only when we already have the address.
-      if (cfg.protocolAddress) {
-        this.protocolContract = new PolygonProtocolContract(cfg.protocolAddress, wc);
-      }
     }
   }
 
@@ -285,9 +299,8 @@ class EthernityCloudRunner extends EventTarget {
     this.chainId = chainId;
     // Build/rebuild the protocol contract when we just learned the PoX address
     // (shared-token testnet) or it changed from what the constructor resolved.
-    if (cfg.family === 'ecld' &&
-        (!this.protocolContract || cfg.protocolAddress !== this.networkConfig.protocolAddress)) {
-      this.protocolContract = new PolygonProtocolContract(cfg.protocolAddress, this.walletContext);
+    if (!this.protocolContract || cfg.protocolAddress !== this.networkConfig.protocolAddress) {
+      this.initializeProtocolContract(cfg);
     }
     this.networkConfig = cfg;
   }
@@ -391,20 +404,21 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   async checkAllowance(taskPrice) {
-    // The ECLD family (Polygon + IoTeX / Sepolia / LitVM) pays via an ERC-20
-    // token and must set an allowance for the protocol contract before ordering.
-    // Bloxberg (ETNY) does not go through this path.
-    if (this.networkConfig && this.networkConfig.family === 'ecld') {
-      this.dispatchECEvent('Checking for the allowance on the current wallet...');
-      if (!await this.tokenContract.checkAndSetAllowance(
-        this.protocolContract.contractAddress(),
-        '100',
-        taskPrice.toString()
-      )) {
-        throw new Error('Unable to set allowance');
-      }
-      this.dispatchECEvent('Allowance checking completed.');
+    // A PoX apart from the token (hasSeparateProtocol: the ecld family, the
+    // bloxberg testnet) pulls the DO request's escrow from the wallet with
+    // transferFrom, so the wallet's allowance for it on the token is raised
+    // first when it is below the task price. Bloxberg mainnet's PoX is the
+    // token's own proxy and takes the escrow in the request itself.
+    if (!hasSeparateProtocol(this.networkConfig, this.networkAddress)) return;
+    this.dispatchECEvent('Checking for the allowance on the current wallet...');
+    if (!await this.tokenContract.checkAndSetAllowance(
+      this.networkConfig.protocolAddress,
+      '100',
+      taskPrice.toString()
+    )) {
+      throw new Error('Unable to set allowance');
     }
+    this.dispatchECEvent('Allowance checking completed.');
   }
 
   async processTask(code) {
@@ -1107,10 +1121,13 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   // Why the enclave-signed result transaction is not this order's result on
-  // this network's PoX, or null when it is. The validators reject such a
-  // result the same way (ethernity-cas result_tx.rs, bound_to): a genuine
-  // enclave signature over another order, contract or chain proves nothing
-  // about this order. A chain id of 0 is a pre-EIP-155 signature.
+  // this network's PoX, or null when it is. The PoX is the protocol contract
+  // the request was posted through (the descriptor's protocol address: on the
+  // bloxberg testnet the 1.2 implementation, not the token proxy). The
+  // validators reject such a result the same way (ethernity-cas result_tx.rs,
+  // bound_to): a genuine enclave signature over another order, contract or
+  // chain proves nothing about this order. A chain id of 0 is a pre-EIP-155
+  // signature.
   async resultBindingError(transactionResult) {
     if (BigInt(transactionResult.orderId) !== BigInt(this.orderId)) {
       return `the result transaction is for order ${transactionResult.orderId}`;

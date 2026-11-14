@@ -68,6 +68,28 @@ class EtnyContract {
     }
   }
 
+  // The wallet's allowance for the PoX at `protocolAddress` on the token,
+  // raised to `amount` tokens when it is below `taskPrice` tokens: the
+  // bloxberg testnet's EthernityImplementationV2 pulls a DO request's escrow
+  // with transferFrom (runner.checkAllowance). False when the approval
+  // transaction is not mined.
+  async checkAndSetAllowance(protocolAddress, amount, taskPrice) {
+    const allowanceAmount = ethers.parseUnits(amount, 'ether');
+    const taskPriceAmount = ethers.parseUnits(taskPrice, 'ether');
+    const currentWalletAddress = await this.signer.getAddress();
+    const allowance = await this.etnyContract.allowance(currentWalletAddress, protocolAddress);
+    if (allowance < taskPriceAmount) {
+      const approveTx = await this.etnyContract.approve(protocolAddress, allowanceAmount);
+      try {
+        await approveTx.wait();
+      } catch (error) {
+        console.log(`Transaction failed with error: ${error}`);
+        return false;
+      }
+    }
+    return true;
+  }
+
   async getNetworkName() {
     // Connect to an Ethereum provider
 
