@@ -103,6 +103,30 @@ const contract = {
     {
       constant: false,
       inputs: [
+        { internalType: 'uint8', name: 'cpu', type: 'uint8' },
+        { internalType: 'uint8', name: 'mem', type: 'uint8' },
+        { internalType: 'uint8', name: 'storageGB', type: 'uint8' },
+        { internalType: 'uint8', name: 'bw', type: 'uint8' },
+        { internalType: 'uint16', name: 'duration', type: 'uint16' },
+        { internalType: 'uint8', name: 'instances', type: 'uint8' },
+        { internalType: 'uint256', name: 'maxPricePerCuHourWei', type: 'uint256' },
+        { internalType: 'uint32', name: 'maxCu', type: 'uint32' },
+        { internalType: 'uint16', name: 'relaysPerHour', type: 'uint16' },
+        { internalType: 'uint256', name: 'gasLevel', type: 'uint256' },
+        { internalType: 'string', name: 'metadata1', type: 'string' },
+        { internalType: 'string', name: 'metadata2', type: 'string' },
+        { internalType: 'string', name: 'metadata3', type: 'string' },
+        { internalType: 'string', name: 'metadata4', type: 'string' }
+      ],
+      name: 'addDORequestV2',
+      outputs: [{ internalType: 'uint256', name: 'requestId', type: 'uint256' }],
+      payable: false,
+      stateMutability: 'nonpayable',
+      type: 'function'
+    },
+    {
+      constant: false,
+      inputs: [
         { internalType: 'uint8', name: '_cpuRequest', type: 'uint8' },
         { internalType: 'uint8', name: '_memRequest', type: 'uint8' },
         { internalType: 'uint8', name: '_storageRequest', type: 'uint8' },

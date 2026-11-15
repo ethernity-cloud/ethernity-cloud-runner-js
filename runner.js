@@ -1,3 +1,4 @@
+import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
 import {
   delay,
@@ -141,6 +142,42 @@ export const startedRowOrder = (value) => {
 export const orderStartVerdict = (rows, orderId, block, windowEnd) => {
   if (rows.some(([key, value]) => key === ORDER_STARTED_KEY && startedRowOrder(value) === orderId)) return 'started';
   return block > windowEnd ? 'late' : 'waiting';
+};
+
+// The V2 terms of a run, options.v2 of run() and runSession(), as bigints:
+// maxPricePerCuHourWei (the most paid per CU-hour, token weis), maxCu (the
+// largest node paid for, thousandths of a CU; 0 for any node), relaysPerHour
+// and gasLevel (1e18 fixed) of the chain fee, and escrowWei, the escrow the
+// PoX 1.2 pulls at addDORequestV2 (work at maxPricePerCuHourWei for maxCu, or
+// the pricing's cuMaxDefault when maxCu is 0, over the duration, plus the
+// publishers' and the network's fees on it, plus the chain fee), which the
+// run approves on the token before the request. Each field is a bigint, a
+// string of decimal digits (surrounding whitespace allowed) or a safe
+// integer; the empty string, a boolean and a hex string are refused. Null
+// when `v2` is not given.
+export const V2_TERM_FIELDS = ['maxPricePerCuHourWei', 'maxCu', 'relaysPerHour', 'gasLevel', 'escrowWei'];
+export const v2TermsOf = (v2) => {
+  if (v2 === undefined || v2 === null) return null;
+  if (typeof v2 !== 'object') throw new TypeError('options.v2 must be an object with the V2 terms');
+  const terms = {};
+  for (const field of V2_TERM_FIELDS) {
+    const value = v2[field];
+    let parsed;
+    if (typeof value === 'bigint') {
+      parsed = value;
+    } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+      parsed = BigInt(value.trim());
+    } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+      parsed = BigInt(value);
+    } else {
+      throw new TypeError(`options.v2.${field} must be an integer (a bigint, a decimal string or a safe integer)`);
+    }
+    if (parsed < 0n) throw new TypeError(`options.v2.${field} must not be negative`);
+    terms[field] = parsed;
+  }
+  if (terms.maxPricePerCuHourWei === 0n) throw new TypeError('options.v2.maxPricePerCuHourWei must be above 0');
+  if (terms.escrowWei === 0n) throw new TypeError('options.v2.escrowWei must be above 0');
+  return terms;
 };
 
 class EthernityCloudRunner extends EventTarget {
@@ -341,6 +378,7 @@ class EthernityCloudRunner extends EventTarget {
     this.logLevel = ECLog.INFO;
     this.running = false;
     this.network = "Bloxberg_Testnet";
+    this.v2Terms = null;
   }
 
   logAppend(message, logLevel = ECLog.INFO) {
@@ -359,9 +397,28 @@ class EthernityCloudRunner extends EventTarget {
   async checkWalletBalance(taskPrice) {
     this.dispatchECEvent('Checking wallet balance....');
     const balance = await this.tokenContract.getBalance();
+    if (this.v2Terms) {
+      // A V2 request's escrow is a wei figure, compared in wei.
+      if (ethers.parseEther(String(balance)) < this.v2Terms.escrowWei) {
+        throw new Error(`Insufficient wallet balance (${balance} tokens for an escrow of ${ethers.formatEther(this.v2Terms.escrowWei)})`);
+      }
+      return;
+    }
     if (parseInt(balance, 10) < taskPrice) {
       throw new Error(`Insufficient wallet balance (${balance}/${taskPrice})`);
     }
+  }
+
+  // The request terms of this run: the V2 terms of options.v2 (v2TermsOf),
+  // or null for a legacy request. V2 terms need a PoX apart from the token
+  // (hasSeparateProtocol), the EthernityImplementationV2 whose ABI carries
+  // addDORequestV2; called once the network context is resolved.
+  selectRequestTerms(v2) {
+    const terms = v2TermsOf(v2);
+    if (terms && !hasSeparateProtocol(this.networkConfig, this.networkAddress)) {
+      throw new Error("options.v2: this network's PoX is the token's own proxy and takes no V2 request");
+    }
+    this.v2Terms = terms;
   }
 
   async verifyNodeAddress(nodeAddress) {
@@ -411,10 +468,13 @@ class EthernityCloudRunner extends EventTarget {
     // token's own proxy and takes the escrow in the request itself.
     if (!hasSeparateProtocol(this.networkConfig, this.networkAddress)) return;
     this.dispatchECEvent('Checking for the allowance on the current wallet...');
+    // A V2 request's allowance is its exact escrow, the amount the PoX pulls
+    // at addDORequestV2, raised to it when below it.
+    const escrow = this.v2Terms ? ethers.formatEther(this.v2Terms.escrowWei) : null;
     if (!await this.tokenContract.checkAndSetAllowance(
       this.networkConfig.protocolAddress,
-      '100',
-      taskPrice.toString()
+      escrow === null ? '100' : escrow,
+      escrow === null ? taskPrice.toString() : escrow
     )) {
       throw new Error('Unable to set allowance');
     }
@@ -441,6 +501,11 @@ class EthernityCloudRunner extends EventTarget {
           ECLog.WARNING
         );
         await this.cleanup();
+        // addDORequestV2 pulled the failed request's escrow, the whole
+        // allowance checkAllowance set for a V2 run, so the resubmission
+        // raises it to the escrow again. The legacy allowance of 100 tokens
+        // covers a resubmission as it is.
+        if (this.v2Terms) await this.checkAllowance(this.resources.taskPrice);
         await delay(retryDelayMs);
       }
     }
@@ -876,14 +941,24 @@ class EthernityCloudRunner extends EventTarget {
       // asked for (requestedNodeAddress) and empty for any node; the zero
       // address there would pin it to 0x0, which no node can place. A request
       // resubmitted after an operator fault is pinned the same way, not to
-      // the node that failed the previous one.
-      const tx = await this.protocolContract.addDORequest(
-        imageMetadata,
-        codeMetadata,
-        inputMetadata,
-        normalizeNodeAddress(this.requestedNodeAddress),
-        this.resources,
-      );
+      // the node that failed the previous one. A run with V2 terms posts
+      // through addDORequestV2 (PoX 1.2), the legacy request otherwise.
+      const tx = this.v2Terms
+        ? await this.protocolContract.addDORequestV2(
+          imageMetadata,
+          codeMetadata,
+          inputMetadata,
+          normalizeNodeAddress(this.requestedNodeAddress),
+          this.resources,
+          this.v2Terms,
+        )
+        : await this.protocolContract.addDORequest(
+          imageMetadata,
+          codeMetadata,
+          inputMetadata,
+          normalizeNodeAddress(this.requestedNodeAddress),
+          this.resources,
+        );
 
       this.doHash = tx.hash;
 
@@ -1708,7 +1783,9 @@ class EthernityCloudRunner extends EventTarget {
   // 'TESTNET_UNSAFE')) against an -unsafe trustedzone, and only there.
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     // options.inputData: the task's input dataset, a string the payload reads
-    // as ___etny_data_set___ (ecld.input).
+    // as ___etny_data_set___ (ecld.input). options.v2: the V2 terms of the
+    // request (v2TermsOf); the request is then posted through the PoX 1.2's
+    // addDORequestV2 and the token allowance raised to its exact escrow.
     const inputData = options.inputData == null ? null : options.inputData;
     if (inputData !== null && typeof inputData !== 'string') {
       throw new TypeError('options.inputData must be a string');
@@ -1740,6 +1817,7 @@ class EthernityCloudRunner extends EventTarget {
       this.lastError = null;
       return await this._runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options);
     } finally {
+      this.v2Terms = null;
       this._runInFlight = false;
       release();
     }
@@ -1752,9 +1830,10 @@ class EthernityCloudRunner extends EventTarget {
    * order duration and stream inputs/outputs through the on-chain metadata
    * channels. Resolves
    * once the order is PROCESSING; use the returned EthernityCloudSession to
-   * sendInput / pollOutputs / close.
+   * sendInput / pollOutputs / close. options.v2 posts the request with V2
+   * terms (v2TermsOf) as run() does.
    */
-  async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null) {
+  async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     if (this.localMode) throw new Error('Sessions are not available in LOCAL mode');
     const previous = this._runQueue || Promise.resolve();
     let release;
@@ -1765,6 +1844,7 @@ class EthernityCloudRunner extends EventTarget {
       this.resources = resources;
       this.inputData = null;
       await this.resolveNetworkContext();
+      this.selectRequestTerms(options.v2);
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
@@ -1792,6 +1872,7 @@ class EthernityCloudRunner extends EventTarget {
     } catch (error) {
       this.handleError(error);
     } finally {
+      this.v2Terms = null;
       this._runInFlight = false;
       release();
     }
@@ -1866,6 +1947,7 @@ class EthernityCloudRunner extends EventTarget {
       // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
       // live provider before any contract call depends on the PoX address.
       await this.resolveNetworkContext();
+      this.selectRequestTerms(options.v2);
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance(this.resources.taskPrice);
