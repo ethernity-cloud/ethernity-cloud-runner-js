@@ -3,6 +3,7 @@ import contract from '../abi/etnyAbi.js';
 import { ECNetworkByChainIdDictionary } from '../../enums.js';
 import { contractRunners } from '../../walletContext.js';
 import { checkAndSetAllowance } from './tokenAllowance.js';
+import { readTokenBalance } from './tokenBalance.js';
 
 class EtnyContract {
   etnyContract = null;
@@ -15,12 +16,17 @@ class EtnyContract {
 
   currentWallet = null;
 
-  constructor(networkAddress, walletContext = null) {
+  // The token's name in the messages of this instance: the network
+  // descriptor's tokenName (tETNY, ETNY), 'token' when built without one.
+  tokenName = 'token';
+
+  constructor(networkAddress, walletContext = null, tokenName = 'token') {
     // Use the shared wallet context (raw key / injected signer / provider) when
     // provided; otherwise fall back to MetaMask via window.ethereum (unchanged).
     ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.etnyContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.etnyContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
+    this.tokenName = tokenName;
   }
 
   async initialize() {
@@ -57,16 +63,11 @@ class EtnyContract {
     }
   }
 
-  async getBalance() {
-    try {
-      const address = await this.signer.getAddress();
-      const balance = await this.etnyContract.balanceOf(address);
-      // convert a currency unit from wei to ether
-      return ethers.formatEther(balance);
-    } catch (ex) {
-      console.log(ex);
-      return 0;
-    }
+  // The balance of `wallet`, the signer's address when not given, on the
+  // token, in tokens (tokenBalance.readTokenBalance): a read the provider
+  // fails throws the error naming the cause.
+  async getBalance(wallet = null) {
+    return readTokenBalance(this.etnyContract, wallet ?? (await this.signer.getAddress()), this.tokenName);
   }
 
   // The wallet's allowance for the PoX at `protocolAddress` on the token,

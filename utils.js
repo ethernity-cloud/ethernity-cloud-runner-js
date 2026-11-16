@@ -48,6 +48,40 @@ export const waitForReceipt = async (provider, hash, { iface = null, pollMs = 10
   }
 };
 
+// How many times a chain read before a DO request (the wallet's balance,
+// its allowance for the PoX) is tried, and the pause between the tries: one
+// RPC request the provider drops (a browser's "Failed to fetch") fails one
+// try, not the request.
+export const READ_ATTEMPTS = 3;
+export const READ_RETRY_MS = 2000;
+
+// The value of `read`, an async function, tried up to `attempts` times
+// `delayMs` apart: a rejection before the last try is passed to `onError`
+// with its try number and the read is tried again; the last try's rejection
+// is thrown as it is.
+export const retryRead = async (read, { attempts = READ_ATTEMPTS, delayMs = READ_RETRY_MS, onError = () => {} } = {}) => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      onError(error, attempt);
+    }
+    await delay(delayMs);
+  }
+};
+
+// The provider's message of a failed RPC call. ethers 6 raises a browser
+// wallet's EIP-1193 rejection of an eth_call as a CALL_EXCEPTION whose
+// shortMessage is "missing revert data" and keeps the rejection in
+// info.error: the message of that rejection's data (a wallet relaying its
+// node's JSON-RPC error under "Internal JSON-RPC error.") or of the rejection
+// itself (a browser's "Failed to fetch"). Without one the message is ethers'
+// shortMessage, else the error's own message (a JsonRpcProvider throws its
+// fetch failure as it is).
+export const providerMessage = (error) =>
+  error?.info?.error?.data?.message ?? error?.info?.error?.message ?? error?.shortMessage ?? error?.message ?? String(error);
+
 // The widest block range one eth_getLogs call spans. The LiteForge testnet's
 // Zeeve RPC (https://rpc.testnet.liteforge.zeeve.net/) refuses a wider one
 // with "eth_getLogs range exceeds 3000 blocks; split the range".

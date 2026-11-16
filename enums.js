@@ -327,6 +327,8 @@ export const ECNetworkName1Dictionary = {
 //   family:          'bloxberg' (the ETNY token, EtnyContract) or 'ecld' (the
 //                    ECLD token, EcldContract): the token contract the task is
 //                    paid with.
+//   tokenName:       the token's name in the runner's messages (tETNY, ETNY,
+//                    tECLD, ECLD), as the Python runner's TOKEN_NAME names it.
 //   protocolAddress: the PoX contract. Equal to the token address where the
 //                    PoX is the token's own proxy (bloxberg mainnet), read
 //                    with the legacy ABI; otherwise an EthernityImplementationV2
@@ -352,6 +354,7 @@ export const ECNetworkName1Dictionary = {
 export const ECNetworkConfig = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: {
     family: 'bloxberg',
+    tokenName: 'tETNY',
     protocolAddress: ECAddress.BLOXBERG.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
@@ -364,6 +367,7 @@ export const ECNetworkConfig = {
   },
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: {
     family: 'bloxberg',
+    tokenName: 'ETNY',
     protocolAddress: ECAddress.BLOXBERG.MAINNET_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
@@ -375,6 +379,7 @@ export const ECNetworkConfig = {
   },
   [ECAddress.POLYGON.MAINNET_ADDRESS]: {
     family: 'ecld',
+    tokenName: 'ECLD',
     protocolAddress: ECAddress.POLYGON.MAINNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS,
@@ -386,6 +391,7 @@ export const ECNetworkConfig = {
   },
   [ECAddress.POLYGON.TESTNET_ADDRESS]: {
     family: 'ecld',
+    tokenName: 'tECLD',
     protocolAddress: ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
@@ -405,6 +411,7 @@ export const ECNetworkConfig = {
 export const ECEcldTestnetConfig = {
   4690: {
     family: 'ecld',
+    tokenName: 'tECLD',
     protocolAddress: ECAddress.IOTEX.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.IOTEX.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
@@ -416,6 +423,7 @@ export const ECEcldTestnetConfig = {
   },
   11155111: {
     family: 'ecld',
+    tokenName: 'tECLD',
     protocolAddress: ECAddress.SEPOLIA.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.SEPOLIA.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
@@ -428,6 +436,7 @@ export const ECEcldTestnetConfig = {
   },
   4441: {
     family: 'ecld',
+    tokenName: 'tECLD',
     protocolAddress: ECAddress.LITVM.TESTNET_PROTOCOL_ADDRESS,
     imageRegistry: {
       PYNITHY: ECAddress.LITVM.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS,
@@ -451,6 +460,7 @@ export const ECLD_SHARED_TESTNET_TOKEN = ECAddress.IOTEX.TESTNET_ADDRESS;
 // constructor; the protocol/registry are finalised by resolveNetworkContext().
 const ECLD_PROVISIONAL_CONFIG = {
   family: 'ecld',
+  tokenName: 'tECLD',
   protocolAddress: undefined,
   imageRegistry: { PYNITHY: undefined, NODENITHY: undefined },
   isMainnet: false,

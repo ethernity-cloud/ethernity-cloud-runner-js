@@ -10,6 +10,8 @@ import {
   normalizeNodeAddress,
   parseTransactionBytes,
   queryFilterChunked,
+  READ_ATTEMPTS,
+  retryRead,
   waitForReceipt
 } from './utils.js';
 import { decryptWithPrivateKey, encryptWithCertificate, sha256 } from './crypto.js';
@@ -267,10 +269,11 @@ class EthernityCloudRunner extends EventTarget {
     }
     this.networkConfig = cfg;
     // The token the task is paid with: ETNY on the bloxberg family, ECLD on
-    // Polygon mainnet/Amoy and the IoTeX / Sepolia / LitVM testnets.
+    // Polygon mainnet/Amoy and the IoTeX / Sepolia / LitVM testnets, named in
+    // its messages by the descriptor's tokenName.
     this.tokenContract = cfg.family === 'bloxberg'
-      ? new EtnyContract(this.networkAddress, wc)
-      : new EcldContract(this.networkAddress, wc);
+      ? new EtnyContract(this.networkAddress, wc, cfg.tokenName)
+      : new EcldContract(this.networkAddress, wc, cfg.tokenName);
     // For the shared-token testnets the PoX address isn't known until a
     // chainId is read (resolveNetworkContext); build the protocol contract
     // now only when we already have the address.
@@ -398,10 +401,21 @@ class EthernityCloudRunner extends EventTarget {
   // The wallet's token balance against the request's escrow: a V2 request's
   // escrowWei, or a legacy request's taskPrice x validators x duration tokens
   // (requestEscrow), the amount the PoX pulls or requires the balance to
-  // cover.
+  // cover. The wallet's address is resolved once, before the read: a browser
+  // wallet whose account is not connected yet is asked for it here, and a
+  // refused request is thrown as it is, asked no second time. The balance is
+  // then read up to READ_ATTEMPTS times (utils.retryRead), each failed try a
+  // WARNING event; when every try fails the last try's error, which names
+  // the token, the wallet and the provider's message
+  // (tokenBalance.readTokenBalance), is thrown as it is: a wallet whose
+  // balance cannot be read is never reported as empty.
   async checkWalletBalance() {
     this.dispatchECEvent('Checking wallet balance....');
-    const balance = await this.tokenContract.getBalance();
+    const wallet = await this.tokenContract.getSigner().getAddress();
+    const balance = await retryRead(() => this.tokenContract.getBalance(wallet), {
+      onError: (error, attempt) =>
+        this.dispatchECEvent(`Wallet balance read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${error.message}`, ECLog.WARNING)
+    });
     if (this.v2Terms) {
       // A V2 request's escrow is a wei figure, compared in wei.
       if (ethers.parseEther(String(balance)) < this.v2Terms.escrowWei) {

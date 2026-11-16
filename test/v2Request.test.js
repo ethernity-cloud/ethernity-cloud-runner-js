@@ -35,8 +35,10 @@ const RESOURCES = { taskPrice: 3, cpu: 1, memory: 1, storage: 10, bandwidth: 1, 
 
 const providerOn = (chainId) => ({ getNetwork: async () => ({ chainId: BigInt(chainId) }) });
 
+// A runner of the wallet WALLET on the network of `address`; the balance
+// check resolves the wallet's address from the signer before its read.
 const runnerOn = async (address, chainId) => {
-  const runner = new EthernityCloudRunner(address, { provider: providerOn(chainId) });
+  const runner = new EthernityCloudRunner(address, { provider: providerOn(chainId), signer: { getAddress: async () => WALLET } });
   runner.dispatchECEvent = () => {};
   await runner.resolveNetworkContext();
   return runner;

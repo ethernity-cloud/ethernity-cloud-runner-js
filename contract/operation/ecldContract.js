@@ -3,6 +3,7 @@ import contract from '../abi/ecldAbi.js';
 import { ECNetworkByChainIdDictionary } from '../../enums.js';
 import { contractRunners } from '../../walletContext.js';
 import { checkAndSetAllowance } from './tokenAllowance.js';
+import { readTokenBalance } from './tokenBalance.js';
 
 class EcldContract {
   ecldContract = null;
@@ -15,10 +16,15 @@ class EcldContract {
 
   currentWallet = null;
 
-  constructor(networkAddress, walletContext = null) {
+  // The token's name in the messages of this instance: the network
+  // descriptor's tokenName (ECLD, tECLD), 'token' when built without one.
+  tokenName = 'token';
+
+  constructor(networkAddress, walletContext = null, tokenName = 'token') {
     ({ provider: this.provider, signer: this.signer } = contractRunners(walletContext));
     this.ecldContract = new ethers.Contract(networkAddress || contract.address, contract.abi, this.signer);
     this.ecldContactWithProvider = new ethers.Contract(networkAddress || contract.address, contract.abi, this.provider);
+    this.tokenName = tokenName;
   }
 
   async initialize() {
@@ -79,16 +85,11 @@ class EcldContract {
     return this.ecldContract.approve(address, allowanceAmount);
   }
 
-  async getBalance() {
-    try {
-      const address = await this.signer.getAddress();
-      const balance = await this.ecldContract.balanceOf(address);
-      // convert a currency unit from wei to ether
-      return ethers.formatEther(balance);
-    } catch (ex) {
-      console.log(ex);
-      return 0;
-    }
+  // The balance of `wallet`, the signer's address when not given, on the
+  // token, in tokens (tokenBalance.readTokenBalance): a read the provider
+  // fails throws the error naming the cause.
+  async getBalance(wallet = null) {
+    return readTokenBalance(this.ecldContract, wallet ?? (await this.signer.getAddress()), this.tokenName);
   }
 
   async signMessage(message) {
