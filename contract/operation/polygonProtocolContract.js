@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import contract from '../abi/polygonProtocolAbi.js';
 import { contractRunners } from '../../walletContext.js';
 import { withGasHeadroom } from '../../utils.js';
+import { requestTerms } from './requestTerms.js';
 
 // process.env is undefined in non-React browser bundles; guard so the module
 // loads there and the gas params fall back to their defaults.
@@ -62,22 +63,16 @@ class PolygonProtocolContract {
 
   async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, resources, gasLimit) {
     console.log('adding new DO Request');
-    const cpu = resources.cpu || 1;
-    const memory = resources.memory || 1;
-    const storage = resources.storage || 40;
-    const bandwidth = resources.bandwidth || 1;
-    const duration = resources.duration || 1;
-    const validators = resources.validators || 1;
-    const taskPrice = resources.taskPrice || 10;
+    const terms = requestTerms(resources);
     if (gasLimit) {
       return this.protocolContract._addDORequest(
-        cpu,
-        memory,
-        storage,
-        bandwidth,
-        duration,
-        validators,
-        taskPrice,
+        terms.cpu,
+        terms.memory,
+        terms.storage,
+        terms.bandwidth,
+        terms.duration,
+        terms.validators,
+        terms.taskPrice,
         imageMetadata,
         payloadMetadata,
         inputMetadata,
@@ -87,13 +82,13 @@ class PolygonProtocolContract {
     }
     // eslint-disable-next-line no-underscore-dangle
     return withGasHeadroom(this.protocolContract._addDORequest, [
-      cpu,
-      memory,
-      storage,
-      bandwidth,
-      duration,
-      validators,
-      taskPrice,
+      terms.cpu,
+      terms.memory,
+      terms.storage,
+      terms.bandwidth,
+      terms.duration,
+      terms.validators,
+      terms.taskPrice,
       imageMetadata,
       payloadMetadata,
       inputMetadata,
@@ -107,11 +102,9 @@ class PolygonProtocolContract {
   // implementation pulls the escrow from the wallet's allowance in this call.
   async addDORequestV2(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, resources, terms) {
     console.log('adding new DO Request (V2 terms)');
-    const cpu = resources.cpu || 1;
-    const memory = resources.memory || 1;
-    const storage = resources.storage || 40;
-    const bandwidth = resources.bandwidth || 1;
-    const duration = resources.duration || 1;
+    const {
+      cpu, memory, storage, bandwidth, duration
+    } = requestTerms(resources);
     return withGasHeadroom(this.protocolContract.addDORequestV2, [
       cpu,
       memory,

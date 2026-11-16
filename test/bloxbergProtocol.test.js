@@ -116,37 +116,38 @@ test('an ecld runner is built as before: the ECLD token and the V2 PoX at the pr
   assert.equal(litvm.protocolAbi, protocolContractPolygon.abi);
 });
 
-test('checkAllowance approves the PoX on the token where the two differ and skips it where the PoX is the token', async () => {
+test('checkAllowance approves the PoX on the token for the request escrow where the two differ and skips it where the PoX is the token', async () => {
   const approvals = [];
-  const recording = (runner) => {
-    runner.tokenContract.checkAndSetAllowance = async (protocol, amount, price) => {
-      approvals.push([protocol, amount, price]);
+  const recording = (runner, taskPrice) => {
+    runner.resources = { taskPrice, duration: 1, validators: 1 };
+    runner.tokenContract.checkAndSetAllowance = async (protocol, escrow) => {
+      approvals.push([protocol, escrow]);
       return true;
     };
     return runner;
   };
-  const testnet = recording(await runnerOn(TOKEN, 8995));
-  await testnet.checkAllowance(3);
-  assert.deepEqual(approvals, [[POX, '100', '3']]);
+  const testnet = recording(await runnerOn(TOKEN, 8995), 3);
+  await testnet.checkAllowance();
+  assert.deepEqual(approvals, [[POX, '3']]);
 
-  const mainnet = recording(await runnerOn(MAINNET, 8995));
-  await mainnet.checkAllowance(3);
+  const mainnet = recording(await runnerOn(MAINNET, 8995), 3);
+  await mainnet.checkAllowance();
   assert.equal(approvals.length, 1);
 
-  const amoy = recording(await runnerOn(ECAddress.POLYGON.TESTNET_ADDRESS, 80002));
-  await amoy.checkAllowance(5);
-  assert.deepEqual(approvals[1], [ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, '100', '5']);
+  const amoy = recording(await runnerOn(ECAddress.POLYGON.TESTNET_ADDRESS, 80002), 5);
+  await amoy.checkAllowance();
+  assert.deepEqual(approvals[1], [ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, '5']);
 
-  const litvm = recording(await runnerOn(ECLD_SHARED_TESTNET_TOKEN, 4441, 4441));
-  await litvm.checkAllowance(2);
-  assert.deepEqual(approvals[2], [ECAddress.LITVM.TESTNET_PROTOCOL_ADDRESS, '100', '2']);
+  const litvm = recording(await runnerOn(ECLD_SHARED_TESTNET_TOKEN, 4441, 4441), 2);
+  await litvm.checkAllowance();
+  assert.deepEqual(approvals[2], [ECAddress.LITVM.TESTNET_PROTOCOL_ADDRESS, '2']);
 
   // An approval that is not mined fails the run before the request is sent.
   testnet.tokenContract.checkAndSetAllowance = async () => false;
-  await assert.rejects(testnet.checkAllowance(3), /Unable to set allowance/);
+  await assert.rejects(testnet.checkAllowance(), /Allowance approval failed/);
 });
 
-test('EtnyContract.checkAndSetAllowance approves the PoX when the allowance is below the task price and leaves a sufficient one alone', async () => {
+test('EtnyContract.checkAndSetAllowance approves the PoX for the escrow when the allowance is below it and leaves a sufficient one alone', async () => {
   const token = new EtnyContract(TOKEN, { provider: providerOn(8995), signer: { getAddress: async () => WALLET } });
   const calls = [];
   let allowance = 0n;
@@ -160,27 +161,27 @@ test('EtnyContract.checkAndSetAllowance approves the PoX when the allowance is b
       return { hash: '0xa', wait: async () => { allowance = amount; return { status: 1 }; } };
     }
   };
-  assert.equal(await token.checkAndSetAllowance(POX, '100', '3'), true);
+  assert.equal(await token.checkAndSetAllowance(POX, '3'), true);
   assert.deepEqual(calls, [
     ['allowance', WALLET, POX],
-    ['approve', POX, ethers.parseUnits('100', 'ether')]
+    ['approve', POX, ethers.parseUnits('3', 'ether')]
   ]);
-  assert.equal(allowance, ethers.parseUnits('100', 'ether'));
+  assert.equal(allowance, ethers.parseUnits('3', 'ether'));
 
   calls.length = 0;
-  assert.equal(await token.checkAndSetAllowance(POX, '100', '3'), true);
+  assert.equal(await token.checkAndSetAllowance(POX, '3'), true);
   assert.deepEqual(calls, [['allowance', WALLET, POX]]);
 
-  // The allowance covers 100 tokens; a task priced above it is approved again.
+  // The allowance covers 3 tokens; a request escrowing more is approved again.
   calls.length = 0;
-  assert.equal(await token.checkAndSetAllowance(POX, '500', '200'), true);
+  assert.equal(await token.checkAndSetAllowance(POX, '200'), true);
   assert.deepEqual(calls.map((c) => c[0]), ['allowance', 'approve']);
-  assert.equal(allowance, ethers.parseUnits('500', 'ether'));
+  assert.equal(allowance, ethers.parseUnits('200', 'ether'));
 
   // An approval transaction that is not mined.
   allowance = 0n;
   token.etnyContract.approve = async () => ({ hash: '0xb', wait: async () => { throw new Error('transaction replaced'); } });
-  assert.equal(await token.checkAndSetAllowance(POX, '100', '3'), false);
+  assert.equal(await token.checkAndSetAllowance(POX, '3'), false);
 });
 
 test('a bloxberg testnet result is bound to the 1.2 implementation: one addressed to the token proxy is refused', async () => {

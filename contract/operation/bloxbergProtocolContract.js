@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import contract from '../abi/etnyAbi.js';
 import { contractRunners } from '../../walletContext.js';
 import { withGasHeadroom } from '../../utils.js';
+import { requestTerms } from './requestTerms.js';
 
 class BloxbergProtocolContract {
   etnyContract = null;
@@ -34,22 +35,16 @@ class BloxbergProtocolContract {
   }
 
   async addDORequest(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, resources) {
-    const cpu = resources.cpu || 1;
-    const memory = resources.memory || 1;
-    const storage = resources.storage || 40;
-    const bandwidth = resources.bandwidth || 1;
-    const duration = resources.duration || 1;
-    const validators = resources.validators || 1;
-    const taskPrice = resources.taskPrice || 10;
+    const terms = requestTerms(resources);
     // eslint-disable-next-line no-underscore-dangle
     return withGasHeadroom(this.etnyContract._addDORequest, [
-      cpu,
-      memory,
-      storage,
-      bandwidth,
-      duration,
-      validators,
-      taskPrice,
+      terms.cpu,
+      terms.memory,
+      terms.storage,
+      terms.bandwidth,
+      terms.duration,
+      terms.validators,
+      terms.taskPrice,
       imageMetadata,
       payloadMetadata,
       inputMetadata,

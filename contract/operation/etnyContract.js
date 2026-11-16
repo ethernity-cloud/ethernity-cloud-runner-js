@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import contract from '../abi/etnyAbi.js';
 import { ECNetworkByChainIdDictionary } from '../../enums.js';
 import { contractRunners } from '../../walletContext.js';
+import { checkAndSetAllowance } from './tokenAllowance.js';
 
 class EtnyContract {
   etnyContract = null;
@@ -26,8 +27,8 @@ class EtnyContract {
     this.currentWallet = await this._getCurrentWallet();
   }
 
-  // eslint-disable-next-line class-methods-use-this
-  contractAddress = () => contract.address;
+  // The address of the token contract this instance is bound to.
+  contractAddress = () => this.etnyContract.target;
 
   getSigner() {
     return this.signer;
@@ -69,25 +70,10 @@ class EtnyContract {
   }
 
   // The wallet's allowance for the PoX at `protocolAddress` on the token,
-  // raised to `amount` tokens when it is below `taskPrice` tokens: the
-  // bloxberg testnet's EthernityImplementationV2 pulls a DO request's escrow
-  // with transferFrom (runner.checkAllowance). False when the approval
-  // transaction is not mined.
-  async checkAndSetAllowance(protocolAddress, amount, taskPrice) {
-    const allowanceAmount = ethers.parseUnits(amount, 'ether');
-    const taskPriceAmount = ethers.parseUnits(taskPrice, 'ether');
-    const currentWalletAddress = await this.signer.getAddress();
-    const allowance = await this.etnyContract.allowance(currentWalletAddress, protocolAddress);
-    if (allowance < taskPriceAmount) {
-      const approveTx = await this.etnyContract.approve(protocolAddress, allowanceAmount);
-      try {
-        await approveTx.wait();
-      } catch (error) {
-        console.log(`Transaction failed with error: ${error}`);
-        return false;
-      }
-    }
-    return true;
+  // raised to `escrow` tokens when it is below it, by the one implementation
+  // every token contract shares (tokenAllowance.js).
+  async checkAndSetAllowance(protocolAddress, escrow, report) {
+    return checkAndSetAllowance(this.getContract(), this.signer, protocolAddress, escrow, report);
   }
 
   async getNetworkName() {

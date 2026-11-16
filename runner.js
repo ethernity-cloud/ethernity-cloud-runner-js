@@ -40,6 +40,7 @@ import {
 } from './enums.js';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
+import { requestEscrow } from './contract/operation/requestTerms.js';
 import { Buffer } from 'buffer';
 
 // Deep, browser-safe object dump for DEBUG events. Replaces node's util.inspect
@@ -394,7 +395,11 @@ class EthernityCloudRunner extends EventTarget {
   }
 
 
-  async checkWalletBalance(taskPrice) {
+  // The wallet's token balance against the request's escrow: a V2 request's
+  // escrowWei, or a legacy request's taskPrice x validators x duration tokens
+  // (requestEscrow), the amount the PoX pulls or requires the balance to
+  // cover.
+  async checkWalletBalance() {
     this.dispatchECEvent('Checking wallet balance....');
     const balance = await this.tokenContract.getBalance();
     if (this.v2Terms) {
@@ -404,8 +409,9 @@ class EthernityCloudRunner extends EventTarget {
       }
       return;
     }
-    if (parseInt(balance, 10) < taskPrice) {
-      throw new Error(`Insufficient wallet balance (${balance}/${taskPrice})`);
+    const escrow = requestEscrow(this.resources);
+    if (parseInt(balance, 10) < escrow) {
+      throw new Error(`Insufficient wallet balance (${balance}/${escrow})`);
     }
   }
 
@@ -460,25 +466,29 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
-  async checkAllowance(taskPrice) {
+  async checkAllowance() {
     // A PoX apart from the token (hasSeparateProtocol: the ecld family, the
     // bloxberg testnet) pulls the DO request's escrow from the wallet with
     // transferFrom, so the wallet's allowance for it on the token is raised
-    // first when it is below the task price. Bloxberg mainnet's PoX is the
+    // to the escrow first when it is below it. Bloxberg mainnet's PoX is the
     // token's own proxy and takes the escrow in the request itself.
     if (!hasSeparateProtocol(this.networkConfig, this.networkAddress)) return;
-    this.dispatchECEvent('Checking for the allowance on the current wallet...');
-    // A V2 request's allowance is its exact escrow, the amount the PoX pulls
-    // at addDORequestV2, raised to it when below it.
-    const escrow = this.v2Terms ? ethers.formatEther(this.v2Terms.escrowWei) : null;
-    if (!await this.tokenContract.checkAndSetAllowance(
+    this.dispatchECEvent('Checking allowance on the current wallet...');
+    // The escrow is the exact amount the PoX pulls: a V2 request's escrowWei
+    // at addDORequestV2, a legacy request's taskPrice x validators x duration
+    // tokens at _addDORequest (requestEscrow). The step is the same code on
+    // every network that takes it (tokenAllowance.checkAndSetAllowance),
+    // reporting through the events.
+    const escrow = this.v2Terms ? ethers.formatEther(this.v2Terms.escrowWei) : String(requestEscrow(this.resources));
+    const covered = await this.tokenContract.checkAndSetAllowance(
       this.networkConfig.protocolAddress,
-      escrow === null ? '100' : escrow,
-      escrow === null ? taskPrice.toString() : escrow
-    )) {
-      throw new Error('Unable to set allowance');
+      escrow,
+      (message) => this.dispatchECEvent(message)
+    );
+    if (!covered) {
+      throw new Error('Allowance approval failed');
     }
-    this.dispatchECEvent('Allowance checking completed.');
+    this.dispatchECEvent('Allowance check completed.');
   }
 
   async processTask(code) {
@@ -501,11 +511,10 @@ class EthernityCloudRunner extends EventTarget {
           ECLog.WARNING
         );
         await this.cleanup();
-        // addDORequestV2 pulled the failed request's escrow, the whole
-        // allowance checkAllowance set for a V2 run, so the resubmission
-        // raises it to the escrow again. The legacy allowance of 100 tokens
-        // covers a resubmission as it is.
-        if (this.v2Terms) await this.checkAllowance(this.resources.taskPrice);
+        // The PoX pulled the failed request's escrow, the whole allowance
+        // checkAllowance set, so the resubmission raises it to the escrow
+        // again.
+        await this.checkAllowance();
         await delay(retryDelayMs);
       }
     }
@@ -1847,11 +1856,11 @@ class EthernityCloudRunner extends EventTarget {
       this.selectRequestTerms(options.v2);
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
-      await this.checkWalletBalance(this.resources.taskPrice);
+      await this.checkWalletBalance();
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
       await this.initializeWeb3Connection();
-      await this.checkAllowance(this.resources.taskPrice);
+      await this.checkAllowance();
       this.challengeHash = generateRandomHexOfSize(20);
       const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
       const codeMetadata = await this.getV3CodeMetadata(code);
@@ -1950,11 +1959,11 @@ class EthernityCloudRunner extends EventTarget {
       this.selectRequestTerms(options.v2);
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
-      await this.checkWalletBalance(this.resources.taskPrice);
+      await this.checkWalletBalance();
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
       await this.initializeWeb3Connection();
-      await this.checkAllowance(this.resources.taskPrice);
+      await this.checkAllowance();
       await this.processTask(code);
     } catch (error) {
       this.handleError(error);

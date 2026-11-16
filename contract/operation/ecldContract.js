@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import contract from '../abi/ecldAbi.js';
 import { ECNetworkByChainIdDictionary } from '../../enums.js';
 import { contractRunners } from '../../walletContext.js';
+import { checkAndSetAllowance } from './tokenAllowance.js';
 
 class EcldContract {
   ecldContract = null;
@@ -24,8 +25,8 @@ class EcldContract {
     this.currentWallet = await this._getCurrentWallet();
   }
 
-  // eslint-disable-next-line class-methods-use-this
-  contractAddress = () => contract.address;
+  // The address of the token contract this instance is bound to.
+  contractAddress = () => this.ecldContract.target;
 
   getSigner() {
     return this.signer;
@@ -65,30 +66,11 @@ class EcldContract {
     return ECNetworkByChainIdDictionary[network.chainId];
   }
 
-  // Fetch the current allowance and update if needed
-  // approval address should be the address of protocol contract
-  async checkAndSetAllowance(protocolAddress, amount, taskPrice) {
-    const allowanceAmount = ethers.parseUnits(amount, 'ether'); // Adjust the amount accordingly
-    const taskPriceAmount = ethers.parseUnits(taskPrice, 'ether');
-    const currentWalletAddress = await this.signer.getAddress();
-    const allowance = await this.ecldContract.allowance(currentWalletAddress, protocolAddress);
-    console.log(`initial allowance: ${allowance}`);
-    // check if the current allowance is lower than allowanceAmount or taskPriceAmount
-    // in this case we should add more tokens
-    if (allowance < taskPriceAmount) {
-      const approveTx = await this.ecldContract.approve(protocolAddress, allowanceAmount);
-      try {
-        await approveTx.wait();
-        console.log(`Transaction mined successfully: ${approveTx.hash}`);
-        const allowance = await this.ecldContract.allowance(currentWalletAddress, protocolAddress);
-        console.log(`after approval allowance:${allowance}`);
-      } catch (error) {
-        console.log(`Transaction failed with error: ${error}`);
-        return false;
-      }
-    }
-
-    return true;
+  // The wallet's allowance for the PoX at `protocolAddress` on the token,
+  // raised to `escrow` tokens when it is below it, by the one implementation
+  // every token contract shares (tokenAllowance.js).
+  async checkAndSetAllowance(protocolAddress, escrow, report) {
+    return checkAndSetAllowance(this.getContract(), this.signer, protocolAddress, escrow, report);
   }
 
   async approve(tokens) {

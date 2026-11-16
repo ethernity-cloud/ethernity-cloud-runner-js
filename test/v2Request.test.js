@@ -2,8 +2,9 @@
 // the PoX 1.2's addDORequestV2 with the terms given (maxPricePerCuHourWei,
 // maxCu, relaysPerHour, gasLevel), checks the wallet's balance in wei against
 // the escrow and raises the token allowance to that exact escrow; a run
-// without it is the legacy request as before (taskPrice, the 100-token
-// allowance). V2 terms need a PoX apart from the token.
+// without it is the legacy request (the balance and the allowance checked
+// against taskPrice x validators x duration, the escrow _addDORequest
+// takes). V2 terms need a PoX apart from the token.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
@@ -130,28 +131,37 @@ test('selectRequestTerms keeps the V2 terms on a PoX apart from the token and re
   assert.equal(mainnet.v2Terms, null);
 });
 
-test('with V2 terms the balance is checked in wei against the escrow and the allowance raised to the exact escrow; without them the legacy checks run as before', async () => {
+test('with V2 terms the balance is checked in wei against the escrow and the allowance raised to the exact escrow; without them against the legacy escrow', async () => {
   const runner = await runnerOn(TOKEN, 8995);
   const approvals = [];
   let balance = '0.05';
+  runner.resources = RESOURCES;
   runner.tokenContract.getBalance = async () => balance;
-  runner.tokenContract.checkAndSetAllowance = async (protocol, amount, price) => { approvals.push([protocol, amount, price]); return true; };
+  runner.tokenContract.checkAndSetAllowance = async (protocol, escrow) => { approvals.push([protocol, escrow]); return true; };
 
   runner.selectRequestTerms(TERMS);
-  await runner.checkWalletBalance(RESOURCES.taskPrice);
-  await runner.checkAllowance(RESOURCES.taskPrice);
-  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS, ESCROW_TOKENS]]);
+  await runner.checkWalletBalance();
+  await runner.checkAllowance();
+  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS]]);
   assert.equal(ethers.parseEther(ESCROW_TOKENS), TERMS.escrowWei);
   balance = '0.035';
-  await assert.rejects(runner.checkWalletBalance(RESOURCES.taskPrice), /Insufficient wallet balance \(0\.035 tokens for an escrow of 0\.03510194904\)/);
+  await assert.rejects(runner.checkWalletBalance(), /Insufficient wallet balance \(0\.035 tokens for an escrow of 0\.03510194904\)/);
 
+  // A legacy request's escrow is taskPrice x validators x duration tokens.
   runner.selectRequestTerms(undefined);
   balance = '2.5';
-  await assert.rejects(runner.checkWalletBalance(3), /Insufficient wallet balance \(2\.5\/3\)/);
+  await assert.rejects(runner.checkWalletBalance(), /Insufficient wallet balance \(2\.5\/3\)/);
   balance = '3';
-  await runner.checkWalletBalance(3);
-  await runner.checkAllowance(3);
-  assert.deepEqual(approvals[1], [POX, '100', '3']);
+  await runner.checkWalletBalance();
+  await runner.checkAllowance();
+  assert.deepEqual(approvals[1], [POX, '3']);
+  runner.resources = { ...RESOURCES, validators: 2, duration: 4 };
+  balance = '23';
+  await assert.rejects(runner.checkWalletBalance(), /Insufficient wallet balance \(23\/24\)/);
+  balance = '24';
+  await runner.checkWalletBalance();
+  await runner.checkAllowance();
+  assert.deepEqual(approvals[2], [POX, '24']);
 });
 
 test('createDORequest posts through addDORequestV2 with the terms and the pinned node when the run has V2 terms, through _addDORequest otherwise', async () => {
@@ -180,7 +190,7 @@ const stubbedRun = async (adds, approvals) => {
   const runner = await runnerOn(TOKEN, 8995);
   runner.protocolContract = protocolStub(adds);
   runner.tokenContract.getBalance = async () => '3.5';
-  runner.tokenContract.checkAndSetAllowance = async (protocol, amount, price) => { approvals.push([protocol, amount, price]); return true; };
+  runner.tokenContract.checkAndSetAllowance = async (protocol, escrow) => { approvals.push([protocol, escrow]); return true; };
   runner.initializeDefaultStorage = () => {};
   runner.initializeImageRegistry = async () => {};
   runner.initializeWeb3Connection = async () => {};
@@ -200,12 +210,12 @@ test('run() with options.v2 posts the V2 request pinned to the node, approves th
   await runner.run(RESOURCES, 'bbcas-e2e-js-20261024', "hello('v2')", NODE, 'etny-nodenithy-testnet', { v2: TERMS });
   assert.equal(await runner.getResult(), 'ok');
   assert.deepEqual(adds, [['addDORequestV2', 'image', 'code', 'v3::input', NODE, RESOURCES, v2TermsOf(TERMS)]]);
-  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS, ESCROW_TOKENS]]);
+  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS]]);
   assert.equal(runner.v2Terms, null);
 
   await runner.run(RESOURCES, 'bbcas-e2e-js-20261024', "hello('legacy')", NODE, 'etny-nodenithy-testnet');
   assert.deepEqual(adds[1], ['_addDORequest', 'image', 'code', 'v3::input', NODE, RESOURCES]);
-  assert.deepEqual(approvals[1], [POX, '100', '3']);
+  assert.deepEqual(approvals[1], [POX, '3']);
 });
 
 // A stubbed processing wait whose first call fails as the node's fault
@@ -224,7 +234,7 @@ const operatorFaultOnce = (runner) => {
   return counter;
 };
 
-test('run() with options.v2 approves the escrow again before resubmitting after an operator fault; a legacy run resubmits on its 100-token allowance', async () => {
+test('a run approves the escrow again before resubmitting after an operator fault, with V2 terms and without', async () => {
   const adds = [];
   const approvals = [];
   const runner = await stubbedRun(adds, approvals);
@@ -234,14 +244,15 @@ test('run() with options.v2 approves the escrow again before resubmitting after 
   assert.equal(v2.attempts, 2);
   assert.deepEqual(adds.map((add) => add[0]), ['addDORequestV2', 'addDORequestV2']);
   assert.deepEqual(adds[1].slice(1), ['image', 'code', 'v3::input', NODE, RESOURCES, v2TermsOf(TERMS)]);
-  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS, ESCROW_TOKENS], [POX, ESCROW_TOKENS, ESCROW_TOKENS]]);
+  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS], [POX, ESCROW_TOKENS]]);
   assert.equal(runner.v2Terms, null);
 
+  // The first legacy request pulled the whole allowance, its escrow.
   const legacy = operatorFaultOnce(runner);
   await runner.run(RESOURCES, 'bbcas-e2e-js-20261024', "hello('legacy')", NODE, 'etny-nodenithy-testnet', { maxRetries: 2, retryDelayMs: 0 });
   assert.equal(legacy.attempts, 2);
   assert.deepEqual(adds.slice(2).map((add) => add[0]), ['_addDORequest', '_addDORequest']);
-  assert.deepEqual(approvals.slice(2), [[POX, '100', '3']]);
+  assert.deepEqual(approvals.slice(2), [[POX, '3'], [POX, '3']]);
 });
 
 test('run() with invalid V2 terms fails before any chain call', async () => {
@@ -266,11 +277,11 @@ test('runSession() with options.v2 posts the v3s request through addDORequestV2 
   assert.equal(session.doReq, 4349);
   assert.equal(session.durationHours, 1);
   assert.deepEqual(adds, [['addDORequestV2', 'image', 'code', 'v3s::input', NODE, RESOURCES, v2TermsOf(TERMS)]]);
-  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS, ESCROW_TOKENS]]);
+  assert.deepEqual(approvals, [[POX, ESCROW_TOKENS]]);
   assert.equal(runner.v2Terms, null);
 
   const legacy = await runner.runSession(RESOURCES, 'bbcas-e2e-js-20261024', 'ecld.onInput = sessionHandler', NODE, 'etny-nodenithy-testnet');
   assert.equal(legacy.orderId, 2107);
   assert.deepEqual(adds[1], ['_addDORequest', 'image', 'code', 'v3s::input', NODE, RESOURCES]);
-  assert.deepEqual(approvals[1], [POX, '100', '3']);
+  assert.deepEqual(approvals[1], [POX, '3']);
 });
