@@ -148,17 +148,17 @@ export const orderStartVerdict = (rows, orderId, block, windowEnd) => {
 };
 
 // The V2 terms of a run, options.v2 of run() and runSession(), as bigints:
-// maxPricePerCuHourWei (the most paid per CU-hour, token weis), maxCu (the
-// largest node paid for, thousandths of a CU; 0 for any node), relaysPerHour
-// and gasLevel (1e18 fixed) of the chain fee, and escrowWei, the escrow the
-// PoX 1.2 pulls at addDORequestV2 (work at maxPricePerCuHourWei for maxCu, or
-// the pricing's cuMaxDefault when maxCu is 0, over the duration, plus the
-// publishers' and the network's fees on it, plus the chain fee), which the
-// run approves on the token before the request. Each field is a bigint, a
-// string of decimal digits (surrounding whitespace allowed) or a safe
-// integer; the empty string, a boolean and a hex string are refused. Null
-// when `v2` is not given.
-export const V2_TERM_FIELDS = ['maxPricePerCuHourWei', 'maxCu', 'relaysPerHour', 'gasLevel', 'escrowWei'];
+// maxPricePerCuHourWei (the most paid per CU-hour, token weis), maxGflops (the
+// largest node paid for, in GFLOPS, one CU being 100 GFLOPS; 0 for any node),
+// relaysPerHour and gasLevel (1e18 fixed) of the chain fee, and escrowWei, the
+// escrow the PoX 1.2 pulls at addDORequestV2 (the work, maxPricePerCuHourWei x
+// maxGflops / 100 x the duration's hours, with the pricing's gflopsMaxDefault
+// for maxGflops 0, plus the publishers' and the network's fees on it, plus the
+// chain fee), which the run approves on the token before the request. Each
+// field is a bigint, a string of decimal digits (surrounding whitespace
+// allowed) or a safe integer; the empty string, a boolean and a hex string are
+// refused. Null when `v2` is not given.
+export const V2_TERM_FIELDS = ['maxPricePerCuHourWei', 'maxGflops', 'relaysPerHour', 'gasLevel', 'escrowWei'];
 export const v2TermsOf = (v2) => {
   if (v2 === undefined || v2 === null) return null;
   if (typeof v2 !== 'object') throw new TypeError('options.v2 must be an object with the V2 terms');

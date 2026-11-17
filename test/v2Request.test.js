@@ -1,6 +1,6 @@
 // A run with options.v2 (run() and runSession()) posts its DO request through
 // the PoX 1.2's addDORequestV2 with the terms given (maxPricePerCuHourWei,
-// maxCu, relaysPerHour, gasLevel), checks the wallet's balance in wei against
+// maxGflops, relaysPerHour, gasLevel), checks the wallet's balance in wei against
 // the escrow and raises the token allowance to that exact escrow; a run
 // without it is the legacy request (the balance and the allowance checked
 // against taskPrice x validators x duration, the escrow _addDORequest
@@ -21,11 +21,11 @@ const NODE = '0xB78804B94a49579e8c4e1A98e9e965BF3D15062F';
 const WALLET = '0xF79648481c486406F0872401bDCfdA2d6152a6E1';
 
 // The plan's A10 request on bloxberg: 0.3 tETNY per CU-hour for at most
-// 0.1 CU over one hour at 17 % fees, plus the chain fee of the result alone
-// (974,520 gas x 2,000,000 wei x 1e18 / 1e18).
+// 0.1 CU (maxGflops 10) over one hour at 17 % fees, plus the chain fee of the
+// result alone (974,520 gas x 2,000,000 wei x 1e18 / 1e18).
 const TERMS = {
   maxPricePerCuHourWei: ethers.parseEther('0.3'),
-  maxCu: 100,
+  maxGflops: 10,
   relaysPerHour: 0,
   gasLevel: '1000000000000000000',
   escrowWei: ethers.parseEther('0.0351') + 1949040000000n
@@ -65,6 +65,7 @@ test('the V2 ABI carries addDORequestV2 with the fourteen arguments of the PoX 1
   const iface = new ethers.Interface(protocolContractPolygon.abi);
   const fn = iface.getFunction('addDORequestV2');
   assert.equal(fn.inputs.map((i) => i.type).join(','), 'uint8,uint8,uint8,uint8,uint16,uint8,uint256,uint32,uint16,uint256,string,string,string,string');
+  assert.equal(fn.inputs[7].name, 'maxGflops');
   assert.equal(fn.selector, ethers.id('addDORequestV2(uint8,uint8,uint8,uint8,uint16,uint8,uint256,uint32,uint16,uint256,string,string,string,string)').slice(0, 10));
   assert.deepEqual(fn.outputs.map((o) => o.type), ['uint256']);
   // The legacy entry point stays as it is.
@@ -74,28 +75,31 @@ test('the V2 ABI carries addDORequestV2 with the fourteen arguments of the PoX 1
 test('v2TermsOf takes bigints, decimal strings and safe integers, and refuses a missing, fractional, negative or zero field', () => {
   const terms = v2TermsOf(TERMS);
   assert.deepEqual(terms, {
-    maxPricePerCuHourWei: 300000000000000000n, maxCu: 100n, relaysPerHour: 0n, gasLevel: 1000000000000000000n, escrowWei: TERMS.escrowWei
+    maxPricePerCuHourWei: 300000000000000000n, maxGflops: 10n, relaysPerHour: 0n, gasLevel: 1000000000000000000n, escrowWei: TERMS.escrowWei
   });
   assert.deepEqual(Object.keys(terms), V2_TERM_FIELDS);
   assert.equal(v2TermsOf(undefined), null);
   assert.equal(v2TermsOf(null), null);
   assert.throws(() => v2TermsOf('terms'), TypeError);
-  assert.throws(() => v2TermsOf({ ...TERMS, maxCu: undefined }), /options\.v2\.maxCu must be an integer/);
+  assert.throws(() => v2TermsOf({ ...TERMS, maxGflops: undefined }), /options\.v2\.maxGflops must be an integer/);
+  // Terms carrying the node limit as maxCu and no maxGflops lack the maxGflops term.
+  const { maxGflops, ...withoutMaxGflops } = TERMS;
+  assert.throws(() => v2TermsOf({ ...withoutMaxGflops, maxCu: maxGflops }), /options\.v2\.maxGflops must be an integer/);
   assert.throws(() => v2TermsOf({ ...TERMS, gasLevel: 1.5 }), /options\.v2\.gasLevel must be an integer/);
   assert.throws(() => v2TermsOf({ ...TERMS, gasLevel: '1.5e18' }), /options\.v2\.gasLevel must be an integer/);
   assert.throws(() => v2TermsOf({ ...TERMS, relaysPerHour: -1 }), /options\.v2\.relaysPerHour must not be negative/);
   assert.throws(() => v2TermsOf({ ...TERMS, maxPricePerCuHourWei: 0n }), /maxPricePerCuHourWei must be above 0/);
   assert.throws(() => v2TermsOf({ ...TERMS, escrowWei: '0' }), /escrowWei must be above 0/);
-  // maxCu 0 (any node) is a valid term; a decimal string may carry whitespace.
-  assert.equal(v2TermsOf({ ...TERMS, maxCu: 0 }).maxCu, 0n);
-  assert.equal(v2TermsOf({ ...TERMS, maxCu: ' 100 ' }).maxCu, 100n);
+  // maxGflops 0 (any node) is a valid term; a decimal string may carry whitespace.
+  assert.equal(v2TermsOf({ ...TERMS, maxGflops: 0 }).maxGflops, 0n);
+  assert.equal(v2TermsOf({ ...TERMS, maxGflops: ' 10 ' }).maxGflops, 10n);
   // The empty string, a boolean and a hex string are not decimal integers
   // (BigInt would read them as 0, 1 and 16).
-  assert.throws(() => v2TermsOf({ ...TERMS, maxCu: '' }), /options\.v2\.maxCu must be an integer/);
-  assert.throws(() => v2TermsOf({ ...TERMS, maxCu: true }), /options\.v2\.maxCu must be an integer/);
+  assert.throws(() => v2TermsOf({ ...TERMS, maxGflops: '' }), /options\.v2\.maxGflops must be an integer/);
+  assert.throws(() => v2TermsOf({ ...TERMS, maxGflops: true }), /options\.v2\.maxGflops must be an integer/);
   assert.throws(() => v2TermsOf({ ...TERMS, relaysPerHour: true }), /options\.v2\.relaysPerHour must be an integer/);
-  assert.throws(() => v2TermsOf({ ...TERMS, maxCu: '0x10' }), /options\.v2\.maxCu must be an integer/);
-  assert.throws(() => v2TermsOf({ ...TERMS, maxCu: '-1' }), /options\.v2\.maxCu must be an integer/);
+  assert.throws(() => v2TermsOf({ ...TERMS, maxGflops: '0x10' }), /options\.v2\.maxGflops must be an integer/);
+  assert.throws(() => v2TermsOf({ ...TERMS, maxGflops: '-1' }), /options\.v2\.maxGflops must be an integer/);
 });
 
 test('PolygonProtocolContract.addDORequestV2 sends the resources, one instance, the terms and the four metadata strings with the gas headroom', async () => {
@@ -108,7 +112,7 @@ test('PolygonProtocolContract.addDORequestV2 sends the resources, one instance, 
   try {
     const tx = await protocol.addDORequestV2('image', 'code', 'input', NODE, RESOURCES, v2TermsOf(TERMS));
     assert.equal(tx.hash, '0xv2');
-    const args = [1, 1, 10, 1, 1, 1, 300000000000000000n, 100n, 0n, 1000000000000000000n, 'image', 'code', 'input', NODE];
+    const args = [1, 1, 10, 1, 1, 1, 300000000000000000n, 10n, 0n, 1000000000000000000n, 'image', 'code', 'input', NODE];
     assert.deepEqual(calls[0], ['estimate', ...args, {}]);
     assert.deepEqual(calls[1], ['send', ...args, { gasLimit: 400000n + (400000n * BigInt(GAS_HEADROOM_PERCENT)) / 100n }]);
     // The legacy add is untouched: taskPrice as the uint8 maxPrice, validators as the instances.

@@ -38,7 +38,7 @@ const BLOXBERG_MAINNET = {
 // The V2 terms of a request whose escrow is 0.03510194904 tokens.
 const TERMS = {
   maxPricePerCuHourWei: ethers.parseEther('0.3'),
-  maxCu: 100,
+  maxGflops: 10,
   relaysPerHour: 0,
   gasLevel: '1000000000000000000',
   escrowWei: ethers.parseEther('0.0351') + 1949040000000n

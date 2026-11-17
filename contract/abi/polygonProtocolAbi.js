@@ -110,7 +110,7 @@ const contract = {
         { internalType: 'uint16', name: 'duration', type: 'uint16' },
         { internalType: 'uint8', name: 'instances', type: 'uint8' },
         { internalType: 'uint256', name: 'maxPricePerCuHourWei', type: 'uint256' },
-        { internalType: 'uint32', name: 'maxCu', type: 'uint32' },
+        { internalType: 'uint32', name: 'maxGflops', type: 'uint32' },
         { internalType: 'uint16', name: 'relaysPerHour', type: 'uint16' },
         { internalType: 'uint256', name: 'gasLevel', type: 'uint256' },
         { internalType: 'string', name: 'metadata1', type: 'string' },
