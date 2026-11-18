@@ -43,7 +43,7 @@ const runnerOn = async (address, chainId, explicitChainId) => {
 test('the bloxberg testnet descriptor names the 1.2 implementation as its PoX, apart from the token; the mainnet descriptor names the token', () => {
   const testnet = resolveNetworkConfig(TOKEN);
   assert.equal(testnet.protocolAddress, POX);
-  assert.equal(POX, '0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b');
+  assert.equal(POX, '0x830c781F0352050343211B6BFA83600B3e77647C');
   assert.equal(TOKEN, '0x02882F03097fE8cD31afbdFbB5D72a498B41112c');
   assert.notEqual(testnet.protocolAddress, TOKEN);
   assert.equal(testnet.family, 'bloxberg');
@@ -189,7 +189,7 @@ test('a bloxberg testnet result is bound to the 1.2 implementation: one addresse
   runner.orderId = 7;
   assert.match(
     await runner.resultBindingError({ orderId: 7n, to: TOKEN, chainId: 8995n }),
-    /addressed to 0x02882F03097fE8cD31afbdFbB5D72a498B41112c, not 0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b/
+    /addressed to 0x02882F03097fE8cD31afbdFbB5D72a498B41112c, not 0x830c781F0352050343211B6BFA83600B3e77647C/
   );
   assert.equal(await runner.resultBindingError({ orderId: 7n, to: POX.toLowerCase(), chainId: 8995n }), null);
   assert.equal(await runner.resultBindingError({ orderId: 7n, to: POX, chainId: 0n }), null);

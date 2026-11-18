@@ -200,15 +200,16 @@ export const ECAddress = {
   BLOXBERG: {
     // TESTNET_ADDRESS is the tETNY token: the legacy proxy, which is also the
     // PoX of the orders placed through it and is not served by the 1.2.
-    // TESTNET_PROTOCOL_ADDRESS is the testnet's PoX since 2026-11-14, the
-    // EthernityImplementationV2 1.2 of pox-smart-contract-litvm on its own
-    // EthernityCloudStorage 0xEE3aAa1A7a8C00BeBBb5DfC570F80f6FA12a968d; its
-    // erc20Address() is the token, and it pulls a DO request's escrow from the
-    // client with transferFrom, so the client approves it on the token before
-    // the request (runner.checkAllowance). MAINNET_ADDRESS is the ETNY token
-    // and the mainnet's PoX in one proxy.
+    // TESTNET_PROTOCOL_ADDRESS is the testnet's PoX, the
+    // EthernityImplementationV2 1.2 of pox-smart-contract-litvm deployed
+    // 2026-11-18, whose compute figures are whole GFLOPS, on the
+    // EthernityCloudStorage 0xEE3aAa1A7a8C00BeBBb5DfC570F80f6FA12a968d of
+    // 2026-11-14; its erc20Address() is the token, and it pulls a DO request's
+    // escrow from the client with transferFrom, so the client approves it on
+    // the token before the request (runner.checkAllowance). MAINNET_ADDRESS is
+    // the ETNY token and the mainnet's PoX in one proxy.
     TESTNET_ADDRESS: '0x02882F03097fE8cD31afbdFbB5D72a498B41112c',
-    TESTNET_PROTOCOL_ADDRESS: '0x7E7C6eB435E3687CfDfe18C09C0340eb70567d7b',
+    TESTNET_PROTOCOL_ADDRESS: '0x830c781F0352050343211B6BFA83600B3e77647C',
     MAINNET_ADDRESS: '0x549A6E06BB2084100148D50F51CF77a3436C3Ae7',
     // The testnet reads ECImageRegistryV3, where its trustedzones and the
     // securelocks published against them are registered: the deployment of
@@ -227,14 +228,15 @@ export const ECAddress = {
   POLYGON: {
     // TESTNET_ADDRESS is the ERC-20 token (tECLD) contract; TESTNET_PROTOCOL_ADDRESS
     // is the PoX protocol contract. Testnet = Polygon Amoy (Mumbai is sunset).
-    // The protocol is the EthernityImplementationV2 1.2 of 2026-11-12, on the
-    // storage and token of the implementations 1.1 0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3
+    // The protocol is the EthernityImplementationV2 1.2 deployed 2026-11-18,
+    // whose compute figures are whole GFLOPS, on the storage and token of the
+    // implementations 1.1 0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3
     // and 0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3 (a DO request is escrowed
     // by the implementation it was posted through, so only this one is served);
     // its erc20Address() is the token below. The image registry is the
     // ECImageRegistryV3 of 2026-10-28.
     TESTNET_ADDRESS: '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
-    TESTNET_PROTOCOL_ADDRESS: '0x3Aa1A0d7A8A9DaE9e13345D3261afe86D67326A4',
+    TESTNET_PROTOCOL_ADDRESS: '0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2',
     MAINNET_ADDRESS: '0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba',
     MAINNET_PROTOCOL_ADDRESS: '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
     IMAGE_REGISTRY: {
@@ -489,7 +491,7 @@ export function resolveNetworkConfig(networkAddress, chainId) {
 
 // Whether the descriptor's PoX is a contract apart from the token at
 // `tokenAddress`. Such a PoX is an EthernityImplementationV2 (the ecld family,
-// the bloxberg testnet since its 1.2 of 2026-11-14): it pulls a DO request's
+// the bloxberg testnet's 1.2 deployed 2026-11-18): it pulls a DO request's
 // escrow from the client with transferFrom, so the runner approves it on the
 // token before the request and reads it with the V2 ABI. Where the PoX is the
 // token's own proxy (bloxberg mainnet) the request takes the escrow in the same
