@@ -1644,10 +1644,33 @@ class EthernityCloudRunner extends EventTarget {
     await contract.removeAllListeners();
   };
 
+  // Why the read of a node's DP requests failed, for the event and the error:
+  // a PoX its storage no longer lists as an allowed caller is named as
+  // retired (every call through it is refused, and this runner's address for
+  // the network is the one a later implementation replaced); any other
+  // failure is reported with the contract and the RPC's own message.
+  nodeCheckFailure = async (error) => {
+    const protocol = this.protocolContract;
+    const address = await protocol.getContract().getAddress();
+    const admission = typeof protocol.storageAdmission === 'function' ? await protocol.storageAdmission() : null;
+    if (admission && admission.admitted === false) {
+      return `The protocol contract ${address} is retired: its storage ${admission.storage} no longer admits it, so every call through it is refused. Upgrade @ethernity-cloud/runner: this version carries an address a later contract replaced.`;
+    }
+    return `Could not verify the node address: the protocol contract ${address} did not answer the read of the node's requests (${error.shortMessage || error.message}).`;
+  };
+
   isNodeOperatorAddress = async (nodeAddress) => {
     if (isNullOrEmpty(nodeAddress)) return true;
     if (isAddress(nodeAddress)) {
-      const isNode = await this.protocolContract.isNodeOperator(nodeAddress);
+      let isNode;
+      try {
+        isNode = await this.protocolContract.isNodeOperator(nodeAddress);
+      } catch (error) {
+        const message = await this.nodeCheckFailure(error);
+        this.status = ECStatus.ERROR;
+        this.dispatchECEvent(message);
+        throw new Error(message);
+      }
       if (!isNode) {
         this.status = ECStatus.ERROR;
         this.dispatchECEvent('Introduced address is not a valid node operator address.');

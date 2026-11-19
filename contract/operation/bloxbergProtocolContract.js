@@ -68,14 +68,11 @@ class BloxbergProtocolContract {
     return this.etnyContract._getResultFromOrder(orderId);
   }
 
+  // Whether `account` holds a DP request on this PoX. A read the contract or
+  // the RPC refuses is thrown: it says nothing about the account.
   async isNodeOperator(account) {
-    try {
-      const requests = await this.etnyContactWithProvider._getMyDPRequests({ from: account });
-      return requests.length > 0;
-    } catch (ex) {
-      console.log(ex);
-      return false;
-    }
+    const requests = await this.etnyContactWithProvider._getMyDPRequests({ from: account });
+    return requests.length > 0;
   }
 
   // eslint-disable-next-line class-methods-use-this

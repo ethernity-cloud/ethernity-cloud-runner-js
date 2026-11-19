@@ -143,13 +143,27 @@ class PolygonProtocolContract {
     return this.protocolContract.faucet({ from: account });
   }
 
+  // Whether `account` holds a DP request on this PoX. A read the contract or
+  // the RPC refuses is thrown: it says nothing about the account.
   async isNodeOperator(account) {
+    const requests = await this.protocolContractWithProvider._getMyDPRequests({ from: account });
+    return requests.length > 0;
+  }
+
+  // { storage, admitted }: the EthernityCloudStorage this implementation
+  // names (ethStorageAddress) and whether that storage lists the
+  // implementation among its allowed callers; null when either read fails.
+  // The storage refuses every call, reads included, made through an
+  // implementation it does not list ("Allowed caller: caller is not
+  // allowed"), which is the state of an implementation a later one replaced.
+  async storageAdmission() {
     try {
-      const requests = await this.protocolContractWithProvider._getMyDPRequests({ from: account });
-      return requests.length > 0;
+      const storage = await this.protocolContractWithProvider.ethStorageAddress();
+      const allowList = new ethers.Contract(storage, ['function allowedCallers(address) view returns (bool)'], this.provider);
+      const admitted = await allowList.allowedCallers(await this.protocolContractWithProvider.getAddress());
+      return { storage, admitted };
     } catch (ex) {
-      console.log(ex);
-      return false;
+      return null;
     }
   }
 
