@@ -49,9 +49,9 @@ export const waitForReceipt = async (provider, hash, { iface = null, pollMs = 10
 };
 
 // How many times a chain read before a DO request (the wallet's balance,
-// its allowance for the PoX) is tried, and the pause between the tries: one
-// RPC request the provider drops (a browser's "Failed to fetch") fails one
-// try, not the request.
+// the PoX's order count, the wallet's allowance for the PoX) is tried, and
+// the pause between the tries: one RPC request the provider drops (a
+// browser's "Failed to fetch") fails one try, not the request.
 export const READ_ATTEMPTS = 3;
 export const READ_RETRY_MS = 2000;
 
@@ -179,14 +179,22 @@ export const isAddress = (address) => {
   return true;
 };
 
-// The node a DO request is pinned to, or '' for an unpinned request. The zero
-// address means "any node": written into Metadata4 it would pin the request to
-// 0x0, which no node can place -- the protocol contract takes any non-empty
-// Metadata4 as the address of the node the request is pinned to.
+// The node a DO request is pinned to, or '' for an unpinned request. A string
+// that is an address (isAddress: any spelling ethers.getAddress takes, among
+// them lowercase and without the 0x prefix) is returned in its 0x-prefixed
+// EIP-55 form, the form both of its readers take: ethers resolves the `from`
+// of the read of the node's requests as an ENS name when it lacks the prefix,
+// and parseAddr, which the PoX reads Metadata4 with when a node places its
+// order, takes the 40 hex digits after the first two characters. The zero
+// address means "any node" and is returned as '': the protocol contract takes
+// any non-empty Metadata4 as the address of the node the request is pinned
+// to, and no node can place a request pinned to 0x0. A string that is no
+// address is returned trimmed, as it is.
 export const normalizeNodeAddress = (nodeAddress) => {
   const address = String(nodeAddress ?? '').trim();
-  if (address === '' || (isAddress(address) && BigInt(address) === 0n)) return '';
-  return address;
+  if (!isAddress(address)) return address;
+  const node = ethers.getAddress(address);
+  return node === ethers.ZeroAddress ? '' : node;
 };
 
 // The enclave-signed result transaction: its signer, target, chain id (0 for a

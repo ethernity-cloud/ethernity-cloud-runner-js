@@ -152,10 +152,11 @@ class PolygonProtocolContract {
 
   // { storage, admitted }: the EthernityCloudStorage this implementation
   // names (ethStorageAddress) and whether that storage lists the
-  // implementation among its allowed callers; null when either read fails.
-  // The storage refuses every call, reads included, made through an
-  // implementation it does not list ("Allowed caller: caller is not
-  // allowed"), which is the state of an implementation a later one replaced.
+  // implementation among its allowed callers (allowedCallers); null when
+  // either read fails. The storage refuses every call, reads included, made
+  // through an implementation it does not list ("Allowed caller: caller is
+  // not allowed"), and its owner takes an implementation off the list when
+  // another one replaces it.
   async storageAdmission() {
     try {
       const storage = await this.protocolContractWithProvider.ethStorageAddress();

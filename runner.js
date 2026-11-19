@@ -9,6 +9,7 @@ import {
   isNullOrEmpty,
   normalizeNodeAddress,
   parseTransactionBytes,
+  providerMessage,
   queryFilterChunked,
   READ_ATTEMPTS,
   retryRead,
@@ -439,6 +440,71 @@ class EthernityCloudRunner extends EventTarget {
       throw new Error("options.v2: this network's PoX is the token's own proxy and takes no V2 request");
     }
     this.v2Terms = terms;
+  }
+
+  // The out-of-service message of this run's protocol contract, or null. A
+  // protocol contract class with storageAdmission (PolygonProtocolContract)
+  // answers the storage the contract names and whether that storage lists
+  // the contract as an allowed caller. The storage refuses every call, reads
+  // included, made through a contract it does not list, and its owner takes
+  // a contract off the list when another one replaces it: the message names
+  // the contract and the storage and advises the release that carries the
+  // network's current contract. Null when the storage lists the contract,
+  // when its answer cannot be read, and for a class without storageAdmission
+  // (BloxbergProtocolContract, the token's own proxy). The one diagnosis of
+  // a read the protocol contract fails, which verifyProtocol and
+  // nodeCheckFailure share.
+  async outOfServiceMessage() {
+    const protocol = this.protocolContract;
+    const admission = typeof protocol.storageAdmission === 'function' ? await protocol.storageAdmission() : null;
+    if (!admission || admission.admitted !== false) return null;
+    const address = await protocol.getContract().getAddress();
+    return `The protocol contract ${address} is out of service: its storage ${admission.storage} does not list it as an allowed caller, so every call through it is refused. That is the state of a contract another one has replaced: upgrade @ethernity-cloud/runner to a release that carries the network's current contract.`;
+  }
+
+  // The protocol check of a run, made before anything is sent: the PoX's
+  // _getOrdersCount, a read every PoX generation carries, which a PoX apart
+  // from the token (PolygonProtocolContract) answers from the storage it
+  // names. A read that answers lets the run go on. A read that fails
+  // on a contract its storage does not list (outOfServiceMessage) throws
+  // that message at once, with no other try: the run ends before
+  // checkAllowance sends an approval for that contract. Any other failure is
+  // taken as possibly transient, as checkWalletBalance takes a failed
+  // balance read: the read is tried up to READ_ATTEMPTS times, READ_RETRY_MS
+  // apart (utils.retryRead), each failed try before the last a WARNING
+  // event, and when every try fails the error names the contract and the
+  // provider's message (utils.providerMessage). Both errors carry the failed
+  // read's error as their cause.
+  async verifyProtocol() {
+    this.dispatchECEvent('Checking the protocol contract...');
+    const contract = this.protocolContract.getContract();
+    // One try, as retryRead takes it: null when the order count is read; the
+    // out-of-service Error when the read fails on a contract its storage
+    // does not list, an answer that ends the tries; any other failure is
+    // thrown, to be tried again.
+    const read = async () => {
+      try {
+        await contract._getOrdersCount();
+        return null;
+      } catch (error) {
+        const message = await this.outOfServiceMessage();
+        if (!message) throw error;
+        return new Error(message, { cause: error });
+      }
+    };
+    let outOfService;
+    try {
+      outOfService = await retryRead(read, {
+        onError: (error, attempt) =>
+          this.dispatchECEvent(`Protocol contract read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${providerMessage(error)}`, ECLog.WARNING)
+      });
+    } catch (error) {
+      throw new Error(
+        `The protocol contract ${await contract.getAddress()} did not answer the read of its order count (${providerMessage(error)}).`,
+        { cause: error }
+      );
+    }
+    if (outOfService) throw outOfService;
   }
 
   async verifyNodeAddress(nodeAddress) {
@@ -1645,18 +1711,17 @@ class EthernityCloudRunner extends EventTarget {
   };
 
   // Why the read of a node's DP requests failed, for the event and the error:
-  // a PoX its storage no longer lists as an allowed caller is named as
-  // retired (every call through it is refused, and this runner's address for
-  // the network is the one a later implementation replaced); any other
-  // failure is reported with the contract and the RPC's own message.
+  // the out-of-service message when the PoX's storage does not list it as an
+  // allowed caller (outOfServiceMessage); for any other failure the
+  // contract's address and the provider's message (utils.providerMessage:
+  // ethers reports "missing revert data" for an RPC error answer it reads no
+  // revert data from and for a browser wallet's rejection, and keeps the
+  // provider's own message in the error's info.error).
   nodeCheckFailure = async (error) => {
-    const protocol = this.protocolContract;
-    const address = await protocol.getContract().getAddress();
-    const admission = typeof protocol.storageAdmission === 'function' ? await protocol.storageAdmission() : null;
-    if (admission && admission.admitted === false) {
-      return `The protocol contract ${address} is retired: its storage ${admission.storage} no longer admits it, so every call through it is refused. Upgrade @ethernity-cloud/runner: this version carries an address a later contract replaced.`;
-    }
-    return `Could not verify the node address: the protocol contract ${address} did not answer the read of the node's requests (${error.shortMessage || error.message}).`;
+    const outOfService = await this.outOfServiceMessage();
+    if (outOfService) return outOfService;
+    const address = await this.protocolContract.getContract().getAddress();
+    return `Could not verify the node address: the protocol contract ${address} did not answer the read of the node's requests (${providerMessage(error)}).`;
   };
 
   isNodeOperatorAddress = async (nodeAddress) => {
@@ -1669,7 +1734,7 @@ class EthernityCloudRunner extends EventTarget {
         const message = await this.nodeCheckFailure(error);
         this.status = ECStatus.ERROR;
         this.dispatchECEvent(message);
-        throw new Error(message);
+        throw new Error(message, { cause: error });
       }
       if (!isNode) {
         this.status = ECStatus.ERROR;
@@ -1894,6 +1959,7 @@ class EthernityCloudRunner extends EventTarget {
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance();
+      await this.verifyProtocol();
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
       await this.initializeWeb3Connection();
@@ -1997,6 +2063,7 @@ class EthernityCloudRunner extends EventTarget {
       this.initializeDefaultStorage();
       this.selectTrustedZone(trustedZoneEnclave);
       await this.checkWalletBalance();
+      await this.verifyProtocol();
       await this.verifyNodeAddress(nodeAddress);
       await this.initializeImageRegistry(secureLockEnclave);
       await this.initializeWeb3Connection();

@@ -112,6 +112,10 @@ await executeTask();
 
 A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` network, which you choose by name with `await runner.setNetwork('BLOXBERG', 'TESTNET_UNSAFE')` (or `('LITVM', 'TESTNET_UNSAFE')`). An `-unsafe` network has the chain and contracts of the network it is named after; its trustedzone is `etny-pynithy-testnet-unsafe` (`ecld-pynithy-litvm-testnet-unsafe` on LitVM), and a nodenithy dApp passes `ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET_UNSAFE`. The runner runs an `-unsafe` trustedzone only on an `-unsafe` network and runs nothing else there, so a task that runs without a CAS always says so in the network it names.
 
+### Closing a session
+
+`session.close(wait = true, timeoutMs = 900000)` writes the session's close row. With `wait` true it then waits until the order has closed and returns the order's result, the session summary. The answers to the session's inputs are output rows and arrive before the close; the order closes after the trustedzone has found those rows on chain and the node has sent the result, which takes at least one more block. An application that does not read the summary calls `session.close(false)`, which returns once the close row is mined.
+
 The runner accepts a result only when the transaction the enclave signed is `_addResultToOrder` for this order, addressed to this network's protocol contract and signed for this chain, and its signer is the wallet derived from the task's challenge. Task codes 37, 39 and 40 (`OPERATOR_FAULT_CODES`) are node-side faults the validator refunds; the runner resubmits such a task as a new request.
 ### `___etny_result___` function
 The `___etny_result___` function is a special function used in Ethernity Cloud Runner tasks. When executing a task, this
