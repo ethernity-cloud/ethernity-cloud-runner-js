@@ -21,7 +21,7 @@ export const requestTerms = (resources) =>
 // The escrow of a legacy _addDORequest for `resources`, in tokens: the task
 // price of every instance over the duration, taskPrice x validators x
 // duration. The EthernityImplementationV2 pulls it from the wallet with
-// transferFrom (Ethernity12Extension._addDORequest: _tokensToWeis(_maxPrice)
+// transferFrom (Ethernity20Extension._addDORequest: _tokensToWeis(_maxPrice)
 // * _instances * _duration); the bloxberg mainnet PoX requires the wallet's
 // balance to cover it (Ethernity.sol _addDORequest: balances[msg.sender] >=
 // _maxPrice * _instances * _duration * 10**18) and transfers _maxPrice *

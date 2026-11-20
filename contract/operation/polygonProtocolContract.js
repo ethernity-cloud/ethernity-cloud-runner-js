@@ -96,7 +96,7 @@ class PolygonProtocolContract {
     ]);
   }
 
-  // A DO request with V2 terms (PoX 1.2 addDORequestV2): the resources as
+  // A DO request with V2 terms (PoX 2.0 addDORequestV2): the resources as
   // addDORequest sends them, one instance, and `terms` (runner.v2TermsOf):
   // maxPricePerCuHourWei, maxGflops, relaysPerHour and gasLevel. The
   // implementation pulls the escrow from the wallet's allowance in this call.

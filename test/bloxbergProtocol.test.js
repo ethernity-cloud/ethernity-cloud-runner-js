@@ -1,4 +1,4 @@
-// The bloxberg testnet's PoX is the EthernityImplementationV2 1.2 at
+// The bloxberg testnet's PoX is the PoX 2.0 implementation at
 // ECAddress.BLOXBERG.TESTNET_PROTOCOL_ADDRESS, a contract apart from the tETNY
 // token proxy, which pulls a DO request's escrow with transferFrom; bloxberg
 // mainnet's PoX is the ETNY proxy itself. The runner picks the protocol
@@ -40,7 +40,7 @@ const runnerOn = async (address, chainId, explicitChainId) => {
   return runner;
 };
 
-test('the bloxberg testnet descriptor names the 1.2 implementation as its PoX, apart from the token; the mainnet descriptor names the token', () => {
+test('the bloxberg testnet descriptor names the PoX 2.0 implementation as its PoX, apart from the token; the mainnet descriptor names the token', () => {
   const testnet = resolveNetworkConfig(TOKEN);
   assert.equal(testnet.protocolAddress, POX);
   assert.equal(POX, '0x830c781F0352050343211B6BFA83600B3e77647C');
@@ -68,7 +68,7 @@ test('hasSeparateProtocol: the bloxberg testnet and the ecld networks, not bloxb
   assert.equal(hasSeparateProtocol({ protocolAddress: POX.toLowerCase() }, TOKEN), true);
 });
 
-test('a bloxberg testnet runner pays with the tETNY proxy and posts to the 1.2 implementation with the V2 ABI', async () => {
+test('a bloxberg testnet runner pays with the tETNY proxy and posts to the PoX 2.0 implementation with the V2 ABI', async () => {
   const runner = await runnerOn(TOKEN, 8995);
   assert.equal(runner.networkConfig, ECNetworkConfig[TOKEN]);
   assert.ok(runner.tokenContract instanceof EtnyContract);
@@ -184,7 +184,7 @@ test('EtnyContract.checkAndSetAllowance approves the PoX for the escrow when the
   assert.equal(await token.checkAndSetAllowance(POX, '3'), false);
 });
 
-test('a bloxberg testnet result is bound to the 1.2 implementation: one addressed to the token proxy is refused', async () => {
+test('a bloxberg testnet result is bound to the PoX 2.0 implementation: one addressed to the token proxy is refused', async () => {
   const runner = await runnerOn(TOKEN, 8995);
   runner.orderId = 7;
   assert.match(

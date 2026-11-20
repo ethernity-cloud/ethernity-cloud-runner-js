@@ -199,9 +199,9 @@ const ECLD_IMAGE_REGISTRY = '0x689f3806874d3c8A973f419a4eB24e6fBA7E830F';
 export const ECAddress = {
   BLOXBERG: {
     // TESTNET_ADDRESS is the tETNY token: the legacy proxy, which is also the
-    // PoX of the orders placed through it and is not served by the 1.2.
-    // TESTNET_PROTOCOL_ADDRESS is the testnet's PoX, the
-    // EthernityImplementationV2 1.2 of pox-smart-contract-litvm deployed
+    // PoX of the orders placed through it and is not served by the PoX 2.0.
+    // TESTNET_PROTOCOL_ADDRESS is the testnet's PoX, the PoX 2.0
+    // implementation of pox-smart-contract-litvm deployed
     // 2026-11-18, whose compute figures are whole GFLOPS, on the
     // EthernityCloudStorage 0xEE3aAa1A7a8C00BeBBb5DfC570F80f6FA12a968d of
     // 2026-11-14; its erc20Address() is the token, and it pulls a DO request's
@@ -228,7 +228,7 @@ export const ECAddress = {
   POLYGON: {
     // TESTNET_ADDRESS is the ERC-20 token (tECLD) contract; TESTNET_PROTOCOL_ADDRESS
     // is the PoX protocol contract. Testnet = Polygon Amoy (Mumbai is sunset).
-    // The protocol is the EthernityImplementationV2 1.2 deployed 2026-11-18,
+    // The protocol is the PoX 2.0 implementation deployed 2026-11-18,
     // whose compute figures are whole GFLOPS, on the storage and token of the
     // implementations 1.1 0xB8f46D2B943fFbe2A061Ae8be087ef5055AD96A3
     // and 0x1579b37C5a69ae02dDd23263A2b1318DE66a27C3 (a DO request is escrowed
@@ -491,7 +491,7 @@ export function resolveNetworkConfig(networkAddress, chainId) {
 
 // Whether the descriptor's PoX is a contract apart from the token at
 // `tokenAddress`. Such a PoX is an EthernityImplementationV2 (the ecld family,
-// the bloxberg testnet's 1.2 deployed 2026-11-18): it pulls a DO request's
+// the bloxberg testnet's PoX 2.0 deployed 2026-11-18): it pulls a DO request's
 // escrow from the client with transferFrom, so the runner approves it on the
 // token before the request and reads it with the V2 ABI. Where the PoX is the
 // token's own proxy (bloxberg mainnet) the request takes the escrow in the same

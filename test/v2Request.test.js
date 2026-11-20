@@ -1,5 +1,5 @@
 // A run with options.v2 (run() and runSession()) posts its DO request through
-// the PoX 1.2's addDORequestV2 with the terms given (maxPricePerCuHourWei,
+// the PoX 2.0's addDORequestV2 with the terms given (maxPricePerCuHourWei,
 // maxGflops, relaysPerHour, gasLevel), checks the wallet's balance in wei against
 // the escrow and raises the token allowance to that exact escrow; a run
 // without it is the legacy request (the balance and the allowance checked
@@ -61,7 +61,7 @@ const protocolStub = (adds) => ({
   addDORequestV2: async (...args) => { adds.push(['addDORequestV2', ...args]); return { hash: '0xv2' }; }
 });
 
-test('the V2 ABI carries addDORequestV2 with the fourteen arguments of the PoX 1.2', () => {
+test('the V2 ABI carries addDORequestV2 with the fourteen arguments of the PoX 2.0', () => {
   const iface = new ethers.Interface(protocolContractPolygon.abi);
   const fn = iface.getFunction('addDORequestV2');
   assert.equal(fn.inputs.map((i) => i.type).join(','), 'uint8,uint8,uint8,uint8,uint16,uint8,uint256,uint32,uint16,uint256,string,string,string,string');

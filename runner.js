@@ -152,7 +152,7 @@ export const orderStartVerdict = (rows, orderId, block, windowEnd) => {
 // maxPricePerCuHourWei (the most paid per CU-hour, token weis), maxGflops (the
 // largest node paid for, in GFLOPS, one CU being 100 GFLOPS; 0 for any node),
 // relaysPerHour and gasLevel (1e18 fixed) of the chain fee, and escrowWei, the
-// escrow the PoX 1.2 pulls at addDORequestV2 (the work, maxPricePerCuHourWei x
+// escrow the PoX 2.0 pulls at addDORequestV2 (the work, maxPricePerCuHourWei x
 // maxGflops / 100 x the duration's hours, with the pricing's gflopsMaxDefault
 // for maxGflops 0, plus the publishers' and the network's fees on it, plus the
 // chain fee), which the run approves on the token before the request. Each
@@ -1031,7 +1031,7 @@ class EthernityCloudRunner extends EventTarget {
       // address there would pin it to 0x0, which no node can place. A request
       // resubmitted after an operator fault is pinned the same way, not to
       // the node that failed the previous one. A run with V2 terms posts
-      // through addDORequestV2 (PoX 1.2), the legacy request otherwise.
+      // through addDORequestV2 (PoX 2.0), the legacy request otherwise.
       const tx = this.v2Terms
         ? await this.protocolContract.addDORequestV2(
           imageMetadata,
@@ -1287,7 +1287,7 @@ class EthernityCloudRunner extends EventTarget {
   // Why the enclave-signed result transaction is not this order's result on
   // this network's PoX, or null when it is. The PoX is the protocol contract
   // the request was posted through (the descriptor's protocol address: on the
-  // bloxberg testnet the 1.2 implementation, not the token proxy). The
+  // bloxberg testnet the PoX 2.0 implementation, not the token proxy). The
   // validators reject such a result the same way (ethernity-cas result_tx.rs,
   // bound_to): a genuine enclave signature over another order, contract or
   // chain proves nothing about this order. A chain id of 0 is a pre-EIP-155
@@ -1895,7 +1895,7 @@ class EthernityCloudRunner extends EventTarget {
   async run(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     // options.inputData: the task's input dataset, a string the payload reads
     // as ___etny_data_set___ (ecld.input). options.v2: the V2 terms of the
-    // request (v2TermsOf); the request is then posted through the PoX 1.2's
+    // request (v2TermsOf); the request is then posted through the PoX 2.0's
     // addDORequestV2 and the token allowance raised to its exact escrow.
     const inputData = options.inputData == null ? null : options.inputData;
     if (inputData !== null && typeof inputData !== 'string') {
