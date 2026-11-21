@@ -105,7 +105,7 @@ export const ECNetworkByChainId = {
   },
   POLYGON: {
     TESTNET: 80002,
-    TESTNET_POX10: 80002,
+    AMOY_POX10: 80002,
     MAINNET: 137
   },
   IOTEX: {
@@ -135,13 +135,12 @@ export const ECNetworkByChainIdDictionary = {
 export const UNSAFE_NETWORK_SUFFIX = '_UNSAFE';
 export const UNSAFE_TRUSTEDZONE_SUFFIX = '-unsafe';
 
-// A PoX 1.0 testnet network: the network type TESTNET_POX10, a copy of the
-// mainnet's PoX 1.0 contracts on the testnet's chain, beside the testnet's PoX
-// 2.0 network (the type TESTNET). The runner uses it as it uses the mainnet it
-// copies. Its descriptors are ECPox10TestnetConfig, its trustedzones the
-// *_RUNNER_TESTNET_POX10 entries of ECRunner, which run on no other network.
-export const POX10_TESTNET_TYPE = 'TESTNET_POX10';
-
+// A PoX 1.0 testnet network: a copy of the mainnet's PoX 1.0 contracts on the
+// testnet's chain, beside the testnet's PoX 2.0 network (the type TESTNET).
+// The runner uses it as it uses the mainnet it copies. Its type is TESTNET_POX10
+// under BLOXBERG and AMOY_POX10 under POLYGON; its descriptor is its entry of
+// ECPox10TestnetConfig, and its trustedzones are the *_RUNNER_<type> entries of
+// ECRunner, which run on no other network.
 export const ECNetwork = {
   BLOXBERG: {
     TESTNET: 'Bloxberg TESTNET',
@@ -152,7 +151,7 @@ export const ECNetwork = {
   POLYGON: {
     TESTNET: 'Polygon TESTNET',
     TESTNET_UNSAFE: 'Polygon TESTNET_UNSAFE',
-    TESTNET_POX10: 'Polygon TESTNET_POX10',
+    AMOY_POX10: 'Polygon AMOY_POX10',
     MAINNET: 'Polygon MAINNET'
   },
   IOTEX: {
@@ -184,8 +183,8 @@ export const ECRunner = {
     NODENITHY_RUNNER_TESTNET: 'ecld-nodenithy-amoy',
     PYNITHY_RUNNER_TESTNET_UNSAFE: 'ecld-pynithy-amoy-unsafe',
     NODENITHY_RUNNER_TESTNET_UNSAFE: 'ecld-nodenithy-amoy-unsafe',
-    PYNITHY_RUNNER_TESTNET_POX10: 'ecld-pynithy-amoy-pox10',
-    NODENITHY_RUNNER_TESTNET_POX10: 'ecld-nodenithy-amoy-pox10',
+    PYNITHY_RUNNER_AMOY_POX10: 'ecld-pynithy-amoy-pox10',
+    NODENITHY_RUNNER_AMOY_POX10: 'ecld-nodenithy-amoy-pox10',
     PYNITHY_RUNNER: 'ecld-pynithy',
     NODENITHY_RUNNER: 'ecld-nodenithy'
   },
@@ -257,7 +256,7 @@ export const ECAddress = {
     // by the implementation it was posted through, so only this one is served);
     // its erc20Address() is the token below. The image registry is the
     // ECImageRegistryV3 of 2026-10-28.
-    // TESTNET_POX10_PROTOCOL_ADDRESS is the PoX of Amoy's PoX 1.0 network: a
+    // AMOY_POX10_PROTOCOL_ADDRESS is the PoX of Amoy's PoX 1.0 network: a
     // copy of the mainnet PoX deployed 2026-11-21 on a storage of its own
     // (0x20B9fDBDF3BA99A4FA2e73413AB6f928B73d6734), paid in the token at
     // TESTNET_ADDRESS, with a copy of the mainnet's image registry. That
@@ -265,18 +264,18 @@ export const ECAddress = {
     // is the PoX 2.0 network's (ECPox10TestnetConfig).
     TESTNET_ADDRESS: '0x9927809B61122B2af3f3b3A3303875e0687b8eE3',
     TESTNET_PROTOCOL_ADDRESS: '0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2',
-    TESTNET_POX10_PROTOCOL_ADDRESS: '0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02',
+    AMOY_POX10_PROTOCOL_ADDRESS: '0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02',
     MAINNET_ADDRESS: '0xc6920888988cAcEeA7ACCA0c96f2D65b05eE22Ba',
     MAINNET_PROTOCOL_ADDRESS: '0x439945BE73fD86fcC172179021991E96Beff3Cc4',
     IMAGE_REGISTRY: {
       PYNITHY: {
         TESTNET_ADDRESS: '0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706',
-        TESTNET_POX10_ADDRESS: '0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC',
+        AMOY_POX10_ADDRESS: '0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC',
         MAINNET_ADDRESS: ECLD_IMAGE_REGISTRY
       },
       NODENITHY: {
         TESTNET_ADDRESS: '0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706',
-        TESTNET_POX10_ADDRESS: '0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC',
+        AMOY_POX10_ADDRESS: '0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC',
         MAINNET_ADDRESS: ECLD_IMAGE_REGISTRY
       }
     }
@@ -391,9 +390,10 @@ export const ECNetworkName1Dictionary = {
 //
 // The descriptors of the PoX 1.0 testnet networks (ECPox10TestnetConfig) also
 // carry:
-//   networkType:     POX10_TESTNET_TYPE, the type setNetwork() names the
-//                    network by. A descriptor without it is of the type
-//                    MAINNET or TESTNET by isMainnet (networkTypeOf).
+//   networkType:     the type setNetwork() names the network by,
+//                    TESTNET_POX10 under BLOXBERG and AMOY_POX10 under POLYGON.
+//                    A descriptor without it is of the type MAINNET or TESTNET
+//                    by isMainnet (networkTypeOf).
 //   tokenAddress:    the token the network is paid with, which is the address
 //                    a runner on the network is constructed with.
 //   faucet:          how a wallet short of a request's escrow gets the token
@@ -534,7 +534,7 @@ const ECLD_PROVISIONAL_CONFIG = {
 // network. The Amoy copy is paid in the test ECLD the Amoy PoX 2.0 network of
 // ECNetworkConfig is paid in, on the same chain, so neither the token address
 // nor the chain id tells the two apart: a runner constructed with that token
-// is on the PoX 2.0 network until setNetwork('POLYGON', 'TESTNET_POX10') names
+// is on the PoX 2.0 network until setNetwork('POLYGON', 'AMOY_POX10') names
 // this one (resolveNetworkConfig).
 export const ECPox10TestnetConfig = {
   BLOXBERG: {
@@ -549,30 +549,35 @@ export const ECPox10TestnetConfig = {
     isMainnet: false,
     networkName: 'bloxberg',
     networkKey: 'BLOXBERG',
-    networkType: POX10_TESTNET_TYPE,
+    networkType: 'TESTNET_POX10',
     faucet: null
   },
   POLYGON: {
     family: 'ecld',
     tokenName: 'tECLD',
     tokenAddress: ECAddress.POLYGON.TESTNET_ADDRESS,
-    protocolAddress: ECAddress.POLYGON.TESTNET_POX10_PROTOCOL_ADDRESS,
+    protocolAddress: ECAddress.POLYGON.AMOY_POX10_PROTOCOL_ADDRESS,
     imageRegistry: {
-      PYNITHY: ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_POX10_ADDRESS,
-      NODENITHY: ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.TESTNET_POX10_ADDRESS
+      PYNITHY: ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.AMOY_POX10_ADDRESS,
+      NODENITHY: ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.AMOY_POX10_ADDRESS
     },
     isMainnet: false,
     networkName: 'amoy',
     networkKey: 'POLYGON',
-    networkType: POX10_TESTNET_TYPE,
+    networkType: 'AMOY_POX10',
     faucet: { below: 100, amount: 1000 }
   }
 };
 
+// Whether `cfg` is the descriptor of a PoX 1.0 testnet network: an entry of
+// ECPox10TestnetConfig.
+export const isPox10Testnet = (cfg) => Object.values(ECPox10TestnetConfig).includes(cfg);
+
 // The PoX 1.0 testnet network paid with the token at `tokenAddress`, or
-// undefined.
-const pox10ConfigOf = (tokenAddress) =>
-  Object.values(ECPox10TestnetConfig).find((cfg) => cfg.tokenAddress === tokenAddress);
+// undefined; with `networkType`, the one of that type among them.
+const pox10ConfigOf = (tokenAddress, networkType) =>
+  Object.values(ECPox10TestnetConfig).find((cfg) =>
+    cfg.tokenAddress === tokenAddress && (networkType === undefined || cfg.networkType === networkType));
 
 // The network type a descriptor is named by in setNetwork(): its networkType
 // (a PoX 1.0 testnet network), else MAINNET or TESTNET by isMainnet.
@@ -583,8 +588,8 @@ export const networkTypeOf = (cfg) => cfg.networkType || (cfg.isMainnet ? 'MAINN
 export const pox10NetworkOf = (trustedZone) =>
   Object.keys(ECPox10TestnetConfig).find((key) =>
     [
-      ECRunner[key][`PYNITHY_RUNNER_${POX10_TESTNET_TYPE}`],
-      ECRunner[key][`NODENITHY_RUNNER_${POX10_TESTNET_TYPE}`]
+      ECRunner[key][`PYNITHY_RUNNER_${ECPox10TestnetConfig[key].networkType}`],
+      ECRunner[key][`NODENITHY_RUNNER_${ECPox10TestnetConfig[key].networkType}`]
     ].includes(trustedZone));
 
 /**
@@ -596,15 +601,17 @@ export const pox10NetworkOf = (trustedZone) =>
  * so the token contract can still be built; call again with a chainId to get the
  * full descriptor. Returns undefined for genuinely unknown networks.
  *
- * `networkType` is the type setNetwork() named, if any. POX10_TESTNET_TYPE
- * resolves the PoX 1.0 testnet network paid with the token (undefined when
- * the token pays for none), whatever else the token and the chain id name;
- * every other type, and none, resolves as the token and the chain id do. A
- * token only a PoX 1.0 testnet network is paid with names that network
- * without a type.
+ * `networkType` is the type setNetwork() named, if any. The type of a PoX 1.0
+ * testnet network (an entry of ECPox10TestnetConfig carries it) resolves the
+ * network of that type paid with the token (undefined when the token pays for
+ * none), whatever else the token and the chain id name; every other type, and
+ * none, resolves as the token and the chain id do. A token only a PoX 1.0
+ * testnet network is paid with names that network without a type.
  */
 export function resolveNetworkConfig(networkAddress, chainId, networkType) {
-  if (networkType === POX10_TESTNET_TYPE) return pox10ConfigOf(networkAddress);
+  if (Object.values(ECPox10TestnetConfig).some((cfg) => cfg.networkType === networkType)) {
+    return pox10ConfigOf(networkAddress, networkType);
+  }
   if (chainId && ECEcldTestnetConfig[chainId]) return ECEcldTestnetConfig[chainId];
   const direct = ECNetworkConfig[networkAddress];
   if (direct) return direct;

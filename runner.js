@@ -36,10 +36,10 @@ import {
   ECError,
   ECRunner,
   ECPox10TestnetConfig,
-  POX10_TESTNET_TYPE,
   UNSAFE_NETWORK_SUFFIX,
   UNSAFE_TRUSTEDZONE_SUFFIX,
   hasSeparateProtocol,
+  isPox10Testnet,
   networkTypeOf,
   pox10NetworkOf,
   resolveNetworkConfig,
@@ -747,14 +747,14 @@ class EthernityCloudRunner extends EventTarget {
   // the legacy Bloxberg testnet name. An -unsafe trustedzone runs without a
   // CAS, and runs only on an -unsafe network, which runs no other. A PoX 1.0
   // testnet network has no -unsafe network; it runs its two trustedzones
-  // (ECRunner's *_RUNNER_TESTNET_POX10) and no other, and they run on no other
-  // network: a run that names one without the other is refused here, before
-  // any transaction.
+  // (ECRunner's *_RUNNER_<type> entries of its type) and no other, and they
+  // run on no other network: a run that names one without the other is
+  // refused here, before any transaction.
   selectTrustedZone(trustedZoneEnclave) {
     this.runTrustedZoneImage = trustedZoneEnclave || null;
     const name = this.resolveTrustedZoneImage();
     const cfg = this.networkConfig;
-    const pox10 = Boolean(cfg && cfg.networkType === POX10_TESTNET_TYPE);
+    const pox10 = isPox10Testnet(cfg);
     const unsafeZone = name.endsWith(UNSAFE_TRUSTEDZONE_SUFFIX);
     if (unsafeZone && !this.isUnsafe()) {
       const key = this.networkConfig && this.networkConfig.networkKey;
@@ -773,14 +773,14 @@ class EthernityCloudRunner extends EventTarget {
     if (pox10 && zoneNetwork !== cfg.networkKey) {
       const zones = ECRunner[cfg.networkKey];
       throw new Error(
-        `${cfg.networkKey} ${POX10_TESTNET_TYPE} runs only its PoX 1.0 trustedzones ` +
-        `(${zones[`PYNITHY_RUNNER_${POX10_TESTNET_TYPE}`]}, ${zones[`NODENITHY_RUNNER_${POX10_TESTNET_TYPE}`]}), and ${name} is not one of them`);
+        `${cfg.networkKey} ${cfg.networkType} runs only its PoX 1.0 trustedzones ` +
+        `(${zones[`PYNITHY_RUNNER_${cfg.networkType}`]}, ${zones[`NODENITHY_RUNNER_${cfg.networkType}`]}), and ${name} is not one of them`);
     }
     if (!pox10 && zoneNetwork) {
+      const { tokenAddress, networkType } = ECPox10TestnetConfig[zoneNetwork];
       throw new Error(
-        `${name} is a trustedzone of the PoX 1.0 network ${zoneNetwork} ${POX10_TESTNET_TYPE}: construct the runner with ` +
-        `that network's token ${ECPox10TestnetConfig[zoneNetwork].tokenAddress} and name the network with ` +
-        `setNetwork('${zoneNetwork}', '${POX10_TESTNET_TYPE}')`);
+        `${name} is a trustedzone of the PoX 1.0 network ${zoneNetwork} ${networkType}: construct the runner with ` +
+        `that network's token ${tokenAddress} and name the network with setNetwork('${zoneNetwork}', '${networkType}')`);
     }
   }
 
@@ -1383,9 +1383,11 @@ class EthernityCloudRunner extends EventTarget {
     }
   };
 
-  parseTransactionBytes(bytes) {
+  // The enclave-signed result transaction `bytes`, decoded with the ABI of the
+  // PoX it was posted to: this runner's, or `protocolAbi` for a session's.
+  parseTransactionBytes(bytes, protocolAbi = this.protocolAbi) {
     try {
-      const result = parseTransactionBytes(this.protocolAbi, bytes);
+      const result = parseTransactionBytes(protocolAbi, bytes);
       const arr = result.result.split(':');
       return {
         version: arr[0],
@@ -1410,16 +1412,17 @@ class EthernityCloudRunner extends EventTarget {
   // validators reject such a result the same way (ethernity-cas result_tx.rs,
   // bound_to): a genuine enclave signature over another order, contract or
   // chain proves nothing about this order. A chain id of 0 is a pre-EIP-155
-  // signature.
-  async resultBindingError(transactionResult) {
+  // signature. `protocolContract` is the PoX the order is on: this runner's,
+  // or the one a session was opened on.
+  async resultBindingError(transactionResult, protocolContract = this.protocolContract) {
     if (BigInt(transactionResult.orderId) !== BigInt(this.orderId)) {
       return `the result transaction is for order ${transactionResult.orderId}`;
     }
-    const protocol = this.protocolContract.getContract().target;
+    const protocol = protocolContract.getContract().target;
     if (!transactionResult.to || transactionResult.to.toLowerCase() !== protocol.toLowerCase()) {
       return `the result transaction is addressed to ${transactionResult.to || 'no contract'}, not ${protocol}`;
     }
-    const { chainId } = await this.protocolContract.getProvider().getNetwork();
+    const { chainId } = await protocolContract.getProvider().getNetwork();
     const signedFor = BigInt(transactionResult.chainId);
     if (signedFor !== 0n && signedFor !== chainId) {
       return `the result transaction is signed for chain ${signedFor}`;
@@ -1434,7 +1437,11 @@ class EthernityCloudRunner extends EventTarget {
     return Math.max(this.orderDeadline || 0, Date.now() + 120000);
   }
 
-  async getResultFromOrder() {
+  // The result of order this.orderId, read from the PoX the order is on and
+  // decoded with that PoX's ABI: this runner's protocol contract and ABI for a
+  // run, the ones a session was opened on for its close
+  // (EthernityCloudSession.close).
+  async getResultFromOrder(protocolContract = this.protocolContract, protocolAbi = this.protocolAbi) {
     if (this.resultDeadline === undefined) {
       this.resultDeadline = this.resultReadDeadline();
     }
@@ -1442,7 +1449,7 @@ class EthernityCloudRunner extends EventTarget {
       // get the result of the order using the `etnyContract` object
       this.progress = ECEvent.DOWNLOADING;
       this.dispatchECEvent(`Downloading result...`);
-      const orderResult = await this.protocolContract.getResultFromOrder(this.orderId);
+      const orderResult = await protocolContract.getResultFromOrder(this.orderId);
 
       // parse the order result
       const parsedOrderResult = this.parseOrderResult(orderResult);
@@ -1453,9 +1460,9 @@ class EthernityCloudRunner extends EventTarget {
       this.dispatchECEvent(`Downloading: ${parsedOrderResult.resultIPFSHash}`);
       this.progress = ECEvent.VERIFYING;
       // parse the transaction bytes of the order result
-      const transactionResult = this.parseTransactionBytes(parsedOrderResult.transactionBytes);
+      const transactionResult = this.parseTransactionBytes(parsedOrderResult.transactionBytes, protocolAbi);
 
-      const bindingError = await this.resultBindingError(transactionResult);
+      const bindingError = await this.resultBindingError(transactionResult, protocolContract);
       if (bindingError) {
         return { success: false, operatorFault: true, message: `Integrity check failed, ${bindingError}.` };
       }
@@ -1537,7 +1544,7 @@ class EthernityCloudRunner extends EventTarget {
       await delay(5000);
       this.getResultFromOrderRepeats += 1;
       // eslint-disable-next-line no-return-await
-      return await this.getResultFromOrder();
+      return await this.getResultFromOrder(protocolContract, protocolAbi);
     }
   }
 
@@ -1673,13 +1680,20 @@ class EthernityCloudRunner extends EventTarget {
     }
 
     // Miss / stale / forced: run one state-fetch task, cache from its envelope.
-    // The task is submitted as run() submits one: on the resolved network, with
-    // the configured storage or the default.
+    // The task is submitted as run() submits one: in this runner's turn
+    // (_takeTurn), on the resolved network, with the configured storage or the
+    // default.
     const code = readCode || `esrFetch('${key}')`;
-    await this.resolveNetworkContext();
-    this.initializeDefaultStorage();
-    await this.processTask(code);
-    const structured = this.getStructuredResult();
+    const endTurn = await this._takeTurn();
+    let structured;
+    try {
+      await this.resolveNetworkContext();
+      this.initializeDefaultStorage();
+      await this.processTask(code);
+      structured = this.getStructuredResult();
+    } finally {
+      endTurn();
+    }
     const esrAtt = (structured && structured.esr) || null;
     if (!esrAtt) {
       throw new Error(
@@ -1877,9 +1891,16 @@ class EthernityCloudRunner extends EventTarget {
   // IPFS endpoint of the application's own has uploaded it (initializeStorage,
   // or here when one is set), the same plaintext sealed for the same enclave
   // resolves to the held ciphertext's CID without a new seal, which a new
-  // nonce would give a new CID.
-  async _sealArtefact(plaintext) {
-    const key = `${sha256(String(plaintext))}|${sha256(String(this.enclavePublicKey))}`;
+  // nonce would give a new CID. `cfg` is the network the artefact is for and
+  // `certificate` the trustedzone certificate it is sealed for: this runner's,
+  // or the ones a session was opened with; an artefact the storage in effect
+  // does not take for that network (storageRefusal) is refused here, before
+  // it is sealed and before any transaction names it. A runner without a
+  // network descriptor (LOCAL mode) has no network to judge the storage for.
+  async _sealArtefact(plaintext, cfg = this.networkConfig, certificate = this.enclavePublicKey) {
+    const refusal = cfg ? this.storageRefusal(cfg) : null;
+    if (refusal) throw new Error(refusal);
+    const key = `${sha256(String(plaintext))}|${sha256(String(certificate))}`;
     const held = await ipfsClient.heldEntry(key);
     if (held) {
       if (held.uploaded) return { cid: held.cid, digest: held.digest };
@@ -1891,7 +1912,7 @@ class EthernityCloudRunner extends EventTarget {
       this.dispatchECEvent(refused.message, 2);
       throw refused;
     }
-    const ciphertext = await encryptWithCertificate(String(plaintext), this.enclavePublicKey);
+    const ciphertext = await encryptWithCertificate(String(plaintext), certificate);
     try {
       return await ipfsClient.uploadArtefact(ciphertext, key);
     } catch (e) {
@@ -1932,24 +1953,38 @@ class EthernityCloudRunner extends EventTarget {
   // ECNetworkConfig). On every other network the run is refused here, before
   // any transaction, until the storage is configured: the application's own
   // Kubo RPC API, or the public API with its writer token (its add is closed
-  // without one). An initializeStorage() or initializePublicIntake() call
+  // without one); an intake another network set does not serve it
+  // (storageRefusal). An initializeStorage() or initializePublicIntake() call
   // before run() takes precedence. Called once the network context is
   // resolved, which the intake's network name needs.
   initializeDefaultStorage() {
+    const refusal = this.storageRefusal();
+    if (refusal) throw new Error(refusal);
     if (ipfsClient.isInitialized()) return;
-    const cfg = this.networkConfig;
-    if (!(cfg && cfg.agentNetwork)) {
-      const network = cfg && cfg.networkKey
-        ? `${cfg.networkKey} ${networkTypeOf(cfg)}`
-        : 'This network';
-      throw new Error(
-        `${network} has no payload intake route: configure the storage before submitting a task, with ` +
-          "initializeStorage('http://127.0.0.1:5001') for your own Kubo RPC API, or " +
-          `initializeStorage('${ipfsClient.PUBLIC_INTAKE}', undefined, undefined, token) for the public API ` +
-          'with your writer token.'
-      );
-    }
     this.initializePublicIntake();
+  }
+
+  // Why the storage in effect takes no artefact of the network `cfg` (this
+  // runner's when not given), or null when it takes them. The storage is the
+  // process's (ipfs.js), whichever runner set it: an IPFS API of the
+  // application's own serves every network; the bootnode's intake delivers
+  // under the route of the network it was set for, so a network without a
+  // route (a descriptor without agentNetwork) is served by an IPFS API alone,
+  // not by an intake and not while no storage is set. Judged at the start of
+  // every run (initializeDefaultStorage) and for every artefact
+  // (_sealArtefact).
+  storageRefusal(cfg = this.networkConfig) {
+    if (cfg && cfg.agentNetwork) return null;
+    const intake = ipfsClient.intakeNetwork();
+    if (ipfsClient.isInitialized() && intake === null) return null;
+    const network = cfg && cfg.networkKey
+      ? `${cfg.networkKey} ${networkTypeOf(cfg)}`
+      : 'This network';
+    const inEffect = intake === null ? '' : `, and the storage in effect is the intake route of ${intake}`;
+    return `${network} has no payload intake route${inEffect}: configure the storage before submitting a task, with ` +
+      "initializeStorage('http://127.0.0.1:5001') for your own Kubo RPC API, or " +
+      `initializeStorage('${ipfsClient.PUBLIC_INTAKE}', undefined, undefined, token) for the public API ` +
+      'with your writer token.';
   }
 
   // use this in order to reset the instance and have a new runner
@@ -1958,11 +1993,33 @@ class EthernityCloudRunner extends EventTarget {
   }
 
 
+  // This runner's turn in its queue of operations. A run (run), a session
+  // start (runSession), an attach (attachSession), the task of a state read
+  // (esrRead) and a network change made while any of them is queued or in
+  // flight (setNetwork) each take one, and each has the runner to itself from
+  // its first step to its last. run, runSession, attachSession and setNetwork
+  // take the turn in the call, before their first await, so their turns come
+  // in the order of the calls; esrRead takes it when its task starts, after
+  // its cache check. The turn resolves, once every operation that took one
+  // before it has ended, to the function that ends it. _turns counts the
+  // turns taken and not ended.
+  _takeTurn() {
+    const previous = this._runQueue || Promise.resolve();
+    let release;
+    this._runQueue = new Promise((r) => { release = r; });
+    this._turns = (this._turns || 0) + 1;
+    const end = () => {
+      this._turns -= 1;
+      release();
+    };
+    return previous.then(() => end, () => end);
+  }
+
   // The network a run names, by ECRunner's keys: ('BLOXBERG', 'TESTNET'),
   // ('BLOXBERG', 'MAINNET'), an -unsafe network such as
   // ('BLOXBERG', 'TESTNET_UNSAFE'), whose trustedzones run without a CAS, or
   // a PoX 1.0 testnet network, ('BLOXBERG', 'TESTNET_POX10') and
-  // ('POLYGON', 'TESTNET_POX10'). It sets the default trustedzone; the chain
+  // ('POLYGON', 'AMOY_POX10'). It sets the default trustedzone; the chain
   // stays the one the constructor's address resolved, and a network of
   // another chain is refused.
   //
@@ -1973,7 +2030,30 @@ class EthernityCloudRunner extends EventTarget {
   // network afterwards puts it back on theirs. A runner whose token only a
   // PoX 1.0 testnet network is paid with (the bloxberg testnet's) is on that
   // network from its construction and takes no other network's name.
+  //
+  // With no operation queued or in flight on this runner the name applies in
+  // the call. With one, it takes its turn in the queue (_takeTurn): the
+  // operations called before it run to their end on the network they started
+  // on, the ones called after it run on the network it names, and the promise
+  // resolves, or rejects with the refusal, when its turn has come. A session
+  // handle keeps the PoX it was opened on (EthernityCloudSession).
   async setNetwork(network, type) {
+    if (!this._turns) {
+      this._applyNetwork(network, type);
+      return;
+    }
+    const turn = this._takeTurn();
+    this.dispatchECEvent(`setNetwork(${network}, ${type}) takes effect once the operations in flight on this runner have ended.`);
+    const endTurn = await turn;
+    try {
+      this._applyNetwork(network, type);
+    } finally {
+      endTurn();
+    }
+  }
+
+  // setNetwork's change, made while the runner is in no operation.
+  _applyNetwork(network, type) {
     const key = network.toUpperCase();
     const kind = type.toUpperCase();
     const trustedZone = ECRunner[key] &&
@@ -1987,16 +2067,18 @@ class EthernityCloudRunner extends EventTarget {
         `setNetwork: ${network} ${type} is not on the chain of this runner's address ` +
         `(${cfg.networkKey} ${networkTypeOf(cfg)})`);
     }
+    const pox10 = ECPox10TestnetConfig[key];
+    const pox10Kind = Boolean(pox10) && pox10.networkType === kind;
     const named = resolveNetworkConfig(this.networkAddress, this.chainId, kind);
-    if (kind === POX10_TESTNET_TYPE && !named) {
+    if (pox10Kind && !named) {
       throw new Error(
-        `setNetwork: ${network} ${type} is paid with the token ${ECPox10TestnetConfig[key].tokenAddress}: ` +
+        `setNetwork: ${network} ${type} is paid with the token ${pox10.tokenAddress}: ` +
         'construct the runner with that address');
     }
-    if (kind !== POX10_TESTNET_TYPE && named && named.networkType === POX10_TESTNET_TYPE) {
+    if (!pox10Kind && isPox10Testnet(named)) {
       throw new Error(
         `setNetwork: ${network} ${type} is not the network of this runner's address ` +
-        `(${named.networkKey} ${POX10_TESTNET_TYPE})`);
+        `(${named.networkKey} ${named.networkType})`);
     }
     if (named && named !== cfg) {
       this.networkConfig = named;
@@ -2057,15 +2139,15 @@ class EthernityCloudRunner extends EventTarget {
     // integrity checks against the wrong result, and collide on the wallet's
     // transaction nonce (TRANSACTION_REPLACED). Each extra call queues and
     // gets its own order, in submission order. For truly parallel tasks use
-    // one runner instance per task (or per wallet).
-    const previous = this._runQueue || Promise.resolve();
-    let release;
-    this._runQueue = new Promise((r) => { release = r; });
-    const queued = previous !== null && this._runInFlight;
-    if (queued) {
+    // one runner instance per task (or per wallet). The queue is the runner's
+    // one queue of operations (_takeTurn): a setNetwork() called while this
+    // run is queued or in flight applies after it, so the run uses the
+    // network selected when it was called from its first step to its last.
+    const turn = this._takeTurn();
+    if (this._runInFlight) {
       this.dispatchECEvent('Another task is in flight on this runner -- queued; it will get its own order when the current one finishes.');
     }
-    await previous.catch(() => {});
+    const endTurn = await turn;
     this._runInFlight = true;
     try {
       this.inputData = inputData;
@@ -2074,7 +2156,7 @@ class EthernityCloudRunner extends EventTarget {
     } finally {
       this.v2Terms = null;
       this._runInFlight = false;
-      release();
+      endTurn();
     }
   }
 
@@ -2090,10 +2172,7 @@ class EthernityCloudRunner extends EventTarget {
    */
   async runSession(resources, secureLockEnclave, code, nodeAddress = '', trustedZoneEnclave = null, options = {}) {
     if (this.localMode) throw new Error('Sessions are not available in LOCAL mode');
-    const previous = this._runQueue || Promise.resolve();
-    let release;
-    this._runQueue = new Promise((r) => { release = r; });
-    await previous.catch(() => {});
+    const endTurn = await this._takeTurn();
     this._runInFlight = true;
     try {
       this.resources = resources;
@@ -2130,7 +2209,7 @@ class EthernityCloudRunner extends EventTarget {
     } finally {
       this.v2Terms = null;
       this._runInFlight = false;
-      release();
+      endTurn();
     }
   }
 
@@ -2139,28 +2218,35 @@ class EthernityCloudRunner extends EventTarget {
    * on-chain rows, output decryption uses the wallet key. Pass
    * secureLockEnclave to also re-resolve the enclave certificate so
    * sendInput works from this fresh process; without it the handle is
-   * receive/close-only.
+   * receive/close-only. The attach takes this runner's turn (_takeTurn): the
+   * order is read, and the handle opened, on the network selected when it
+   * was called.
    */
   async attachSession(orderId, secureLockEnclave = null) {
-    await this.resolveNetworkContext();
-    this.initializeDefaultStorage();
-    const contract = this.protocolContract.getContract();
-    const order = await contract._getOrder(orderId);
-    const wallet = this.tokenContract.getCurrentWallet();
-    if (String(order[0]).toLowerCase() !== String(wallet).toLowerCase()) {
-      throw new Error('Order does not belong to this wallet');
+    const endTurn = await this._takeTurn();
+    try {
+      await this.resolveNetworkContext();
+      this.initializeDefaultStorage();
+      const contract = this.protocolContract.getContract();
+      const order = await contract._getOrder(orderId);
+      const wallet = this.tokenContract.getCurrentWallet();
+      if (String(order[0]).toLowerCase() !== String(wallet).toLowerCase()) {
+        throw new Error('Order does not belong to this wallet');
+      }
+      const meta = await contract._getDORequestMetadata(Number(order[2]));
+      if (String(meta[3] || '').split(':')[0] !== 'v3s') {
+        throw new Error('Order is not an interactive session');
+      }
+      if (secureLockEnclave) {
+        // The trustedzone the order was placed with: field 2 of its image
+        // metadata (v3:image:trustedzone:compose:challenge:key).
+        this.selectTrustedZone(String(meta[1] || '').split(':')[2] || null);
+        await this.initializeImageRegistry(secureLockEnclave);
+      }
+      return await EthernityCloudSession.create(this, Number(orderId));
+    } finally {
+      endTurn();
     }
-    const meta = await contract._getDORequestMetadata(Number(order[2]));
-    if (String(meta[3] || '').split(':')[0] !== 'v3s') {
-      throw new Error('Order is not an interactive session');
-    }
-    if (secureLockEnclave) {
-      // The trustedzone the order was placed with: field 2 of its image
-      // metadata (v3:image:trustedzone:compose:challenge:key).
-      this.selectTrustedZone(String(meta[1] || '').split(':')[2] || null);
-      await this.initializeImageRegistry(secureLockEnclave);
-    }
-    return EthernityCloudSession.create(this, Number(orderId));
   }
 
   /**

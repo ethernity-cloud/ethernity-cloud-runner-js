@@ -214,7 +214,7 @@ The network is chosen by passing the network's token contract address (from `ECA
 | Bloxberg, PoX 1.0 | testnet | 8995 | `ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS` |
 | Polygon | mainnet | 137 | `ECAddress.POLYGON.MAINNET_ADDRESS` |
 | Polygon Amoy | testnet | 80002 | `ECAddress.POLYGON.TESTNET_ADDRESS` |
-| Polygon Amoy, PoX 1.0 | testnet | 80002 | `ECAddress.POLYGON.TESTNET_ADDRESS`, then `setNetwork('POLYGON', 'TESTNET_POX10')` |
+| Polygon Amoy, PoX 1.0 | testnet | 80002 | `ECAddress.POLYGON.TESTNET_ADDRESS`, then `setNetwork('POLYGON', 'AMOY_POX10')` |
 | IoTeX | testnet | 4690 | `ECAddress.IOTEX.TESTNET_ADDRESS` |
 | Ethereum Sepolia | testnet | 11155111 | `ECAddress.SEPOLIA.TESTNET_ADDRESS` |
 | LitVM LiteForge | testnet | 4441 | `ECAddress.LITVM.TESTNET_ADDRESS` |
@@ -223,12 +223,16 @@ The constructor address is the token; the PoX contract the requests are posted t
 
 A testnet that has an ethernity-cas validator set -- Bloxberg testnet, LitVM LiteForge and Ethereum Sepolia -- comes in two kinds. The table's entry runs the securelock in an enclave the set attests, on nodes whose platform it can attest (DCAP), and the set validates the order in full, as on mainnet. Beside each is an `-unsafe` network, chosen by name with `await runner.setNetwork('BLOXBERG', 'TESTNET_UNSAFE')`, `('LITVM', 'TESTNET_UNSAFE')` or `('SEPOLIA', 'TESTNET_UNSAFE')`: the same chain and contracts, for hardware SGX platforms the CAS cannot attest (EPID-only, SGX1); its enclaves are debug-signed and self-signed from their measurement, so a result proves which image ran, not that an enclave ran it, and the validators judge such an order without the challenge-derived signer check. Its enclaves are the `*_TESTNET_UNSAFE` entries of `ECRunner` (see "Choosing the trustedzone"). Mainnet has no `-unsafe` network.
 
-The Bloxberg testnet and Polygon Amoy each have a PoX 1.0 network beside the testnet of the table: a copy of the mainnet's PoX 1.0 contracts on the testnet's chain (`ECPox10TestnetConfig`), which the runner uses as it uses that mainnet. Its enclaves are the `*_RUNNER_TESTNET_POX10` entries of `ECRunner` (`etny-pynithy-testnet-pox10`, `etny-nodenithy-testnet-pox10`, `ecld-pynithy-amoy-pox10`, `ecld-nodenithy-amoy-pox10`); the runner runs them on their PoX 1.0 network and nowhere else, and runs no other trustedzone there.
+The Bloxberg testnet and Polygon Amoy each have a PoX 1.0 network beside the testnet of the table: a copy of the mainnet's PoX 1.0 contracts on the testnet's chain (`ECPox10TestnetConfig`), which the runner uses as it uses that mainnet. The network's type, in `setNetwork()` and in the entries of `ECNetwork`, `ECNetworkByChainId`, `ECAddress` and `ECRunner`, is `TESTNET_POX10` under `BLOXBERG` and `AMOY_POX10` under `POLYGON`. Its enclaves are the `*_RUNNER_TESTNET_POX10` entries of `ECRunner.BLOXBERG` (`etny-pynithy-testnet-pox10`, `etny-nodenithy-testnet-pox10`) and the `*_RUNNER_AMOY_POX10` entries of `ECRunner.POLYGON` (`ecld-pynithy-amoy-pox10`, `ecld-nodenithy-amoy-pox10`); the runner runs them on their PoX 1.0 network and nowhere else, and runs no other trustedzone there.
 
 - Bloxberg's PoX 1.0 network is paid in a token of its own, tE10, which is also its PoX, as ETNY is on Bloxberg mainnet. The token address names the network: `new EthernityCloudRunner(ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS)`. tE10 has no faucet: a wallet receives it by a transfer from the owner of the network's contracts, and a run from a wallet short of the request's escrow ends, before any transaction, with the amount the wallet lacks.
-- Polygon Amoy's PoX 1.0 network is paid in the test ECLD the Amoy testnet of the table is paid in, on the same chain, so the token address alone names the table's testnet. Construct the runner with `ECAddress.POLYGON.TESTNET_ADDRESS` and name the network: `await runner.setNetwork('POLYGON', 'TESTNET_POX10')`. `setNetwork('POLYGON', 'TESTNET')` puts the runner back on the table's testnet. A run from a wallet that is short of the request's escrow and holds less than 100 tECLD draws the token's faucet (1000 tECLD) first, one transaction more.
+- Polygon Amoy's PoX 1.0 network is paid in the test ECLD the Amoy testnet of the table is paid in, on the same chain, so the token address alone names the table's testnet. Construct the runner with `ECAddress.POLYGON.TESTNET_ADDRESS` and name the network: `await runner.setNetwork('POLYGON', 'AMOY_POX10')`. `setNetwork('POLYGON', 'TESTNET')` puts the runner back on the table's testnet. A run from a wallet that is short of the request's escrow and holds less than 100 tECLD draws the token's faucet (1000 tECLD) first, one transaction more.
 
-`setNetwork('BLOXBERG', 'TESTNET_POX10')` is taken on a runner constructed with `ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS` and changes nothing there. Neither PoX 1.0 network has an intake route: a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()`.
+These two addresses are the only ones a runner on a PoX 1.0 network is constructed with. `ECAddress.POLYGON` holds no token address for Amoy's PoX 1.0 network: `ECAddress.POLYGON.AMOY_POX10_PROTOCOL_ADDRESS` is its PoX, which the runner selects itself, and `('POLYGON', 'TESTNET_POX10')` is not a name `setNetwork()` takes. The constructor takes an address that is `undefined`, such as an `ECAddress` entry that does not exist, as no argument: the runner is then on the Bloxberg testnet.
+
+`setNetwork('BLOXBERG', 'TESTNET_POX10')` is taken on a runner constructed with `ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS` and changes nothing there. Neither PoX 1.0 network has an intake route: a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()`. The storage is shared by every runner of the process (the page, the Node process), and the intake a run on the table's testnet takes by default does not serve the PoX 1.0 network: a run there is refused before any transaction until `initializeStorage()` sets an IPFS API, which serves both.
+
+A runner has one queue of operations. `setNetwork()` called while a run, a session start, an attach or the task of `esrRead()` is queued or in flight on the runner takes its turn in that queue: the operations called before it run to their end on the network they started on, the ones called after it run on the network it names, and its promise resolves, or rejects with the refusal, when its turn has come. With nothing queued or in flight it applies in the call. A session handle keeps the network it was opened on, its PoX and its trustedzone's certificate, whatever network the runner is named onto afterwards.
 
 ```javascript
 import { ECAddress, ECRunner } from "@ethernity-cloud/runner/enums";
@@ -241,10 +245,10 @@ await runner.run(resources, ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET, code);
 // Run on Polygon Amoy's PoX 1.0 network: the securelock published there
 // (securelock), against the trustedzone it was built with.
 const runner10 = new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS);
-await runner10.setNetwork('POLYGON', 'TESTNET_POX10');
+await runner10.setNetwork('POLYGON', 'AMOY_POX10');
 runner10.initializeStorage('http://127.0.0.1:5001');
 // ...
-await runner10.run(resources, securelock, code, '', ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET_POX10);
+await runner10.run(resources, securelock, code, '', ECRunner.POLYGON.PYNITHY_RUNNER_AMOY_POX10);
 ```
 
 The `ECRunner` enclave-image enum is keyed by network, so use the entry matching the network you constructed the runner with (e.g. `ECRunner.IOTEX.PYNITHY_RUNNER_TESTNET`). Mainnet variants drop the `_TESTNET` suffix.
@@ -259,7 +263,7 @@ const runner = new EthernityCloudRunner(
 );
 ```
 
-In this release the bootnode's payload intake serves the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet, IoTeX and the two PoX 1.0 testnet networks) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
+In this release the bootnode's payload intake serves the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet, IoTeX and the two PoX 1.0 testnet networks) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so, also when the storage in effect is the intake a run on another network took.
 
 ### Wallet options
 

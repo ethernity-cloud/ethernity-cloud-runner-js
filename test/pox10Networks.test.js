@@ -1,10 +1,10 @@
 // The PoX 1.0 testnet networks: copies of the mainnets' PoX 1.0 contracts on
 // the bloxberg testnet and on Polygon Amoy, each used as the mainnet it
-// copies. The bloxberg copy has a token of its own, which names it. The Amoy
-// copy is paid in the test ECLD of the Amoy PoX 2.0 network on the same
-// chain: the token names the PoX 2.0 network, as it did, and
-// setNetwork('POLYGON', 'TESTNET_POX10') names the PoX 1.0 network, which a
-// run's network resolution then keeps. Neither network's name, token or
+// copies. The bloxberg copy has a token of its own, which names it; its type
+// is TESTNET_POX10. The Amoy copy is paid in the test ECLD of the Amoy PoX
+// 2.0 network on the same chain: the token names the PoX 2.0 network, and
+// setNetwork('POLYGON', 'AMOY_POX10') names the PoX 1.0 network, which the
+// network resolution of a run keeps. Neither network's name, token or
 // trustedzone selects the other.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,10 +12,11 @@ import EthernityCloudRunner from '../runner.js';
 import {
   ECAddress,
   ECNetworkConfig,
+  ECEcldTestnetConfig,
   ECPox10TestnetConfig,
   ECRunner,
-  POX10_TESTNET_TYPE,
   hasSeparateProtocol,
+  isPox10Testnet,
   networkTypeOf,
   pox10NetworkOf,
   resolveNetworkConfig
@@ -54,11 +55,11 @@ const runnerOn = async (address, chainId) => {
 // The Amoy runner named onto the PoX 1.0 network.
 const amoyPox10 = async () => {
   const runner = await runnerOn(AMOY_TOKEN, 80002);
-  await runner.setNetwork('POLYGON', 'TESTNET_POX10');
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
   return runner;
 };
 
-test('the bloxberg PoX 1.0 testnet network: chain 8995, the PoX its own token, the copy of the mainnet registry', () => {
+test('the bloxberg PoX 1.0 testnet network: chain 8995, the PoX its own token, the copy of the mainnet registry, the type TESTNET_POX10', () => {
   const cfg = ECPox10TestnetConfig.BLOXBERG;
   assert.equal(ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS, BLOXBERG_POX10);
   assert.equal(cfg.tokenAddress, BLOXBERG_POX10);
@@ -81,9 +82,11 @@ test('the bloxberg PoX 1.0 testnet network: chain 8995, the PoX its own token, t
   assert.equal(cfg.family, mainnet.family);
 });
 
-test('the Amoy PoX 1.0 testnet network: chain 80002, the PoX apart from the test ECLD, the copy of the mainnet registry', () => {
+test('the Amoy PoX 1.0 testnet network: chain 80002, the PoX apart from the test ECLD, the copy of the mainnet registry, the type AMOY_POX10', () => {
   const cfg = ECPox10TestnetConfig.POLYGON;
-  assert.equal(ECAddress.POLYGON.TESTNET_POX10_PROTOCOL_ADDRESS, AMOY_POX10);
+  assert.equal(ECAddress.POLYGON.AMOY_POX10_PROTOCOL_ADDRESS, AMOY_POX10);
+  assert.equal(ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.AMOY_POX10_ADDRESS, AMOY_POX10_REGISTRY);
+  assert.equal(ECAddress.POLYGON.IMAGE_REGISTRY.NODENITHY.AMOY_POX10_ADDRESS, AMOY_POX10_REGISTRY);
   assert.equal(cfg.tokenAddress, AMOY_TOKEN);
   assert.equal(cfg.tokenAddress, ECAddress.POLYGON.TESTNET_ADDRESS);
   assert.equal(cfg.protocolAddress, AMOY_POX10);
@@ -93,34 +96,48 @@ test('the Amoy PoX 1.0 testnet network: chain 80002, the PoX apart from the test
   assert.equal(cfg.isMainnet, false);
   assert.equal(cfg.networkName, 'amoy');
   assert.equal(cfg.networkKey, 'POLYGON');
-  assert.equal(cfg.networkType, 'TESTNET_POX10');
+  assert.equal(cfg.networkType, 'AMOY_POX10');
   assert.equal(cfg.agentNetwork, undefined);
   assert.deepEqual(cfg.faucet, { below: 100, amount: 1000 });
-  assert.equal(ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET_POX10, 'ecld-pynithy-amoy-pox10');
-  assert.equal(ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET_POX10, 'ecld-nodenithy-amoy-pox10');
+  assert.equal(ECRunner.POLYGON.PYNITHY_RUNNER_AMOY_POX10, 'ecld-pynithy-amoy-pox10');
+  assert.equal(ECRunner.POLYGON.NODENITHY_RUNNER_AMOY_POX10, 'ecld-nodenithy-amoy-pox10');
   // As Polygon mainnet's: the PoX is a contract apart from the token.
   assert.equal(hasSeparateProtocol(cfg, cfg.tokenAddress), true);
   const mainnet = ECNetworkConfig[ECAddress.POLYGON.MAINNET_ADDRESS];
   assert.equal(hasSeparateProtocol(mainnet, ECAddress.POLYGON.MAINNET_ADDRESS), true);
   assert.equal(cfg.family, mainnet.family);
   // The token has no second name: the network has no constructor address of its own.
-  assert.equal(ECAddress.POLYGON.TESTNET_POX10_ADDRESS, undefined);
+  assert.equal(ECAddress.POLYGON.AMOY_POX10_ADDRESS, undefined);
 });
 
 test('every network with PoX 1.0 testnet trustedzones has a descriptor, and its trustedzones name it', () => {
-  const named = Object.keys(ECRunner).filter((key) => ECRunner[key][`PYNITHY_RUNNER_${POX10_TESTNET_TYPE}`]);
-  assert.deepEqual(named, Object.keys(ECPox10TestnetConfig));
-  assert.deepEqual(named, ['BLOXBERG', 'POLYGON']);
-  for (const key of named) {
-    assert.equal(ECPox10TestnetConfig[key].networkKey, key);
-    assert.equal(networkTypeOf(ECPox10TestnetConfig[key]), 'TESTNET_POX10');
-    assert.equal(pox10NetworkOf(ECRunner[key].PYNITHY_RUNNER_TESTNET_POX10), key);
-    assert.equal(pox10NetworkOf(ECRunner[key].NODENITHY_RUNNER_TESTNET_POX10), key);
+  assert.deepEqual(Object.keys(ECPox10TestnetConfig), ['BLOXBERG', 'POLYGON']);
+  for (const [key, cfg] of Object.entries(ECPox10TestnetConfig)) {
+    assert.equal(cfg.networkKey, key);
+    assert.equal(networkTypeOf(cfg), cfg.networkType);
+    assert.equal(isPox10Testnet(cfg), true);
+    const pynithy = ECRunner[key][`PYNITHY_RUNNER_${cfg.networkType}`];
+    const nodenithy = ECRunner[key][`NODENITHY_RUNNER_${cfg.networkType}`];
+    assert.ok(pynithy && nodenithy, key);
+    assert.equal(pox10NetworkOf(pynithy), key);
+    assert.equal(pox10NetworkOf(nodenithy), key);
+  }
+  // No other ECRunner key carries a trustedzone under either type.
+  for (const [key, zones] of Object.entries(ECRunner)) {
+    const pox10 = ECPox10TestnetConfig[key];
+    for (const type of ['TESTNET_POX10', 'AMOY_POX10']) {
+      assert.equal(`PYNITHY_RUNNER_${type}` in zones, Boolean(pox10) && pox10.networkType === type, `${key} ${type}`);
+    }
   }
   for (const other of ['etny-pynithy-testnet', 'etny-pynithy', 'ecld-pynithy-amoy', 'ecld-nodenithy', 'my-zone-pox10', '']) {
     assert.equal(pox10NetworkOf(other), undefined, other);
   }
-  // A descriptor of the published tables names its type by isMainnet.
+  // A descriptor of the published tables is no PoX 1.0 testnet network and
+  // names its type by isMainnet.
+  for (const cfg of [...Object.values(ECNetworkConfig), ...Object.values(ECEcldTestnetConfig)]) {
+    assert.equal(isPox10Testnet(cfg), false, cfg.networkName);
+  }
+  assert.equal(isPox10Testnet(undefined), false);
   assert.equal(networkTypeOf(ECNetworkConfig[BLOXBERG_TESTNET]), 'TESTNET');
   assert.equal(networkTypeOf(ECNetworkConfig[ECAddress.BLOXBERG.MAINNET_ADDRESS]), 'MAINNET');
 });
@@ -134,12 +151,14 @@ test('resolution: the bloxberg PoX 1.0 token names its network; the Amoy token n
     assert.equal(resolveNetworkConfig(AMOY_TOKEN, undefined, type), ECNetworkConfig[AMOY_TOKEN], String(type));
   }
   assert.equal(ECNetworkConfig[AMOY_TOKEN].protocolAddress, AMOY_POX20);
-  assert.equal(resolveNetworkConfig(AMOY_TOKEN, 80002, 'TESTNET_POX10'), ECPox10TestnetConfig.POLYGON);
-  assert.equal(resolveNetworkConfig(AMOY_TOKEN, undefined, 'TESTNET_POX10'), ECPox10TestnetConfig.POLYGON);
-  // A token that pays for no PoX 1.0 testnet network names none.
+  assert.equal(resolveNetworkConfig(AMOY_TOKEN, 80002, 'AMOY_POX10'), ECPox10TestnetConfig.POLYGON);
+  assert.equal(resolveNetworkConfig(AMOY_TOKEN, undefined, 'AMOY_POX10'), ECPox10TestnetConfig.POLYGON);
+  // A token that pays for no PoX 1.0 testnet network of the type names none.
+  assert.equal(resolveNetworkConfig(AMOY_TOKEN, 80002, 'TESTNET_POX10'), undefined);
+  assert.equal(resolveNetworkConfig(BLOXBERG_POX10, 8995, 'AMOY_POX10'), undefined);
   assert.equal(resolveNetworkConfig(BLOXBERG_TESTNET, 8995, 'TESTNET_POX10'), undefined);
   assert.equal(resolveNetworkConfig(ECAddress.BLOXBERG.MAINNET_ADDRESS, 8995, 'TESTNET_POX10'), undefined);
-  assert.equal(resolveNetworkConfig(ECAddress.POLYGON.MAINNET_ADDRESS, 137, 'TESTNET_POX10'), undefined);
+  assert.equal(resolveNetworkConfig(ECAddress.POLYGON.MAINNET_ADDRESS, 137, 'AMOY_POX10'), undefined);
 });
 
 test('a runner on the bloxberg PoX 1.0 token is built as a bloxberg mainnet runner is: the token as PoX, the legacy ABI', async () => {
@@ -186,8 +205,8 @@ test('the bloxberg PoX 1.0 network takes its own name and no other; no other blo
   await assert.rejects(runner.setNetwork('BLOXBERG', 'MAINNET'), {
     message: "setNetwork: BLOXBERG MAINNET is not on the chain of this runner's address (BLOXBERG TESTNET_POX10)"
   });
-  await assert.rejects(runner.setNetwork('POLYGON', 'TESTNET_POX10'), {
-    message: "setNetwork: POLYGON TESTNET_POX10 is not on the chain of this runner's address (BLOXBERG TESTNET_POX10)"
+  await assert.rejects(runner.setNetwork('POLYGON', 'AMOY_POX10'), {
+    message: "setNetwork: POLYGON AMOY_POX10 is not on the chain of this runner's address (BLOXBERG TESTNET_POX10)"
   });
   assert.equal(runner.networkConfig, ECPox10TestnetConfig.BLOXBERG);
   assert.equal(runner.resolveTrustedZoneImage(), 'etny-pynithy-testnet-pox10');
@@ -205,7 +224,7 @@ test('the bloxberg PoX 1.0 network takes its own name and no other; no other blo
   });
 });
 
-test('a runner on the Amoy token is on the PoX 2.0 network, as before, until the PoX 1.0 network is named', async () => {
+test('a runner on the Amoy token is on the PoX 2.0 network until the PoX 1.0 network is named', async () => {
   const runner = await runnerOn(AMOY_TOKEN, 80002);
   assert.equal(runner.networkConfig, ECNetworkConfig[AMOY_TOKEN]);
   assert.equal(runner.protocolContract.getContract().target, AMOY_POX20);
@@ -213,13 +232,13 @@ test('a runner on the Amoy token is on the PoX 2.0 network, as before, until the
   assert.equal(runner.networkConfig.agentNetwork, 'polygon_amoy');
   await runner.initializeImageRegistry('a-securelock');
   assert.equal(runner.imageRegistryContract.getContract().target, AMOY_POX20_REGISTRY);
-  // A run resolves the network again and stays on the PoX 2.0 network.
+  // The network resolution a run starts with keeps the runner on the PoX 2.0 network.
   await runner.resolveNetworkContext();
   assert.equal(runner.networkConfig, ECNetworkConfig[AMOY_TOKEN]);
   assert.equal(runner.protocolContract.getContract().target, AMOY_POX20);
 });
 
-test('setNetwork(POLYGON, TESTNET_POX10) puts the Amoy runner on the PoX 1.0 network, built as a Polygon mainnet runner is', async () => {
+test('setNetwork(POLYGON, AMOY_POX10) puts the Amoy runner on the PoX 1.0 network, built as a Polygon mainnet runner is', async () => {
   const runner = await amoyPox10();
   assert.equal(runner.networkConfig, ECPox10TestnetConfig.POLYGON);
   assert.ok(runner.tokenContract instanceof EcldContract);
@@ -247,7 +266,7 @@ test('setNetwork(POLYGON, TESTNET_POX10) puts the Amoy runner on the PoX 1.0 net
     /addressed to 0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2, not 0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02/);
 });
 
-test('the named PoX 1.0 network is kept by a run\'s network resolution, and the names of the PoX 2.0 network put the runner back on it', async () => {
+test('the named PoX 1.0 network is kept by the network resolution of a run, and the names of the PoX 2.0 network put the runner back on it', async () => {
   const runner = await amoyPox10();
   // What run() does first, on every run.
   await runner.resolveNetworkContext();
@@ -267,23 +286,46 @@ test('the named PoX 1.0 network is kept by a run\'s network resolution, and the 
     await runner.initializeImageRegistry('a-securelock');
     assert.equal(runner.imageRegistryContract.getContract().target, AMOY_POX20_REGISTRY, type);
 
-    await runner.setNetwork('polygon', 'testnet_pox10');
+    await runner.setNetwork('polygon', 'amoy_pox10');
     assert.equal(runner.networkConfig, ECPox10TestnetConfig.POLYGON, type);
     assert.equal(runner.protocolContract.getContract().target, AMOY_POX10, type);
     assert.equal(runner.resolveTrustedZoneImage(), 'ecld-pynithy-amoy-pox10', type);
     assert.equal(runner.isUnsafe(), false, type);
   }
   await assert.rejects(runner.setNetwork('POLYGON', 'MAINNET'), {
-    message: "setNetwork: POLYGON MAINNET is not on the chain of this runner's address (POLYGON TESTNET_POX10)"
+    message: "setNetwork: POLYGON MAINNET is not on the chain of this runner's address (POLYGON AMOY_POX10)"
   });
   await assert.rejects(runner.setNetwork('BLOXBERG', 'TESTNET_POX10'), {
-    message: "setNetwork: BLOXBERG TESTNET_POX10 is not on the chain of this runner's address (POLYGON TESTNET_POX10)"
+    message: "setNetwork: BLOXBERG TESTNET_POX10 is not on the chain of this runner's address (POLYGON AMOY_POX10)"
   });
   // The Polygon mainnet token pays for no PoX 1.0 testnet network.
   const mainnet = await runnerOn(ECAddress.POLYGON.MAINNET_ADDRESS, 137);
-  await assert.rejects(mainnet.setNetwork('POLYGON', 'TESTNET_POX10'), {
-    message: "setNetwork: POLYGON TESTNET_POX10 is not on the chain of this runner's address (POLYGON MAINNET)"
+  await assert.rejects(mainnet.setNetwork('POLYGON', 'AMOY_POX10'), {
+    message: "setNetwork: POLYGON AMOY_POX10 is not on the chain of this runner's address (POLYGON MAINNET)"
   });
+});
+
+test('(POLYGON, TESTNET_POX10) is no name of a network: it is refused on every runner, and the runner stays where it is', async () => {
+  const refusal = { message: 'setNetwork: POLYGON TESTNET_POX10 is not a network this runner knows' };
+  const amoy = await runnerOn(AMOY_TOKEN, 80002);
+  await assert.rejects(amoy.setNetwork('POLYGON', 'TESTNET_POX10'), refusal);
+  assert.equal(amoy.networkConfig, ECNetworkConfig[AMOY_TOKEN]);
+  assert.equal(amoy.protocolContract.getContract().target, AMOY_POX20);
+  assert.equal(amoy.networkType, undefined);
+
+  const onPox10 = await amoyPox10();
+  await assert.rejects(onPox10.setNetwork('POLYGON', 'TESTNET_POX10'), refusal);
+  await assert.rejects(onPox10.setNetwork('polygon', 'testnet_pox10'), {
+    message: 'setNetwork: polygon testnet_pox10 is not a network this runner knows'
+  });
+  assert.equal(onPox10.networkConfig, ECPox10TestnetConfig.POLYGON);
+  assert.equal(onPox10.networkType, 'AMOY_POX10');
+
+  const mainnet = await runnerOn(ECAddress.POLYGON.MAINNET_ADDRESS, 137);
+  await assert.rejects(mainnet.setNetwork('POLYGON', 'TESTNET_POX10'), refusal);
+  // Its trustedzones are named by AMOY_POX10 alone.
+  assert.equal(ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET_POX10, undefined);
+  assert.equal(ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET_POX10, undefined);
 });
 
 test('a PoX 1.0 testnet network runs its two trustedzones and no other', async () => {
@@ -306,7 +348,7 @@ test('a PoX 1.0 testnet network runs its two trustedzones and no other', async (
   }
   for (const zone of ['ecld-pynithy-amoy', 'ecld-nodenithy', 'etny-pynithy-testnet-pox10']) {
     assert.throws(() => amoy.selectTrustedZone(zone), {
-      message: `POLYGON TESTNET_POX10 runs only its PoX 1.0 trustedzones (ecld-pynithy-amoy-pox10, ecld-nodenithy-amoy-pox10), and ${zone} is not one of them`
+      message: `POLYGON AMOY_POX10 runs only its PoX 1.0 trustedzones (ecld-pynithy-amoy-pox10, ecld-nodenithy-amoy-pox10), and ${zone} is not one of them`
     });
   }
   assert.throws(() => amoy.selectTrustedZone('ecld-pynithy-amoy-unsafe'), {
@@ -318,7 +360,7 @@ test('a PoX 1.0 testnet trustedzone runs on no other network: the run is refused
   const amoy = await runnerOn(AMOY_TOKEN, 80002);
   for (const zone of ['ecld-pynithy-amoy-pox10', 'ecld-nodenithy-amoy-pox10']) {
     assert.throws(() => amoy.selectTrustedZone(zone), {
-      message: `${zone} is a trustedzone of the PoX 1.0 network POLYGON TESTNET_POX10: construct the runner with that network's token ${AMOY_TOKEN} and name the network with setNetwork('POLYGON', 'TESTNET_POX10')`
+      message: `${zone} is a trustedzone of the PoX 1.0 network POLYGON AMOY_POX10: construct the runner with that network's token ${AMOY_TOKEN} and name the network with setNetwork('POLYGON', 'AMOY_POX10')`
     });
   }
   for (const [address, chainId] of [[BLOXBERG_TESTNET, 8995], [ECAddress.BLOXBERG.MAINNET_ADDRESS, 8995], [ECAddress.POLYGON.MAINNET_ADDRESS, 137]]) {
@@ -327,7 +369,7 @@ test('a PoX 1.0 testnet trustedzone runs on no other network: the run is refused
       message: `etny-nodenithy-testnet-pox10 is a trustedzone of the PoX 1.0 network BLOXBERG TESTNET_POX10: construct the runner with that network's token ${BLOXBERG_POX10} and name the network with setNetwork('BLOXBERG', 'TESTNET_POX10')`
     }, address);
   }
-  // The published trustedzones of the published networks are taken as before.
+  // The Amoy PoX 2.0 network takes its own trustedzones.
   assert.doesNotThrow(() => amoy.selectTrustedZone('ecld-nodenithy-amoy'));
   assert.doesNotThrow(() => amoy.selectTrustedZone(null));
   assert.throws(() => amoy.selectTrustedZone('ecld-pynithy-amoy-unsafe'), {
@@ -345,7 +387,7 @@ test('neither PoX 1.0 testnet network has an intake route: a run without a stora
   assert.throws(() => bloxberg.initializePublicIntake(), { message: 'initializePublicIntake: this network has no payload intake route' });
   const amoy = await amoyPox10();
   assert.throws(() => amoy.initializeDefaultStorage(), (e) => {
-    assert.match(e.message, /^POLYGON TESTNET_POX10 has no payload intake route: configure the storage before submitting a task/);
+    assert.match(e.message, /^POLYGON AMOY_POX10 has no payload intake route: configure the storage before submitting a task/);
     return true;
   });
   assert.throws(() => amoy.initializePublicIntake(), { message: 'initializePublicIntake: this network has no payload intake route' });

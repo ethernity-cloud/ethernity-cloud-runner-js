@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import EthernityCloudRunner from '../runner.js';
 import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, ECError, resolveNetworkConfig } from '../enums.js';
-import { isInitialized } from '../ipfs.js';
+import { initialize, intakeNetwork, isInitialized } from '../ipfs.js';
 import { resolveWalletContext } from '../walletContext.js';
 import { ethers } from 'ethers';
 
@@ -90,10 +90,24 @@ test('a network with an agent network name gets the intake by default', async ()
   }
 });
 
-test('a storage configured before run() takes precedence on every network', async () => {
+test('an IPFS API of the application\'s own, configured before run(), takes precedence on every network; the intake of another network serves no network without a route', async () => {
   const runner = new EthernityCloudRunner(ECAddress.IOTEX.TESTNET_ADDRESS, { provider: providerOn(4690) }, 4690);
   await runner.resolveNetworkContext();
+  // The storage in effect is the intake the test above set, the Bloxberg
+  // testnet's: IoTeX has no route, and its artefacts do not go under that one.
+  assert.equal(intakeNetwork(), 'bloxberg_testnet');
+  assert.throws(
+    () => runner.initializeDefaultStorage(),
+    messageMatching(/^IOTEX TESTNET has no payload intake route, and the storage in effect is the intake route of bloxberg_testnet: configure the storage before submitting a task/)
+  );
+  initialize('http://127.0.0.1:5001');
+  assert.equal(intakeNetwork(), null);
   assert.doesNotThrow(() => runner.initializeDefaultStorage());
+  // A network with a route takes the configured API too.
+  const amoy = new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS, { provider: providerOn(80002) });
+  await amoy.resolveNetworkContext();
+  assert.doesNotThrow(() => amoy.initializeDefaultStorage());
+  assert.equal(intakeNetwork(), null);
 });
 
 test("Sepolia's own token selects its RPC on the raw-key path; the shared token falls back to the Bloxberg testnet's", () => {

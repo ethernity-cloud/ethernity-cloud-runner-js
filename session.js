@@ -20,6 +20,16 @@ import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
  * certificate the challenge was sealed with) -- BEFORE its payload is
  * fetched, digest-checked, decrypted and delivered; liveness derives from
  * chain state alone.
+ *
+ * The handle keeps the network it was opened on for its whole life: the PoX
+ * contract its rows are written to and read from, that contract's ABI, the
+ * network's descriptor and the certificate of the trustedzone its enclave
+ * runs are taken from the runner when the handle is made, so a network the
+ * runner is put on afterwards (runner.setNetwork), and the certificate a
+ * later run of the runner resolves, do not move the session. close(true)
+ * reads the final result from the session's PoX with the runner's result
+ * reader (runner.getResultFromOrder), which checks the result's signer
+ * against the challenge of the runner's last request.
  */
 
 export const SESSION_INPUT_KEY = 'etny-si';
@@ -72,6 +82,15 @@ export const SESSION_ERROR_CODE_NAMES = {
 export class EthernityCloudSession {
   constructor(runner, orderId) {
     this.runner = runner;
+    // The network the session is on: the runner's protocol contract (the PoX
+    // and its provider), the ABI its result transaction is decoded with, the
+    // network's descriptor and the trustedzone's certificate (the one the
+    // inputs are sealed for and the task wallet attestation is verified
+    // with), as the runner holds them now.
+    this.protocol = runner.protocolContract;
+    this.protocolAbi = runner.protocolAbi;
+    this.network = runner.networkConfig;
+    this.certificate = runner.enclavePublicKey;
     this.orderId = Number(orderId);
     this.rowsSeen = 0;
     this.outputs = [];
@@ -91,7 +110,7 @@ export class EthernityCloudSession {
 
   static async create(runner, orderId) {
     const session = new EthernityCloudSession(runner, orderId);
-    const contract = runner.protocolContract.getContract();
+    const contract = session._contract();
     // Retried: the order was placed moments ago (runner.readOrder).
     const order = await runner.readOrder(session.orderId);
     session.doReq = Number(order[2]);
@@ -104,8 +123,9 @@ export class EthernityCloudSession {
     return session;
   }
 
+  /** The PoX contract the session was opened on. */
   _contract() {
-    return this.runner.protocolContract.getContract();
+    return this.protocol.getContract();
   }
 
   /** Resume seq from chain state so a reattached session continues exactly
@@ -150,7 +170,7 @@ export class EthernityCloudSession {
     if (parts.length !== 4 || parts[0] !== SESSION_WIRE_VERSION || Number(parts[1]) !== this.orderId) return false;
     const [, , wallet, sig] = parts;
     const message = `${SESSION_WALLET_KEY}|${this.orderId}|${wallet}`;
-    if (!verifyCertificateSignature(this.runner.enclavePublicKey, message, sig)) {
+    if (!verifyCertificateSignature(this.certificate, message, sig)) {
       this.runner.dispatchECEvent(
         `Session: the task wallet attestation of ${wallet} does not verify against the trustedzone's certificate -- IGNORING`, 1);
       return false;
@@ -246,17 +266,17 @@ export class EthernityCloudSession {
     if (!await this.isRunning()) {
       throw new SessionError('session order is no longer processing');
     }
-    // The input sealed for the enclave, its CID and digest through the
-    // configured storage; _sealArtefact throws when the storage does not take
-    // it, before any transaction.
-    const { cid, digest } = await this.runner._sealArtefact(String(data));
+    // The input sealed for the session's trustedzone, its CID and digest
+    // through the configured storage; _sealArtefact throws when the storage
+    // does not take it for the session's network, before any transaction.
+    const { cid, digest } = await this.runner._sealArtefact(String(data), this.network, this.certificate);
     // The bytes reach the intake before the row that names them, under the
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.
     const lodged = await this._lodgeInput(cid);
     const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
     const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
-    await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
+    await waitForReceipt(this.protocol.getProvider(), tx.hash);
     if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
     // An input the held cache carried is referenced on chain now.
     await ipfsClient.releaseHeld([cid]);
@@ -437,7 +457,7 @@ export class EthernityCloudSession {
     if (!this.closed) {
       const value = `${SESSION_WIRE_VERSION}:close:${this.orderId}`;
       const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
-      await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
+      await waitForReceipt(this.protocol.getProvider(), tx.hash);
       this.closed = true;
       this.runner.dispatchECEvent(`Session close requested for order ${this.orderId}`);
     }
@@ -454,7 +474,7 @@ export class EthernityCloudSession {
     await this.pollOutputs();
     try {
       this.runner.orderId = this.orderId;
-      const result = await this.runner.getResultFromOrder();
+      const result = await this.runner.getResultFromOrder(this.protocol, this.protocolAbi);
       return result;
     } catch (e) {
       this.runner.dispatchECEvent(`Session final result not readable: ${e.message}`, 2);

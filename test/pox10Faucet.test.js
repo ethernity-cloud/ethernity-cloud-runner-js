@@ -3,10 +3,10 @@
 // refused with the amount the wallet lacks and where the token comes from,
 // and no transaction is sent. The Amoy copy is paid in the test ECLD, whose
 // faucet() mints 1000 tokens to a caller holding less than 100: the runner
-// draws it, waits for the receipt, reads the balance again and judges that
-// read. On every other network a short wallet is refused as before and no
-// faucet is drawn. No chain: the token's balanceOf, the signer and the
-// provider are stand-ins.
+// draws it, waits for the receipt, reads the balance after the draw and judges
+// that read. On every other network a short wallet is refused with
+// "Insufficient wallet balance (<balance>/<escrow>)" and no faucet is drawn.
+// No chain: the token's balanceOf, the signer and the provider are stand-ins.
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
@@ -75,7 +75,7 @@ const runnerOn = async (address, chainId, balances, { name = null, escrow = 3, r
 };
 
 const amoyPox10 = (balances, options = {}) =>
-  runnerOn(AMOY_TOKEN, 80002, balances, { ...options, name: ['POLYGON', 'TESTNET_POX10'] });
+  runnerOn(AMOY_TOKEN, 80002, balances, { ...options, name: ['POLYGON', 'AMOY_POX10'] });
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -269,15 +269,16 @@ test('the Amoy PoX 1.0 network: getTokensFromFaucet draws for a wallet below the
   assert.deepEqual(unread.sent, []);
 });
 
-test('a short wallet on a published network is refused as before: the published message, and no faucet drawn', async () => {
+test('a short wallet on a published network is refused with the published message, and no faucet is drawn', async () => {
   // Polygon Amoy's PoX 2.0 network is paid in the same test ECLD.
   const amoy = await runnerOn(AMOY_TOKEN, 80002, [0]);
   assert.equal(amoy.runner.networkConfig.faucet, undefined);
   await assert.rejects(amoy.runner.checkWalletBalance(), { message: 'Insufficient wallet balance (0.0/3)' });
   assert.equal(amoy.read.calls, 1);
   assert.deepEqual(amoy.sent, []);
-  // Named onto the PoX 1.0 network and back, the runner draws nothing again.
-  await amoy.runner.setNetwork('POLYGON', 'TESTNET_POX10');
+  // Named onto the PoX 1.0 network and then onto the PoX 2.0 network, the
+  // runner draws nothing.
+  await amoy.runner.setNetwork('POLYGON', 'AMOY_POX10');
   await amoy.runner.setNetwork('POLYGON', 'TESTNET');
   await assert.rejects(amoy.runner.checkWalletBalance(), { message: 'Insufficient wallet balance (0.0/3)' });
   assert.deepEqual(amoy.sent, []);
