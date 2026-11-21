@@ -12,7 +12,7 @@
 // keeps the PoX, the network descriptor and the trustedzone certificate it
 // was opened with.
 //
-// The chain is a stand-in at the provider (fixtures/standInChain.js). Two
+// The chain is a stand-in at the provider (testing/standInChain.js). Two
 // steps of a run are stood in for on the runner: _sealArtefact (the seal for
 // the trustedzone's certificate and its upload), which records the network
 // and the certificate it is called with, and getOrderResult (the result's
@@ -29,8 +29,9 @@ import { initialize } from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
 import { SessionError } from '../session.js';
 import {
-  AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_POX10_TOKEN, BLOXBERG_TOKEN, WALLET, certificateOf, chainOf, settle
-} from './fixtures/standInChain.js';
+  AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_MAINNET, BLOXBERG_MAINNET_TOKEN, BLOXBERG_POX10_TOKEN, BLOXBERG_TOKEN, NODE, WALLET,
+  certificateOf, chainOf, settle
+} from '../testing/standInChain.js';
 
 const SECURELOCK = 'my-securelock';
 const RESOURCES = { taskPrice: 3, validators: 1, duration: 1 };
@@ -402,7 +403,13 @@ test('esrRead() after setNetwork(), with no run in between, posts a request that
   assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX10, AMOY_POX20].map(onNetwork));
 });
 
-test('esrRead() ends before any transaction when the runner holds no securelock, when the image registry of the network does not answer the securelock, and when the last request\'s trustedzone is another network\'s', { timeout: 60000 }, async () => {
+// The refusal of a request on `network` whose image registry did not answer
+// for `trustedZone`, while the runner holds the details it read on `held`.
+const otherNetworksDetails = (network, trustedZone, held) =>
+  `The image registry of ${network} did not answer the enclave details of ${SECURELOCK} with the trustedzone ${trustedZone}, ` +
+  `and the details the runner holds were read on ${held}: no request is made with the enclave details of another network`;
+
+test('esrRead() ends before any transaction when the runner holds no securelock, when the image registry of the named network does not answer the securelock, and when the last request\'s trustedzone is another network\'s', { timeout: 60000 }, async () => {
   // No request yet: no securelock.
   const fresh = runnerOn(AMOY, AMOY_TOKEN);
   await assert.rejects(fresh.runner.esrRead({ key: 'counter' }), {
@@ -412,17 +419,21 @@ test('esrRead() ends before any transaction when the runner holds no securelock,
 
   // The registry of the named network does not answer: the details the
   // runner holds are the other network's, and no request is made of them.
+  // The wallet holds no token there, so the balance check would draw the
+  // faucet: the read ends at the registry, before that check.
   const unanswered = runnerOn(AMOY, AMOY_TOKEN);
   await task(unanswered.runner);
   await unanswered.runner.setNetwork('POLYGON', 'AMOY_POX10');
   unanswered.chain.unanswered.add('registry10');
+  unanswered.chain.balance = '0';
   await settle();
   let mark = unanswered.chain.log.length;
   await assert.rejects(unanswered.runner.esrRead({ key: 'counter' }), {
-    message: `esrRead: the image registry of POLYGON AMOY_POX10 did not answer the enclave details of ${SECURELOCK} with the trustedzone ${AMOY_POX10.trustedZone}`
+    message: otherNetworksDetails('POLYGON AMOY_POX10', AMOY_POX10.trustedZone, 'POLYGON TESTNET')
   });
-  assert.deepEqual(traffic(unanswered.chain.log.slice(mark)).sent, []);
-  assert.deepEqual(traffic(unanswered.chain.log.slice(mark)).sealed, []);
+  assert.deepEqual(unanswered.chain.log.slice(mark).map((entry) => `${entry.kind} ${entry.label}.${entry.name}`), [
+    'call registry10.getLatestTrustedZoneImageCertPublicKey'
+  ]);
 
   // The last request named a trustedzone of the PoX 2.0 network.
   const named = runnerOn(AMOY, AMOY_TOKEN);
@@ -434,6 +445,149 @@ test('esrRead() ends before any transaction when the runner holds no securelock,
     message: `POLYGON AMOY_POX10 runs only its PoX 1.0 trustedzones (${ECRunner.POLYGON.PYNITHY_RUNNER_AMOY_POX10}, ${ECRunner.POLYGON.NODENITHY_RUNNER_AMOY_POX10}), and ${ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET} is not one of them`
   });
   assert.deepEqual(named.chain.log.slice(mark), []);
+});
+
+test('after setNetwork() onto the other Amoy network, a registry that does not answer ends run() and runSession() before the allowance and the request: the other network\'s enclave details are never used', { timeout: 60000 }, async () => {
+  const directions = [
+    { first: ['POLYGON', 'TESTNET'], then: ['POLYGON', 'AMOY_POX10'], silent: 'registry10', on: AMOY_POX10, named: 'POLYGON AMOY_POX10', held: 'POLYGON TESTNET' },
+    { first: ['POLYGON', 'AMOY_POX10'], then: ['POLYGON', 'TESTNET'], silent: 'registry20', on: AMOY_POX20, named: 'POLYGON TESTNET', held: 'POLYGON AMOY_POX10' }
+  ];
+  const starts = [(runner) => task(runner), (runner) => runner.runSession(RESOURCES, SECURELOCK, 'code')];
+  for (const { first, then, silent, on, named, held } of directions) {
+    for (const start of starts) {
+      const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+      await runner.setNetwork(...first);
+      await task(runner);
+      await runner.setNetwork(...then);
+      chain.unanswered.add(silent);
+      await settle();
+      const mark = chain.log.length;
+      await assert.rejects(start(runner), { message: otherNetworksDetails(named, on.trustedZone, held) }, named);
+      const refused = traffic(chain.log.slice(mark));
+      assert.deepEqual(refused.sent, [], named);
+      assert.deepEqual(refused.sealed, [], named);
+      assert.deepEqual(refused.spenders, [], named);
+      // Once the registry answers, the run is on the named network alone.
+      chain.unanswered.delete(silent);
+      await settle();
+      const answered = chain.log.length;
+      await task(runner);
+      assert.deepEqual(traffic(chain.log.slice(answered)), onNetwork(on), named);
+    }
+  }
+});
+
+test('after setNetwork() onto the other Amoy network, attachSession() gives no handle the other network\'s certificate: without the securelock the handle holds none, with it a registry that does not answer ends the attach', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
+  const opened = await runner.runSession(RESOURCES, SECURELOCK, 'code');
+  // The runner makes a request on the PoX 2.0 network, whose certificate it
+  // then holds, and is named back.
+  await runner.setNetwork('POLYGON', 'TESTNET');
+  await task(runner);
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
+  assert.equal(runner.enclavePublicKey, certificateOf(AMOY_POX20.trustedZone, 'registry20'));
+
+  const bare = await runner.attachSession(opened.orderId);
+  assert.equal(bare.network, ECPox10TestnetConfig.POLYGON);
+  assert.equal(bare.trustedZone, AMOY_POX10.trustedZone);
+  assert.equal(bare.certificate, '');
+  await settle();
+  const mark = chain.log.length;
+  await assert.rejects(bare.sendInput('an input'), (error) => error instanceof SessionError && /holds no trustedzone certificate/.test(error.message));
+  assert.deepEqual(chain.log.slice(mark), []);
+
+  chain.unanswered.add('registry10');
+  await assert.rejects(runner.attachSession(opened.orderId, SECURELOCK), {
+    message: otherNetworksDetails('POLYGON AMOY_POX10', AMOY_POX10.trustedZone, 'POLYGON TESTNET')
+  });
+  chain.unanswered.delete('registry10');
+  const attached = await runner.attachSession(opened.orderId, SECURELOCK);
+  assert.equal(attached.certificate, certificateOf(AMOY_POX10.trustedZone, 'registry10'));
+  // The handle attached without the securelock takes that certificate, read
+  // on its network for its trustedzone.
+  assert.equal(await bare.sendInput('an input'), 0);
+  assert.equal(bare.certificate, certificateOf(AMOY_POX10.trustedZone, 'registry10'));
+});
+
+test('on one network, a registry that does not answer leaves run() with the enclave details the runner holds', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  await task(runner);
+  chain.unanswered.add('registry20');
+  await task(runner);
+  const second = traffic(runsOf(chain.log)[1]);
+  // The one registry read made fails; the request is the first run's again.
+  assert.deepEqual(second, {
+    ...onNetwork(AMOY_POX20),
+    registry: [`registry20.getLatestTrustedZoneImageCertPublicKey(${AMOY_POX20.trustedZone})`]
+  });
+});
+
+// What a run on Bloxberg mainnet touches: the ETNY proxy, token and PoX in
+// one, and its image registry.
+const BLOXBERG_MAINNET_NETWORK = { pox: 'pox', registry: 'registry', trustedZone: ECRunner.BLOXBERG.PYNITHY_RUNNER };
+
+test('on Bloxberg mainnet, esrRead() after a run resolves while the image registry does not answer: the details the runner holds are this network\'s', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(BLOXBERG_MAINNET, BLOXBERG_MAINNET_TOKEN);
+  answeringState(runner);
+  await task(runner);
+  chain.unanswered.add('registry');
+  assert.deepEqual(await runner.esrRead({ key: 'counter' }), STATE);
+  assert.deepEqual(await runner.esrRead({ key: 'counter', force: true }), STATE);
+  const [first, second, third] = runsOf(chain.log).map(traffic);
+  assert.deepEqual(first, onNetwork(BLOXBERG_MAINNET_NETWORK));
+  // The request of each read is the run's: its image, its trustedzone, its
+  // certificate. The one registry read each makes fails.
+  for (const read of [second, third]) {
+    assert.deepEqual(read, {
+      ...onNetwork(BLOXBERG_MAINNET_NETWORK),
+      registry: [`registry.getLatestTrustedZoneImageCertPublicKey(${BLOXBERG_MAINNET_NETWORK.trustedZone})`]
+    });
+  }
+  // With the registry answering again, the read takes its details from it.
+  chain.unanswered.delete('registry');
+  assert.deepEqual(await runner.esrRead({ key: 'counter', force: true }), STATE);
+  assert.deepEqual(traffic(runsOf(chain.log)[3]), onNetwork(BLOXBERG_MAINNET_NETWORK));
+});
+
+test('esrRead() does not read the pinned node again on the network the node was verified on, and verifies it on a network named since', { timeout: 60000 }, async () => {
+  const pinned = (runner) => runner.run(RESOURCES, SECURELOCK, 'code', NODE, null, { maxRetries: 0 });
+  const nodeReads = (entries) => entries.filter((entry) => entry.name === '_getMyDPRequests').map((entry) => entry.label);
+  // The node each DO request of `entries` is pinned to.
+  const pins = (entries) => entries.filter((entry) => entry.kind === 'send' && entry.name === '_addDORequest').map((entry) => entry.args[10]);
+
+  // Bloxberg mainnet: the node's read fails after the run, and the read of
+  // the state does not make it.
+  const mainnet = runnerOn(BLOXBERG_MAINNET, BLOXBERG_MAINNET_TOKEN);
+  answeringState(mainnet.runner);
+  await pinned(mainnet.runner);
+  mainnet.chain.unanswered.add('pox._getMyDPRequests');
+  assert.deepEqual(await mainnet.runner.esrRead({ key: 'counter' }), STATE);
+  const [run, read] = runsOf(mainnet.chain.log);
+  assert.deepEqual(nodeReads(run), ['pox']);
+  assert.deepEqual(nodeReads(read), []);
+  assert.deepEqual(pins(read), [NODE]);
+
+  // Polygon Amoy: named onto the PoX 1.0 network, the read verifies the node
+  // there; a node read that fails ends it before any transaction.
+  const amoy = runnerOn(AMOY, AMOY_TOKEN);
+  answeringState(amoy.runner);
+  await pinned(amoy.runner);
+  await amoy.runner.setNetwork('POLYGON', 'AMOY_POX10');
+  amoy.chain.unanswered.add('pox10._getMyDPRequests');
+  await settle();
+  const mark = amoy.chain.log.length;
+  await assert.rejects(amoy.runner.esrRead({ key: 'counter' }), (error) =>
+    /^Could not verify the node address: the protocol contract 0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02 did not answer the read of the node's requests/.test(error.message));
+  assert.deepEqual(traffic(amoy.chain.log.slice(mark)).sent, []);
+  amoy.chain.unanswered.delete('pox10._getMyDPRequests');
+  await settle();
+  const answered = amoy.chain.log.length;
+  assert.deepEqual(await amoy.runner.esrRead({ key: 'counter' }), STATE);
+  const onPox10 = amoy.chain.log.slice(answered);
+  assert.deepEqual(nodeReads(onPox10), ['pox10']);
+  assert.deepEqual(pins(onPox10), [NODE]);
+  assert.deepEqual(traffic(onPox10).requests, [`QmImage-registry10 ${AMOY_POX10.trustedZone}`]);
 });
 
 test('a deferred setNetwork() whose event dispatch throws rejects with that error, applies nothing and ends its turn', { timeout: 60000 }, async () => {
@@ -474,7 +628,7 @@ test('a queued run() whose event dispatch throws rejects with that error and end
   assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX20].map(onNetwork));
 });
 
-test('a handle made while the runner holds no certificate sends no input until the runner reads one on the session\'s network, and never takes another network\'s', { timeout: 60000 }, async () => {
+test('a handle made while the runner holds no certificate sends no input until the runner reads the one of the session\'s trustedzone on the session\'s network, and never takes another network\'s or another trustedzone\'s', { timeout: 60000 }, async () => {
   const chain = chainOf(AMOY);
   const opened = await runnerOn(AMOY, AMOY_TOKEN, chain).runner.runSession(RESOURCES, SECURELOCK, 'code');
   // Another runner, which has read no enclave details, attaches without the
@@ -503,8 +657,23 @@ test('a handle made while the runner holds no certificate sends no input until t
   await assert.rejects(handle.sendInput('an input'), refused);
   assert.equal(handle.certificate, '');
 
+  // On the session's network the runner reads the certificate of another
+  // trustedzone: the other service type's, then the -unsafe twin's, whose
+  // network has the session's descriptor.
+  assert.equal(handle.trustedZone, AMOY_POX20.trustedZone);
+  await runner.run(RESOURCES, SECURELOCK, 'code', '', ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET, { maxRetries: 0 });
+  assert.equal(runner.enclavePublicKey, certificateOf(ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET, 'registry20'));
+  await assert.rejects(handle.sendInput('an input'), refused);
+  await runner.setNetwork('POLYGON', 'TESTNET_UNSAFE');
+  await task(runner);
+  assert.equal(runner.networkConfig, handle.network);
+  assert.equal(runner.enclavePublicKey, certificateOf(ECRunner.POLYGON.PYNITHY_RUNNER_TESTNET_UNSAFE, 'registry20'));
+  await assert.rejects(handle.sendInput('an input'), refused);
+  assert.equal(handle.certificate, '');
+
   // A run on the session's network reads its trustedzone's certificate: the
   // handle takes it, and keeps it when the runner reads another.
+  await runner.setNetwork('POLYGON', 'TESTNET');
   await task(runner);
   await settle();
   mark = chain.log.length;

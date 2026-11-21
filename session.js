@@ -23,18 +23,20 @@ import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
  *
  * The handle keeps the network it was opened on for its whole life: the PoX
  * contract its rows are written to and read from, that contract's ABI, the
- * network's descriptor and the certificate of the trustedzone its enclave
- * runs are taken from the runner when the handle is made, so a network the
- * runner is put on afterwards (runner.setNetwork), and the certificate a
- * later run of the runner resolves, do not move the session. A handle made
- * while the runner holds no certificate (an attach without the securelock in
- * a process that has resolved none) takes the first one the runner reads on
- * the session's network, never one of another network, and sends no input
- * until then (_certificate). Its inputs go to the intake under the route of
- * the session's network. close(true) reads the final result from the
- * session's PoX with the runner's result reader (runner.getResultFromOrder),
- * which checks the result's signer against the challenge of the runner's
- * last request.
+ * network's descriptor, the name of the trustedzone its enclave runs and
+ * that trustedzone's certificate are taken when the handle is made, so a
+ * network the runner is put on afterwards (runner.setNetwork), and the
+ * certificate a later run of the runner resolves, do not move the session.
+ * The certificate is the runner's only when the runner read it from the
+ * image registry of the session's network for the session's trustedzone
+ * (_runnerCertificate): a handle made while the runner holds no such
+ * certificate (an attach without the securelock) takes the first one the
+ * runner reads, and until then sends no input and leaves the attestation row
+ * and the outputs after it unread (_certificate, pollOutputs). Its inputs go
+ * to the intake under the route of the session's network. close(true) reads
+ * the final result from the session's PoX with the runner's result reader
+ * (runner.getResultFromOrder), which checks the result's signer against the
+ * challenge of the runner's last request.
  */
 
 export const SESSION_INPUT_KEY = 'etny-si';
@@ -85,17 +87,23 @@ export const SESSION_ERROR_CODE_NAMES = {
 };
 
 export class EthernityCloudSession {
-  constructor(runner, orderId) {
+  // `trustedZone` is the name of the trustedzone the session's order was
+  // placed with.
+  constructor(runner, orderId, trustedZone) {
     this.runner = runner;
     // The network the session is on: the runner's protocol contract (the PoX
-    // and its provider), the ABI its result transaction is decoded with, the
-    // network's descriptor and the trustedzone's certificate (the one the
-    // inputs are sealed for and the task wallet attestation is verified
-    // with), as the runner holds them now.
+    // and its provider), the ABI its result transaction is decoded with and
+    // the network's descriptor, as the runner holds them now; the session's
+    // trustedzone and its certificate (the one the inputs are sealed for and
+    // the task wallet attestation is verified with), '' while the runner
+    // holds none it read for that trustedzone on that network.
     this.protocol = runner.protocolContract;
     this.protocolAbi = runner.protocolAbi;
     this.network = runner.networkConfig;
-    this.certificate = runner.enclavePublicKey;
+    this.trustedZone = trustedZone;
+    this.certificate = this._runnerCertificate();
+    // Whether the wait for a certificate has been reported (pollOutputs).
+    this.certificateAwaited = false;
     this.orderId = Number(orderId);
     this.rowsSeen = 0;
     this.outputs = [];
@@ -113,8 +121,8 @@ export class EthernityCloudSession {
     this.ownerSignature = undefined;
   }
 
-  static async create(runner, orderId) {
-    const session = new EthernityCloudSession(runner, orderId);
+  static async create(runner, orderId, trustedZone) {
+    const session = new EthernityCloudSession(runner, orderId, trustedZone);
     const contract = session._contract();
     // Retried: the order was placed moments ago (runner.readOrder).
     const order = await runner.readOrder(session.orderId);
@@ -133,15 +141,23 @@ export class EthernityCloudSession {
     return this.protocol.getContract();
   }
 
-  /** The certificate of the session's trustedzone: the one the runner held
-      when the handle was made. A handle made while the runner held none takes
-      the runner's once the runner holds one it read on the session's network
-      (runner.enclaveDetailsNetwork) and keeps it; a certificate the runner
-      read on another network is not taken. '' until then. */
+  /** The certificate the runner holds when it is the session's: one the
+      runner read from the image registry of the session's network for the
+      session's trustedzone (runner.enclaveDetailsNetwork,
+      runner.enclaveDetailsTrustedZone). '' otherwise: a certificate read on
+      another network, or for another trustedzone of this one (its -unsafe
+      twin's, the other service type's), is not the session's. */
+  _runnerCertificate() {
+    const { runner } = this;
+    const own = runner.enclaveDetailsNetwork === this.network && runner.enclaveDetailsTrustedZone === this.trustedZone;
+    return own && runner.enclavePublicKey ? runner.enclavePublicKey : '';
+  }
+
+  /** The certificate of the session's trustedzone: the one the handle took
+      when it was made, else the first one the runner holds for the session
+      (_runnerCertificate), which the handle keeps. '' until then. */
   _certificate() {
-    if (!this.certificate && this.runner.enclavePublicKey && this.runner.enclaveDetailsNetwork === this.network) {
-      this.certificate = this.runner.enclavePublicKey;
-    }
+    if (!this.certificate) this.certificate = this._runnerCertificate();
     return this.certificate;
   }
 
@@ -299,11 +315,18 @@ export class EthernityCloudSession {
     // The bytes reach the intake before the row that names them, under the
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.
-    const lodged = await this._lodgeInput(cid);
-    const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
-    const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
-    await waitForReceipt(this.protocol.getProvider(), tx.hash);
-    if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
+    try {
+      const lodged = await this._lodgeInput(cid);
+      const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
+      const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
+      await waitForReceipt(this.protocol.getProvider(), tx.hash);
+      if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
+    } catch (error) {
+      // The input's bytes, when still queued for the intake, are forgotten:
+      // an input sent again is sealed again.
+      ipfsClient.discardPending([cid]);
+      throw error;
+    }
     // An input the held cache carried is referenced on chain now.
     await ipfsClient.releaseHeld([cid]);
     const seq = this.inputSeq;
@@ -320,7 +343,10 @@ export class EthernityCloudSession {
       this.outputs). An output row before any attestation is discarded: its
       signer cannot be checked. A verified row whose payload is not readable
       yet is kept, and the rows after it with it, for the next poll, up to
-      PAYLOAD_RETRY_MS. */
+      PAYLOAD_RETRY_MS. While the handle holds no certificate (_certificate)
+      the read stops at the attestation row, which is checked, and the
+      outputs after it delivered, by the first poll after the handle has
+      one. */
   async pollOutputs() {
     let count;
     try {
@@ -334,6 +360,17 @@ export class EthernityCloudSession {
         [key, value] = await this._contract()._getMetadataValueForDPRequest(this.dpReq, i);
       } catch (e) { break; }
       if (key === SESSION_WALLET_KEY) {
+        // Without a certificate the attestation cannot be checked: the read
+        // stops at its row and takes it up again once the handle holds one.
+        if (!this._certificate()) {
+          if (!this.certificateAwaited) {
+            this.certificateAwaited = true;
+            this.runner.dispatchECEvent(
+              "Session: this handle holds no trustedzone certificate to check the task wallet attestation with; the outputs wait " +
+              "until the runner reads it, by attachSession(orderId, secureLockEnclave) or a run with the session's securelock", 2);
+          }
+          break;
+        }
         this._acceptWalletAttestation(String(value || ''));
         this.rowsSeen = i + 1;
         continue;

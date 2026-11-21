@@ -1,7 +1,10 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { initialize, initializeIntake, uploadToIPFS, flushPending, cidv1Raw, unixfsCid, BLOCK_SIZE, INTAKE_NOT_NAMED_ATTEMPTS } from '../ipfs.js';
+import {
+  initialize, initializeIntake, uploadToIPFS, uploadArtefact, flushPending, deliverSigned, discardPending, cidv1Raw, unixfsCid,
+  BLOCK_SIZE, INTAKE_NOT_NAMED_ATTEMPTS
+} from '../ipfs.js';
 
 // A loopback HTTP server standing in for a Kubo RPC API and for the intake:
 // every request it receives is recorded, and `answer` decides the reply.
@@ -123,6 +126,45 @@ test('flushPending refuses a CID that was not uploaded through the intake', asyn
   await assert.rejects(flushPending(10, [cid]), /was not uploaded through the intake/);
   await assert.rejects(flushPending(10, [cidOf('never')]), /was not uploaded through the intake/);
   assert.equal(requests.length, 1);
+});
+
+test('a blob queued for an intake stays deliverable to that intake, under its route, whatever storage is set afterwards', async () => {
+  // Queued for the intake at `base` under bloxberg_testnet; then another
+  // intake is set, for another network.
+  initializeIntake('bloxberg_testnet', base);
+  const first = (await uploadArtefact('the artefact of a run', 'key of the first', 'bloxberg_testnet')).cid;
+  initializeIntake('polygon_amoy', `${base}/other`);
+  await flushPending(7, [first]);
+  assert.deepEqual(requests.map((r) => r.url), [`/payload/bloxberg_testnet/7/${first}`]);
+  assert.equal(requests[0].body.toString(), 'the artefact of a run');
+
+  // Queued for the intake now in effect; then an IPFS API is set.
+  const second = (await uploadArtefact('the artefact of another run', 'key of the second', 'polygon_amoy')).cid;
+  initialize(base);
+  await flushPending(8, [second]);
+  assert.equal(requests[1].url, `/other/payload/polygon_amoy/8/${second}`);
+  // With an IPFS API as the storage, a CID that is not queued has nothing to
+  // deliver.
+  await flushPending(9, [cidOf('added to the API')]);
+  assert.equal(requests.length, 2);
+
+  // A blob lodged under the owner's signature goes to its intake as well.
+  initializeIntake('bloxberg_testnet', base);
+  const third = await uploadToIPFS('a session input');
+  initialize(base);
+  assert.deepEqual(await deliverSigned(10, [third], '0xsignature'), { delivered: [third], refused: {} });
+  assert.equal(requests[2].url, `/payload/bloxberg_testnet/10/${third}`);
+  assert.equal(requests[2].headers['x-etny-owner-signature'], '0xsignature');
+});
+
+test('discardPending forgets the queued blobs it is given, and no others', async () => {
+  initializeIntake('bloxberg_testnet', base);
+  const kept = await uploadToIPFS('kept');
+  const dropped = await uploadToIPFS('dropped');
+  discardPending([dropped, cidOf('never queued')]);
+  await assert.rejects(flushPending(11, [dropped]), /was not uploaded through the intake/);
+  await flushPending(11, [kept]);
+  assert.deepEqual(requests.map((r) => r.url), [`/payload/bloxberg_testnet/11/${kept}`]);
 });
 
 // The first n bytes of the byte values 0..250 repeated: the files Kubo 0.36.0

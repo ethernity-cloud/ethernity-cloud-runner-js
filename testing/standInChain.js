@@ -2,14 +2,15 @@
 // steps against it: every eth_call, gas estimate, transaction and log read is
 // recorded with the contract it is addressed to and answered from the state
 // the transactions leave (a DO request, the order placed on it, its approval,
-// its metadata rows).
+// its metadata rows). The module is no test file and lives outside test/:
+// node's test runner runs every .js file under a directory named test.
 import assert from 'node:assert/strict';
 import { ethers } from 'ethers';
-import { ECAddress } from '../../enums.js';
-import etnyAbi from '../../contract/abi/etnyAbi.js';
-import ecldAbi from '../../contract/abi/ecldAbi.js';
-import protocolAbi from '../../contract/abi/polygonProtocolAbi.js';
-import registryAbi from '../../contract/abi/imageRegistryAbi.js';
+import { ECAddress } from '../enums.js';
+import etnyAbi from '../contract/abi/etnyAbi.js';
+import ecldAbi from '../contract/abi/ecldAbi.js';
+import protocolAbi from '../contract/abi/polygonProtocolAbi.js';
+import registryAbi from '../contract/abi/imageRegistryAbi.js';
 
 export const WALLET = '0x71d005d502bd2EEBD2368f35EA33e66cD7A63CB7';
 export const NODE = '0x837EA0A09612CFF93a787db84Bbe11c65E431133';
@@ -23,6 +24,7 @@ const ENCLAVE = ethers.Wallet.createRandom();
 export const AMOY_TOKEN = ECAddress.POLYGON.TESTNET_ADDRESS;
 export const BLOXBERG_TOKEN = ECAddress.BLOXBERG.TESTNET_ADDRESS;
 export const BLOXBERG_POX10_TOKEN = ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS;
+export const BLOXBERG_MAINNET_TOKEN = ECAddress.BLOXBERG.MAINNET_ADDRESS;
 
 // The contracts of Polygon Amoy's two networks, by the label the recorded
 // traffic names them with: the test ECLD both are paid in, and the PoX and
@@ -50,6 +52,15 @@ export const BLOXBERG = {
     registry10: [ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_POX10_ADDRESS, registryAbi.abi]
   }
 };
+// Bloxberg mainnet's contracts: the ETNY proxy, token and PoX in one, and its
+// image registry.
+export const BLOXBERG_MAINNET = {
+  chainId: 8995,
+  contracts: {
+    pox: [BLOXBERG_MAINNET_TOKEN, etnyAbi.abi],
+    registry: [ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.MAINNET_ADDRESS, registryAbi.abi]
+  }
+};
 
 // The certificate the stand-in registry `registry` holds for `trustedZone`,
 // unless the chain is given another.
@@ -60,15 +71,16 @@ export const certificateOf = (trustedZone, registry) => `certificate of ${truste
 export const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 // A chain holding `contracts` ({ label: [address, abi] }) on `chainId`:
-// { provider, signer, log, at, during, unanswered }. log is the traffic in
-// the order it was made, one entry per eth_call ('call'), gas estimate
-// ('estimate'), transaction ('send') and log read ('logs'), each with the
-// label of the contract it is addressed to and, for the first three, the
-// function's name and arguments. during(kind, name, run) calls run() once, at
-// the first `kind` entry of the function `name`. A contract whose label is in
-// the set unanswered reverts every eth_call. `certificate` is the certificate
-// a registry answers for a trustedzone, given the trustedzone's name and the
-// registry's label.
+// { provider, signer, log, at, during, unanswered, balance }. log is the
+// traffic in the order it was made, one entry per eth_call ('call'), gas
+// estimate ('estimate'), transaction ('send') and log read ('logs'), each
+// with the label of the contract it is addressed to and, for the first
+// three, the function's name and arguments. during(kind, name, run) calls
+// run() once, at the first `kind` entry of the function `name`. The set
+// unanswered names what reverts every eth_call: a contract by its label, or
+// one function of it as label.function. balance is the wallet's balance of
+// every token, in tokens. `certificate` is the certificate a registry answers
+// for a trustedzone, given the trustedzone's name and the registry's label.
 export const chainOf = ({ chainId, contracts }, { certificate = certificateOf } = {}) => {
   const byAddress = new Map(Object.entries(contracts).map(([label, [address, abi]]) => [
     address.toLowerCase(),
@@ -112,17 +124,18 @@ export const chainOf = ({ chainId, contracts }, { certificate = certificateOf } 
     return `v3:${transaction}:QmResult`;
   };
   const answer = async ({ contract, call }) => {
-    if (unanswered.has(contract.label)) reverted();
+    if (unanswered.has(contract.label) || unanswered.has(`${contract.label}.${call.name}`)) reverted();
     const request = () => contract.requests[Number(call.args[0])] || reverted();
     const order = () => contract.orders[Number(call.args[0])] || reverted();
     switch (call.name) {
-      case 'balanceOf': return [ethers.parseEther('5000')];
+      case 'balanceOf': return [ethers.parseEther(String(chain.balance))];
       case 'allowance': return [0];
       case '_getOrdersCount': return [contract.orders.length];
       case '_getOrder': return [WALLET, NODE, order().doRequest, 0, order().status];
       case '_getDORequest': return [WALLET, 1, 1, 40, 1, request().duration, 3, 1];
       case '_getDORequestMetadata': return [WALLET, ...request().metadata];
       case '_getDPRequestMetadata': return [NODE, '', '', '', ''];
+      case '_getMyDPRequests': return [[1]];
       case '_getMetadataCountForRequest': return [request().rows.length];
       case '_getMetadataValueForRequest': return request().rows[Number(call.args[1])];
       case '_getMetadataCountForDPRequest': return [0];
@@ -191,5 +204,8 @@ export const chainOf = ({ chainId, contracts }, { certificate = certificateOf } 
       return { hash };
     }
   };
-  return { provider, signer, log, at, unanswered, during: (kind, name, run) => hooks.push({ kind, name, run }) };
+  const chain = {
+    provider, signer, log, at, unanswered, balance: '5000', during: (kind, name, run) => hooks.push({ kind, name, run })
+  };
+  return chain;
 };

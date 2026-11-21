@@ -39,13 +39,16 @@ const noticeRow = async (signer, seq, order = ORDER) => {
   return `v1:${seq}:${order}:${seq}:late:0:::${sig}`;
 };
 
-const sessionWith = (rows, pem) => {
+// A handle on the metadata `rows` of its DP request, made on a runner that
+// holds the certificate `pem`; `network` and `trustedZone`, when given, are
+// the runner's network descriptor and the trustedzone of the session's order.
+const sessionWith = (rows, pem, { network, trustedZone } = {}) => {
   const contract = {
     _getMetadataCountForDPRequest: async () => rows.length,
     _getMetadataValueForDPRequest: async (dpReq, i) => rows[i]
   };
-  const runner = { protocolContract: { getContract: () => contract }, enclavePublicKey: pem, dispatchECEvent: () => {} };
-  const session = new EthernityCloudSession(runner, ORDER);
+  const runner = { protocolContract: { getContract: () => contract }, networkConfig: network, enclavePublicKey: pem, dispatchECEvent: () => {} };
+  const session = new EthernityCloudSession(runner, ORDER, trustedZone);
   session.dpReq = 9;
   session.doReq = 7;
   return session;
@@ -109,32 +112,51 @@ test('the attestation is verified with the certificate the handle was made with,
   assert.equal(other._taskWallet(), null);
 });
 
-test('a handle made while the runner holds no certificate verifies with the one the runner reads on the session\'s network, and with no other network\'s', async () => {
+test('a handle that holds no certificate leaves the attestation row unread, and reads on from it once the runner holds the certificate of the session\'s trustedzone read on the session\'s network', async () => {
   const { kp, pem } = certificate();
   const task = ethers.Wallet.createRandom();
-  const rows = [['etny-sw', attestation(kp, task.address)], ['etny-so', await noticeRow(task, 0)]];
+  const rows = [['another-key', 'a row'], ['etny-sw', attestation(kp, task.address)], ['etny-so', await noticeRow(task, 0)]];
   const network = { networkKey: 'POLYGON' };
-  const made = () => {
-    const session = sessionWith(rows, '');
-    session.network = network;
-    return session;
+  const session = sessionWith(rows, '', { network, trustedZone: 'ecld-pynithy-amoy' });
+  const events = [];
+  session.runner.dispatchECEvent = (message) => { events.push(message); };
+  const waits = () => events.filter((message) => /holds no trustedzone certificate to check the task wallet attestation with/.test(message)).length;
+
+  // No certificate: the read stops at the attestation row.
+  assert.equal(session.certificate, '');
+  assert.deepEqual(await session.pollOutputs(), []);
+  assert.equal(session.rowsSeen, 1);
+  assert.equal(waits(), 1);
+  // The runner holds a certificate it read on another network: not the session's.
+  Object.assign(session.runner, { enclavePublicKey: pem, enclaveDetailsNetwork: { networkKey: 'POLYGON' }, enclaveDetailsTrustedZone: 'ecld-pynithy-amoy' });
+  assert.deepEqual(await session.pollOutputs(), []);
+  // ... one it read on the session's network for another trustedzone: not the session's.
+  Object.assign(session.runner, { enclaveDetailsNetwork: network, enclaveDetailsTrustedZone: 'ecld-pynithy-amoy-unsafe' });
+  assert.deepEqual(await session.pollOutputs(), []);
+  assert.equal(session.certificate, '');
+  assert.equal(session.rowsSeen, 1);
+  // The wait is reported once.
+  assert.equal(waits(), 1);
+  // The one it read on the session's network for the session's trustedzone:
+  // the attestation row is checked and the output after it delivered.
+  session.runner.enclaveDetailsTrustedZone = 'ecld-pynithy-amoy';
+  assert.deepEqual((await session.pollOutputs()).map((m) => m.seq), [0]);
+  assert.equal(session.certificate, pem);
+  assert.equal(session._taskWallet(), task.address);
+  assert.equal(session.rowsSeen, 3);
+});
+
+test('a handle is made with the runner\'s certificate only when the runner read it on the handle\'s network for the handle\'s trustedzone', () => {
+  const { pem } = certificate();
+  const network = { networkKey: 'POLYGON' };
+  const made = (held) => {
+    const runner = { protocolContract: { getContract: () => ({}) }, networkConfig: network, enclavePublicKey: pem, dispatchECEvent: () => {}, ...held };
+    return new EthernityCloudSession(runner, ORDER, 'ecld-pynithy-amoy').certificate;
   };
-  // No certificate: the attestation cannot be verified.
-  const without = made();
-  assert.deepEqual(await without.pollOutputs(), []);
-  assert.equal(without.certificate, '');
-  // The runner holds a certificate it read on another network: not taken.
-  const elsewhere = made();
-  elsewhere.runner.enclavePublicKey = pem;
-  elsewhere.runner.enclaveDetailsNetwork = { networkKey: 'POLYGON' };
-  assert.deepEqual(await elsewhere.pollOutputs(), []);
-  assert.equal(elsewhere.certificate, '');
-  // The runner holds the certificate it read on the session's network: taken.
-  const here = made();
-  here.runner.enclavePublicKey = pem;
-  here.runner.enclaveDetailsNetwork = network;
-  assert.deepEqual((await here.pollOutputs()).map((m) => m.seq), [0]);
-  assert.equal(here.certificate, pem);
+  assert.equal(made({ enclaveDetailsNetwork: network, enclaveDetailsTrustedZone: 'ecld-pynithy-amoy' }), pem);
+  assert.equal(made({ enclaveDetailsNetwork: { networkKey: 'POLYGON' }, enclaveDetailsTrustedZone: 'ecld-pynithy-amoy' }), '');
+  assert.equal(made({ enclaveDetailsNetwork: network, enclaveDetailsTrustedZone: 'ecld-nodenithy-amoy' }), '');
+  assert.equal(made({ enclaveDetailsNetwork: null, enclaveDetailsTrustedZone: null }), '');
 });
 
 test('an output not signed by the attested wallet is discarded', async () => {

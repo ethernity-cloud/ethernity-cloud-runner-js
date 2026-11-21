@@ -9,7 +9,7 @@
 // route, and so does a session's input. An IPFS API the application set is
 // used as set, and nothing goes to an intake.
 //
-// The chain is a stand-in at the provider (fixtures/standInChain.js), whose
+// The chain is a stand-in at the provider (testing/standInChain.js), whose
 // registries answer one certificate made here, so the artefacts are sealed
 // and queued by the runner's own code. fetch is stood in for the intakes: it
 // records each POST and answers 200. The result's download and decryption
@@ -24,9 +24,9 @@ import { join } from 'node:path';
 import jsrsasign from 'jsrsasign';
 import EthernityCloudRunner from '../runner.js';
 import { ECAddress } from '../enums.js';
-import { cidv1Raw, intakeNetwork, isInitialized, OWNER_SIGNATURE_HEADER, PUBLIC_INTAKE } from '../ipfs.js';
+import { cidv1Raw, flushPending, intakeNetwork, isInitialized, OWNER_SIGNATURE_HEADER, PUBLIC_INTAKE } from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
-import { AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_TOKEN, chainOf, settle } from './fixtures/standInChain.js';
+import { AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_TOKEN, chainOf, settle } from '../testing/standInChain.js';
 
 const SECURELOCK = 'my-securelock';
 const RESOURCES = { taskPrice: 3, validators: 1, duration: 1 };
@@ -231,6 +231,60 @@ test('a session\'s inputs go under the route of the session\'s network: after it
   assert.deepEqual(signed, [`etny-intake|polygon_amoy|${lodging.doReq}`]);
   assert.deepEqual(posts, [`${PUBLIC_INTAKE}/payload/polygon_amoy/${lodging.doReq}/${inputOf(signing.chain, lodging.doReq)}`]);
   assert.equal(signatures[posts[0]], '0xsignature');
+});
+
+test('a storage call of another runner between the seal and the delivery of a run drops none of its artefacts: they go to the intake they were queued for', { timeout: 60000 }, async () => {
+  // What another runner calls while the Bloxberg run's artefacts are queued
+  // and its request is being sent, and the storage in effect afterwards.
+  const calls = [
+    [(other) => other.initializePublicIntake(), 'polygon_amoy'],
+    [(other) => other.initializePublicIntake(CHOSEN_INTAKE), 'polygon_amoy'],
+    [(other) => { other.initializeStorage(apiBase); }, null]
+  ];
+  for (const [call, storage] of calls) {
+    const bloxberg = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+    const amoy = runnerOn(AMOY, AMOY_TOKEN);
+    bloxberg.runner.initializePublicIntake();
+    posts.length = 0;
+    bloxberg.chain.during('send', '_addDORequest', () => call(amoy.runner));
+    await task(bloxberg.runner);
+    assert.deepEqual(posts, due(bloxberg.chain, BLOXBERG_POX, 0, 'bloxberg_testnet'));
+    assert.equal(intakeNetwork(), storage);
+  }
+});
+
+test('a request that is not made, and a session input whose row is not committed, leave none of their artefacts queued', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+  runner.initializePublicIntake();
+  chain.during('send', '_addDORequest', () => { throw new Error('the wallet refused the transaction'); });
+  await assert.rejects(task(runner), { message: 'Transaction failed: the wallet refused the transaction' });
+  assert.deepEqual(posts, []);
+  for (const cid of [runner.challengeIPFSHash, runner.scriptHash]) {
+    assert.match(cid, /^b[a-z2-7]+$/);
+    await assert.rejects(flushPending(0, [cid]), /was not uploaded through the intake/);
+  }
+  assert.deepEqual(posts, []);
+
+  // A session's input: the CID its seal gives is kept here, the transaction
+  // of its row fails.
+  const session = await runner.runSession(RESOURCES, SECURELOCK, 'code');
+  const seal = runner._sealArtefact.bind(runner);
+  const sealed = [];
+  runner._sealArtefact = async (...given) => {
+    const artefact = await seal(...given);
+    sealed.push(artefact.cid);
+    return artefact;
+  };
+  posts.length = 0;
+  chain.during('send', '_addMetadataToRequest', () => { throw new Error('the wallet refused the transaction'); });
+  await assert.rejects(session.sendInput('an input'), { message: 'the wallet refused the transaction' });
+  assert.equal(sealed.length, 1);
+  await assert.rejects(flushPending(session.doReq, sealed), /was not uploaded through the intake/);
+  assert.deepEqual(posts, []);
+  // The input sent again is sealed again and delivered.
+  assert.equal(await session.sendInput('an input'), 0);
+  assert.equal(sealed.length, 2);
+  assert.deepEqual(posts, [`${PUBLIC_INTAKE}/payload/bloxberg_testnet/${session.doReq}/${sealed[1]}`]);
 });
 
 test('an intake the application chose on one network is the intake of every run, each under its own route', { timeout: 60000 }, async () => {

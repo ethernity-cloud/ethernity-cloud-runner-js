@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import EthernityCloudRunner from '../runner.js';
 import {
   ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECPox10TestnetConfig, ECLD_SHARED_TESTNET_TOKEN, ECError, networkTypeOf, resolveNetworkConfig
@@ -47,6 +47,25 @@ test('the README\'s storage section names the networks the runner routes to the 
   const sentence = `the runner routes to it ${routed.slice(0, -1).join(', ')} and ${routed.at(-1)}, each with its -unsafe twin: ` +
     'on every other network (Bloxberg mainnet, Polygon mainnet, IoTeX and the two PoX 1.0 testnet networks) `run()` fails before any transaction is sent';
   assert.ok(section.includes(sentence), sentence);
+});
+
+test('npm test is node\'s test runner with no path: every .js file under a directory named test is a test file, and no other file has a test file\'s name', () => {
+  const root = new URL('../', import.meta.url);
+  assert.equal(JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts.test, 'node --test');
+  // The package's .js, .cjs and .mjs files, by path from its root; the
+  // directories node's runner skips or that hold no source are passed over.
+  const scripts = (dir) => readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) return entry.name === 'node_modules' || entry.name.startsWith('.') ? [] : scripts(`${dir}${entry.name}/`);
+    return /\.(c|m)?js$/.test(entry.name) ? [`${dir}${entry.name}`] : [];
+  });
+  const all = scripts('');
+  // With no path the runner takes every such file under a directory named
+  // test, and elsewhere the files named test, test-*, *.test, *-test, *_test.
+  const taken = all.filter((file) => file.split('/').slice(0, -1).includes('test') ||
+    /(^|\/)(test|test-[^/]+|[^/]+[._-]test)\.(c|m)?js$/.test(file));
+  assert.ok(taken.length > 0);
+  assert.deepEqual(taken.filter((file) => !/^test\/[^/]+\.test\.js$/.test(file)), []);
+  assert.ok(all.includes('testing/standInChain.js'));
 });
 
 test("Sepolia's own token names its descriptor without a chainId; the shared token still needs one", () => {
