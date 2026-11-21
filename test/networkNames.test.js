@@ -1,6 +1,6 @@
 // The network identifiers of the runner and the values behind them, as
 // literals: PUBLISHED holds every table as release 0.6.35 carries it, ADDED
-// the entries release 0.6.36 adds (the PoX 1.0 testnet networks of the
+// the entries release 1.9.0 adds (the PoX 1.0 testnet networks of the
 // bloxberg testnet and Polygon Amoy). A published identifier keeps its value
 // and the network it names: the constructor addresses with their chain ids,
 // the (network, type) names setNetwork() takes, the trustedzone names, the
@@ -255,7 +255,7 @@ const PUBLISHED = {
   }
 };
 
-// What release 0.6.36 adds to the published tables, and its one new table.
+// What release 1.9.0 adds to the published tables, and its one new table.
 const ADDED = {
   ECNetworkByChainId: {
     BLOXBERG: { TESTNET_POX10: 8995 },
@@ -417,7 +417,7 @@ const runnerOn = async (address, chainId, walletChain) => {
   return runner;
 };
 
-test('no entry release 0.6.36 adds replaces a published one', () => {
+test('no entry release 1.9.0 adds replaces a published one', () => {
   for (const [table, added] of Object.entries(ADDED)) {
     assert.deepEqual(replaced(PUBLISHED[table], added), [], table);
   }
