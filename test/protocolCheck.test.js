@@ -353,8 +353,8 @@ test('on a PoX its storage lists, a run and a session that name no node go on to
   for (const start of ['run', 'runSession']) {
     const wallet = chainWallet(true);
     const { runner, provider } = runnerOver(wallet);
-    // The image registry is a contract outside this chain.
-    runner.initializeImageRegistry = async () => {};
+    // The image registry is a contract outside this chain; it answers.
+    runner.initializeImageRegistry = async () => true;
     try {
       await assert.rejects(runner[start](RESOURCES, 'demo', 'code'), { code: 'ACTION_REJECTED' });
     } finally {

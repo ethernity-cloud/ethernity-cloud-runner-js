@@ -190,15 +190,15 @@ test('createDORequest posts through addDORequestV2 with the terms and the pinned
 });
 
 // A runner whose chain steps are stubbed around the request: the storage,
-// the image registry, the web3 connection, the metadata, the order search,
-// the processing wait and the result.
+// the image registry, which answers, the web3 connection, the metadata, the
+// order search, the processing wait and the result.
 const stubbedRun = async (adds, approvals) => {
   const runner = await runnerOn(TOKEN, 8995);
   runner.protocolContract = protocolStub(adds);
   runner.tokenContract.getBalance = async () => '3.5';
   runner.tokenContract.checkAndSetAllowance = async (protocol, escrow) => { approvals.push([protocol, escrow]); return true; };
   runner.initializeDefaultStorage = () => {};
-  runner.initializeImageRegistry = async () => {};
+  runner.initializeImageRegistry = async () => true;
   runner.initializeWeb3Connection = async () => {};
   runner.getV3ImageMetadata = async () => 'image';
   runner.getV3CodeMetadata = async () => 'code';

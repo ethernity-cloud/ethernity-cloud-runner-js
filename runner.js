@@ -632,13 +632,14 @@ class EthernityCloudRunner extends EventTarget {
   // Binds the image registry of the network in effect and reads the enclave
   // details of `secureLockEnclave` from it (getEnclaveDetails, whose answer
   // this returns). A registry that does not answer leaves the runner with
-  // the details it holds, which a request of the same network goes on with.
-  // Details read on another network descriptor (a runner setNetwork() moved
-  // between Polygon Amoy's two networks, a wallet that changed chain on a
-  // token several networks share) are never used: the call throws, before
-  // the allowance step and the request. On a network whose token has a
-  // faucet, the balance check that precedes this call in run() and
-  // runSession() may have drawn it.
+  // the details it holds, which a request of the same network goes on with
+  // when they were read for the trustedzone in effect
+  // (requestEnclaveDetails, esrRead). Details read on another network
+  // descriptor (a runner setNetwork() moved between Polygon Amoy's two
+  // networks, a wallet that changed chain on a token several networks
+  // share) are never used: the call throws, before the allowance step and
+  // the request. On a network whose token has a faucet, the balance check
+  // that precedes this call in run() and runSession() may have drawn it.
   async initializeImageRegistry(secureLockEnclave) {
     this.dispatchECEvent('Checking image registry...');
     this.secureLockEnclave = secureLockEnclave;
@@ -672,6 +673,23 @@ class EthernityCloudRunner extends EventTarget {
   enclaveDetailsInEffect() {
     return this.enclaveDetailsNetwork === this.networkConfig &&
       this.enclaveDetailsTrustedZone === this.resolveTrustedZoneImage();
+  }
+
+  // The enclave details the request of a run or a session start is made
+  // with: the ones the image registry of the network in effect answers
+  // (initializeImageRegistry, which throws for details read on another
+  // network), else the ones the runner holds when they were read on this
+  // network for the trustedzone in effect (enclaveDetailsInEffect). Otherwise
+  // the call throws, before the allowance step and the request: details read
+  // for another trustedzone of the network (its -unsafe twin's, the other
+  // service type's) carry that trustedzone's certificate, and the
+  // trustedzone the request names cannot decrypt what is sealed for it.
+  async requestEnclaveDetails(secureLockEnclave) {
+    if (await this.initializeImageRegistry(secureLockEnclave) || this.enclaveDetailsInEffect()) return;
+    const cfg = this.networkConfig;
+    throw new Error(
+      `The image registry of ${cfg.networkKey} ${networkTypeOf(cfg)} did not answer the enclave details of ${secureLockEnclave} ` +
+      `with the trustedzone ${this.resolveTrustedZoneImage()}, and the runner holds none read for them`);
   }
 
   async initializeWeb3Connection() {
@@ -875,16 +893,20 @@ class EthernityCloudRunner extends EventTarget {
   // were read on and the trustedzone they were read for
   // (enclaveDetailsNetwork, enclaveDetailsTrustedZone), and keeps the
   // certificate under that network and trustedzone (trustedZoneCertificates).
-  // False when it does not: the details the runner holds stay as they are.
+  // Both are the ones in effect when the read is made: a network context
+  // resolved while the registry answers (listSessions takes no turn) does not
+  // change where the answer is kept. False when it does not answer: the
+  // details the runner holds stay as they are.
   async getEnclaveDetails() {
+    const network = this.networkConfig;
     const trustedZone = this.resolveTrustedZoneImage();
     const details = await this.imageRegistryContract.getEnclaveDetailsV3(this.secureLockEnclave, VERSION, trustedZone);
     if (!details) return false;
     [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
-    this.enclaveDetailsNetwork = this.networkConfig;
+    this.enclaveDetailsNetwork = network;
     this.enclaveDetailsTrustedZone = trustedZone;
-    if (!this.trustedZoneCertificates.has(this.networkConfig)) this.trustedZoneCertificates.set(this.networkConfig, new Map());
-    this.trustedZoneCertificates.get(this.networkConfig).set(trustedZone, this.enclavePublicKey);
+    if (!this.trustedZoneCertificates.has(network)) this.trustedZoneCertificates.set(network, new Map());
+    this.trustedZoneCertificates.get(network).set(trustedZone, this.enclavePublicKey);
     this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
     this.dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.enclavePublicKey}`, ECLog.DEBUG);
     this.dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.enclaveDockerComposeIPFSHash}`, ECLog.DEBUG);
@@ -2332,7 +2354,7 @@ class EthernityCloudRunner extends EventTarget {
       await this.checkWalletBalance();
       await this.verifyProtocol();
       await this.verifyNodeAddress(nodeAddress);
-      await this.initializeImageRegistry(secureLockEnclave);
+      await this.requestEnclaveDetails(secureLockEnclave);
       await this.initializeWeb3Connection();
       await this.checkAllowance();
       this.challengeHash = generateRandomHexOfSize(20);
@@ -2443,7 +2465,7 @@ class EthernityCloudRunner extends EventTarget {
       await this.checkWalletBalance();
       await this.verifyProtocol();
       await this.verifyNodeAddress(nodeAddress);
-      await this.initializeImageRegistry(secureLockEnclave);
+      await this.requestEnclaveDetails(secureLockEnclave);
       await this.initializeWeb3Connection();
       await this.checkAllowance();
       await this.processTask(code);

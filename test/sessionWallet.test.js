@@ -203,27 +203,48 @@ test('a handle is made with the certificate the runner read on the handle\'s net
   assert.equal(made(), '');
 });
 
-test('a handle made with two arguments is of the trustedzone of the runner\'s last registry read', () => {
+test('a handle made with two arguments is of the trustedzone of the runner\'s last registry read on the handle\'s network, taken when it is made or at the first lookup after that read', () => {
   const { pem } = certificate();
   const stranger = certificate();
   // The runner last read ZONE on its own network: the handle is ZONE's, with
-  // the certificate of that read.
+  // the certificate of that read, and keeps both when the runner reads
+  // another trustedzone.
   const runner = runnerOver([]);
   reads(runner, NETWORK, ZONE, pem);
   const session = new EthernityCloudSession(runner, ORDER);
   assert.equal(session.trustedZone, ZONE);
   assert.equal(session.certificate, pem);
+  reads(runner, NETWORK, OTHER_ZONE, stranger.pem);
+  assert.equal(session._certificate(), pem);
+  assert.equal(session.trustedZone, ZONE);
+
+  // A runner that has read nothing: the handle holds no trustedzone and no
+  // certificate. A read on another network does not give it one; the first
+  // lookup after a read on its network takes that read's trustedzone and
+  // certificate, which a later read of another trustedzone does not change.
+  const fresh = runnerOver([]);
+  const waiting = new EthernityCloudSession(fresh, ORDER);
+  assert.equal(waiting.trustedZone, undefined);
+  assert.equal(waiting.certificate, '');
+  reads(fresh, OTHER_NETWORK, ZONE, stranger.pem);
+  assert.equal(waiting._certificate(), '');
+  assert.equal(waiting.trustedZone, undefined);
+  reads(fresh, NETWORK, ZONE, pem);
+  assert.equal(waiting._certificate(), pem);
+  assert.equal(waiting.trustedZone, ZONE);
+  reads(fresh, NETWORK, OTHER_ZONE, stranger.pem);
+  assert.equal(waiting._certificate(), pem);
+  assert.equal(waiting.trustedZone, ZONE);
+
   // The runner last read on another network: the handle, on the runner's
-  // network, holds no certificate of that read.
+  // network, takes neither the trustedzone nor the certificate of that read.
   const moved = runnerOver([]);
   reads(moved, NETWORK, ZONE, pem);
   reads(moved, OTHER_NETWORK, OTHER_ZONE, stranger.pem);
   const elsewhere = new EthernityCloudSession(moved, ORDER);
   assert.equal(elsewhere.network, NETWORK);
-  assert.equal(elsewhere.trustedZone, OTHER_ZONE);
+  assert.equal(elsewhere.trustedZone, undefined);
   assert.equal(elsewhere.certificate, '');
-  // A runner that has read nothing.
-  assert.equal(new EthernityCloudSession(runnerOver([]), ORDER).certificate, '');
 });
 
 test('an output not signed by the attested wallet is discarded', async () => {

@@ -32,7 +32,11 @@ import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
  * read since (runner.trustedZoneCertificate): a handle made while the runner
  * has read none (an attach without the securelock) takes it once the runner
  * has, and until then sends no input and leaves the attestation row and the
- * outputs after it unread (_certificate, pollOutputs). Its inputs go
+ * outputs after it unread (_certificate, pollOutputs). A handle made without
+ * the name of its trustedzone (new EthernityCloudSession(runner, orderId))
+ * takes, in the same way, the trustedzone the runner's enclave details were
+ * last read for on the session's network, and that read's certificate
+ * (_runnerCertificate). Its inputs go
  * to the intake under the route of the session's network. close(true) reads
  * the final result from the session's PoX with the runner's result reader
  * (runner.getResultFromOrder), which checks the result's signer against the
@@ -88,16 +92,20 @@ export const SESSION_ERROR_CODE_NAMES = {
 
 export class EthernityCloudSession {
   // `trustedZone` is the name of the trustedzone the session's order was
-  // placed with; when it is not given, the trustedzone the runner's enclave
-  // details were last read for (runner.enclaveDetailsTrustedZone).
-  constructor(runner, orderId, trustedZone = runner.enclaveDetailsTrustedZone) {
+  // placed with. When it is not given, the handle takes the trustedzone the
+  // runner's enclave details were last read for
+  // (runner.enclaveDetailsTrustedZone) at the first certificate lookup that
+  // finds them read on the handle's network (_runnerCertificate): when it is
+  // made, or later when the runner has read none there by then.
+  constructor(runner, orderId, trustedZone) {
     this.runner = runner;
     // The network the session is on: the runner's protocol contract (the PoX
     // and its provider), the ABI its result transaction is decoded with and
     // the network's descriptor, as the runner holds them now; the session's
-    // trustedzone and its certificate (the one the inputs are sealed for and
-    // the task wallet attestation is verified with), '' while the runner has
-    // read none for that trustedzone on that network.
+    // trustedzone, undefined while a handle made without one has taken none,
+    // and its certificate (the one the inputs are sealed for and the task
+    // wallet attestation is verified with), '' while the runner has read none
+    // for that trustedzone on that network.
     this.protocol = runner.protocolContract;
     this.protocolAbi = runner.protocolAbi;
     this.network = runner.networkConfig;
@@ -148,9 +156,16 @@ export class EthernityCloudSession {
       read none. A certificate the runner read on another network, or for
       another trustedzone of this one (its -unsafe twin's, the other service
       type's), is not the session's, and the reads the runner made since do
-      not change the answer. */
+      not change the answer. A handle made without a trustedzone takes here
+      the one the runner's enclave details were last read for, once they
+      were read on the session's network, and keeps it; until then it holds
+      none, and no certificate. */
   _runnerCertificate() {
-    return this.runner.trustedZoneCertificate(this.network, this.trustedZone);
+    const { runner } = this;
+    if (this.trustedZone === undefined && runner.enclaveDetailsTrustedZone && runner.enclaveDetailsNetwork === this.network) {
+      this.trustedZone = runner.enclaveDetailsTrustedZone;
+    }
+    return runner.trustedZoneCertificate(this.network, this.trustedZone);
   }
 
   /** The certificate of the session's trustedzone: the one the handle took
@@ -258,8 +273,10 @@ export class EthernityCloudSession {
       session's network, the route the input is queued for. True when the
       intake took them. False when the bytes are to go after the row instead:
       no intake, no wallet, a wallet that did not sign, or an intake without
-      the signed path (its 403 INTAKE_UNSIGNED_PATH). Throws when the intake
-      refused the lodged bytes otherwise, or could not be reached: the row is
+      the signed path (its 403 INTAKE_UNSIGNED_PATH); and when no bytes of
+      `cid` are queued for an intake (the input was added to an IPFS API),
+      which the flush after the row passes over. Throws when the intake
+      refused queued bytes otherwise, or could not be reached: the row is
       not committed without its bytes in place, and the input can be sent
       again. */
   async _lodgeInput(cid) {
@@ -277,6 +294,8 @@ export class EthernityCloudSession {
     if (!this.ownerSignature) return false;
     const { delivered, refused } = await ipfsClient.deliverSigned(this.doReq, [cid], this.ownerSignature);
     if (delivered.includes(cid)) return true;
+    // deliverSigned passes over a CID with no queued blob.
+    if (!(cid in refused)) return false;
     if (String(refused[cid]).includes(ipfsClient.INTAKE_UNSIGNED_PATH)) {
       this.runner.dispatchECEvent(`Session input ${this.inputSeq}: the intake takes no lodged bytes; delivered after its row`, 2);
       return false;

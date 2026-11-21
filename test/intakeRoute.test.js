@@ -28,6 +28,7 @@ import {
   cidv1Raw, flushPending, initializeIntake, intakeNetwork, isInitialized, OWNER_SIGNATURE_HEADER, PUBLIC_INTAKE, StorageLimitError
 } from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
+import { SessionError } from '../session.js';
 import { AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_TOKEN, chainOf, settle } from '../testing/standInChain.js';
 
 const SECURELOCK = 'my-securelock';
@@ -56,10 +57,12 @@ const PEM = certificate();
 
 // The POSTs the intakes received, as URLs in the order they were answered,
 // and the owner's signature each carried. `beforeAnswer`, when set, is
-// awaited with the URL before a POST is answered.
+// awaited with the URL before a POST is answered. `refusal`, when set, is
+// the { status, text } the intakes answer in place of a 200.
 const posts = [];
 const signatures = {};
 let beforeAnswer = null;
+let refusal = null;
 const networkFetch = globalThis.fetch;
 
 // A loopback Kubo RPC API: it answers every add with the CID of the bytes
@@ -89,6 +92,7 @@ before(async () => {
     if (beforeAnswer) await beforeAnswer(target);
     posts.push(target);
     signatures[target] = init.headers[OWNER_SIGNATURE_HEADER];
+    if (refusal) return { status: refusal.status, text: async () => refusal.text };
     return { status: 200, text: async () => '{}' };
   };
 });
@@ -104,6 +108,7 @@ beforeEach(() => {
   posts.length = 0;
   added.length = 0;
   beforeAnswer = null;
+  refusal = null;
 });
 
 // A runner constructed with `token` on a chain of `network` of its own, whose
@@ -268,6 +273,47 @@ test('a storage call of another runner between the seal and the delivery of a ru
   assert.deepEqual(added, namedBy(bloxberg.chain, BLOXBERG_POX, 0));
   assert.deepEqual(posts, []);
   assert.equal(intakeNetwork(), 'polygon_amoy');
+});
+
+test('a session input added to an IPFS API, with the intake set by another runner before it is lodged, is committed once and goes to no intake; a queued input the intake refuses is not committed', { timeout: 60000 }, async () => {
+  // A session on the Bloxberg testnet whose wallet signs, with an IPFS API
+  // of the application's own as the storage. Another runner sets the intake
+  // between the first input's seal and its lodging.
+  const bloxberg = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+  const amoy = runnerOn(AMOY, AMOY_TOKEN);
+  bloxberg.runner.walletContext.signMessage = async () => '0xsignature';
+  await bloxberg.runner.initializeStorage(apiBase);
+  const session = await bloxberg.runner.runSession(RESOURCES, SECURELOCK, 'code');
+  const seal = bloxberg.runner._sealArtefact.bind(bloxberg.runner);
+  bloxberg.runner._sealArtefact = async (...given) => {
+    const artefact = await seal(...given);
+    if (intakeNetwork() === null) amoy.runner.initializePublicIntake();
+    return artefact;
+  };
+  posts.length = 0;
+  added.length = 0;
+  const rows = () => bloxberg.chain.at(BLOXBERG_POX).requests[session.doReq].rows;
+  const inputOf = (row) => row[1].split(':')[3];
+  assert.equal(await session.sendInput('an input'), 0);
+  assert.equal(intakeNetwork(), 'polygon_amoy');
+  assert.equal(rows().length, 1);
+  assert.deepEqual(added, [inputOf(rows()[0])]);
+  assert.deepEqual(posts, []);
+
+  // The next input is queued for the intake, the storage now, and lodged
+  // under the owner's signature before its row.
+  assert.equal(await session.sendInput('another input'), 1);
+  assert.equal(rows().length, 2);
+  assert.deepEqual(posts, [`${PUBLIC_INTAKE}/payload/bloxberg_testnet/${session.doReq}/${inputOf(rows()[1])}`]);
+  assert.equal(signatures[posts[0]], '0xsignature');
+
+  // A queued input whose lodging the intake refuses is not committed.
+  posts.length = 0;
+  refusal = { status: 400, text: 'refused' };
+  await assert.rejects(session.sendInput('a third input'), (error) => error instanceof SessionError &&
+    error.message === 'input 2 was not lodged with the intake (400 refused); not committed, send it again');
+  assert.equal(posts.length, 1);
+  assert.equal(rows().length, 2);
 });
 
 // The artefacts `runner` holds the CIDs of: its challenge, its code and its

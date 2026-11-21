@@ -24,13 +24,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import EthernityCloudRunner from '../runner.js';
-import { ECAddress, ECNetworkConfig, ECPox10TestnetConfig, ECRunner } from '../enums.js';
+import {
+  ECAddress, ECEcldTestnetConfig, ECNetworkByChainId, ECNetworkConfig, ECPox10TestnetConfig, ECRunner
+} from '../enums.js';
 import { initialize } from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
 import { EthernityCloudSession, SessionError } from '../session.js';
 import {
-  AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_MAINNET, BLOXBERG_MAINNET_TOKEN, BLOXBERG_POX10_TOKEN, BLOXBERG_TOKEN, NODE, WALLET,
-  certificateOf, chainOf, settle
+  AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_MAINNET, BLOXBERG_MAINNET_TOKEN, BLOXBERG_POX10_TOKEN, BLOXBERG_TOKEN, NODE,
+  SHARED_TOKEN_TESTNETS, WALLET, certificateOf, chainOf, settle
 } from '../testing/standInChain.js';
 
 const SECURELOCK = 'my-securelock';
@@ -759,4 +761,134 @@ test('a handle constructed with two arguments on a runner is of the trustedzone 
   const elsewhere = new EthernityCloudSession(runner, opened.orderId);
   assert.equal(elsewhere.network, ECPox10TestnetConfig.POLYGON);
   assert.equal(elsewhere.certificate, '');
+});
+
+test('a handle made with two arguments on a runner that has read no enclave details takes the trustedzone and the certificate of the runner\'s first read on the handle\'s network', { timeout: 60000 }, async () => {
+  const chain = chainOf(AMOY);
+  const opened = await runnerOn(AMOY, AMOY_TOKEN, chain).runner.runSession(RESOURCES, SECURELOCK, 'code');
+  // The handles a runner that has read nothing makes with two arguments, by
+  // the constructor and by create(), hold no trustedzone and no certificate.
+  const { runner } = runnerOn(AMOY, AMOY_TOKEN, chain);
+  await runner.resolveNetworkContext();
+  const made = new EthernityCloudSession(runner, opened.orderId);
+  const created = await EthernityCloudSession.create(runner, opened.orderId);
+  for (const handle of [made, created]) {
+    assert.equal(handle.trustedZone, undefined);
+    assert.equal(handle._certificate(), '');
+  }
+  // The runner reads the enclave details on the handles' network: each
+  // handle takes that read's trustedzone and certificate, and sends.
+  await runner.initializeImageRegistry(SECURELOCK);
+  for (const handle of [made, created]) {
+    assert.equal(handle._certificate(), certificateOf(AMOY_POX20.trustedZone, 'registry20'));
+    assert.equal(handle.trustedZone, AMOY_POX20.trustedZone);
+  }
+  await settle();
+  const mark = chain.log.length;
+  assert.equal(await created.sendInput('an input'), 0);
+  assert.deepEqual(sessionTraffic(chain.log.slice(mark)).sealed, [`pox20 ${certificateOf(AMOY_POX20.trustedZone, 'registry20')}`]);
+
+  // A runner whose first read is on the other network of the chain: the
+  // handle it made on the PoX 2.0 network takes nothing of that read, and
+  // takes the runner's next read on the PoX 2.0 network.
+  const { runner: moving } = runnerOn(AMOY, AMOY_TOKEN, chain);
+  await moving.resolveNetworkContext();
+  const waiting = new EthernityCloudSession(moving, opened.orderId);
+  await moving.setNetwork('POLYGON', 'AMOY_POX10');
+  await task(moving);
+  assert.equal(moving.enclavePublicKey, certificateOf(AMOY_POX10.trustedZone, 'registry10'));
+  assert.equal(waiting._certificate(), '');
+  assert.equal(waiting.trustedZone, undefined);
+  await moving.setNetwork('POLYGON', 'TESTNET');
+  await task(moving);
+  assert.equal(waiting._certificate(), certificateOf(AMOY_POX20.trustedZone, 'registry20'));
+  assert.equal(waiting.trustedZone, AMOY_POX20.trustedZone);
+});
+
+// The refusal of a run or a session start on `network` whose image registry
+// did not answer for `trustedZone`, while the runner holds no details read
+// on that network for that trustedzone.
+const noDetailsInEffect = (network, trustedZone) =>
+  `The image registry of ${network} did not answer the enclave details of ${SECURELOCK} with the trustedzone ${trustedZone}, ` +
+  'and the runner holds none read for them';
+
+test('a registry that does not answer ends run() and runSession() before the allowance and the request when the runner\'s details were read for another trustedzone of the network, or when it holds none', { timeout: 60000 }, async () => {
+  const starts = {
+    'run()': (runner, trustedZone = null) => runner.run(RESOURCES, SECURELOCK, 'code', '', trustedZone, { maxRetries: 0 }),
+    'runSession()': (runner, trustedZone = null) => runner.runSession(RESOURCES, SECURELOCK, 'code', '', trustedZone)
+  };
+  const unsafe = { ...BLOXBERG_POX20, trustedZone: ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET_UNSAFE };
+  const nodenithy = ECRunner.BLOXBERG.NODENITHY_RUNNER_TESTNET;
+  for (const [label, start] of Object.entries(starts)) {
+    // After a run on the bloxberg testnet, its -unsafe twin, which has the
+    // same network descriptor, and a start that names the other service type.
+    const { chain, runner } = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+    await task(runner);
+    chain.unanswered.add('registry20');
+    await runner.setNetwork('BLOXBERG', 'TESTNET_UNSAFE');
+    await settle();
+    let mark = chain.log.length;
+    await assert.rejects(start(runner), { message: noDetailsInEffect('BLOXBERG TESTNET', unsafe.trustedZone) }, label);
+    await runner.setNetwork('BLOXBERG', 'TESTNET');
+    await assert.rejects(start(runner, nodenithy), { message: noDetailsInEffect('BLOXBERG TESTNET', nodenithy) }, label);
+    let refused = traffic(chain.log.slice(mark));
+    assert.deepEqual(refused.sent, [], label);
+    assert.deepEqual(refused.spenders, [], label);
+    assert.deepEqual(refused.sealed, [], label);
+    // The trustedzone the details were read for goes on with them.
+    await settle();
+    mark = chain.log.length;
+    await task(runner);
+    assert.deepEqual(traffic(chain.log.slice(mark)), {
+      ...onNetwork(BLOXBERG_POX20),
+      registry: [`registry20.getLatestTrustedZoneImageCertPublicKey(${BLOXBERG_POX20.trustedZone})`]
+    }, label);
+    // Once the registry answers, the -unsafe twin's start reads its own.
+    chain.unanswered.delete('registry20');
+    await runner.setNetwork('BLOXBERG', 'TESTNET_UNSAFE');
+    await settle();
+    mark = chain.log.length;
+    await task(runner);
+    assert.deepEqual(traffic(chain.log.slice(mark)), onNetwork(unsafe), label);
+
+    // A runner that has read nothing.
+    const fresh = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+    fresh.chain.unanswered.add('registry20');
+    await assert.rejects(start(fresh.runner), { message: noDetailsInEffect('BLOXBERG TESTNET', BLOXBERG_POX20.trustedZone) }, label);
+    refused = traffic(fresh.chain.log);
+    assert.deepEqual(refused.sent, [], label);
+    assert.deepEqual(refused.spenders, [], label);
+    assert.deepEqual(refused.sealed, [], label);
+  }
+});
+
+test('the enclave details are kept under the network they were read on when the network context is resolved while the registry answers: a listSessions() after the wallet switched chain', { timeout: 60000 }, async () => {
+  const chain = chainOf(SHARED_TOKEN_TESTNETS);
+  const { runner } = runnerOn(SHARED_TOKEN_TESTNETS, ECAddress.LITVM.TESTNET_ADDRESS, chain);
+  await runner.resolveNetworkContext();
+  const litvm = runner.networkConfig;
+  assert.equal(litvm, ECEcldTestnetConfig[ECNetworkByChainId.LITVM.TESTNET]);
+  const iotex = ECEcldTestnetConfig[ECNetworkByChainId.IOTEX.TESTNET];
+  const trustedZone = ECRunner.LITVM.PYNITHY_RUNNER_TESTNET;
+  // While LitVM's registry answers, the wallet moves to IoTeX's chain and
+  // listSessions() resolves the network context.
+  const during = {};
+  chain.during('call', 'getLatestTrustedZoneImageCertPublicKey', () => {
+    chain.provider.getNetwork = async () => ({ chainId: BigInt(ECNetworkByChainId.IOTEX.TESTNET) });
+    during.listed = runner.listSessions();
+  });
+  chain.during('call', 'getLatestImageVersionPublicKey', () => { during.network = runner.networkConfig; });
+  assert.equal(await runner.initializeImageRegistry(SECURELOCK), true);
+  assert.deepEqual(await during.listed, []);
+  assert.equal(during.network, iotex);
+  assert.equal(runner.networkConfig, iotex);
+  // The answer is LitVM's registry's, kept under LitVM's descriptor.
+  assert.deepEqual(traffic(chain.log).registry, [
+    `registryLitvm.getLatestTrustedZoneImageCertPublicKey(${trustedZone})`,
+    `registryLitvm.getLatestImageVersionPublicKey(${SECURELOCK})`
+  ]);
+  assert.equal(runner.enclaveDetailsNetwork, litvm);
+  assert.equal(runner.trustedZoneCertificate(litvm, trustedZone), certificateOf(trustedZone, 'registryLitvm'));
+  assert.equal(runner.trustedZoneCertificate(iotex, trustedZone), '');
+  assert.equal(runner.enclaveDetailsInEffect(), false);
 });

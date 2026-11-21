@@ -52,6 +52,19 @@ export const BLOXBERG = {
     registry10: [ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_POX10_ADDRESS, registryAbi.abi]
   }
 };
+// The contracts of the two ECLD testnets whose token address is one, LitVM
+// LiteForge and IoTeX, on one stand-in on LitVM's chain id: the shared test
+// ECLD, and the PoX and the image registry of each.
+export const SHARED_TOKEN_TESTNETS = {
+  chainId: 4441,
+  contracts: {
+    token: [ECAddress.LITVM.TESTNET_ADDRESS, ecldAbi.abi],
+    poxLitvm: [ECAddress.LITVM.TESTNET_PROTOCOL_ADDRESS, protocolAbi.abi],
+    registryLitvm: [ECAddress.LITVM.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS, registryAbi.abi],
+    poxIotex: [ECAddress.IOTEX.TESTNET_PROTOCOL_ADDRESS, protocolAbi.abi],
+    registryIotex: [ECAddress.IOTEX.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS, registryAbi.abi]
+  }
+};
 // Bloxberg mainnet's contracts: the ETNY proxy, token and PoX in one, and its
 // image registry.
 export const BLOXBERG_MAINNET = {
