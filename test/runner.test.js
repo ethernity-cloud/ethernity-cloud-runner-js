@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import EthernityCloudRunner from '../runner.js';
-import { ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECLD_SHARED_TESTNET_TOKEN, ECError, resolveNetworkConfig } from '../enums.js';
+import {
+  ECAddress, ECNetworkConfig, ECEcldTestnetConfig, ECPox10TestnetConfig, ECLD_SHARED_TESTNET_TOKEN, ECError, networkTypeOf, resolveNetworkConfig
+} from '../enums.js';
 import { initialize, intakeNetwork, isInitialized } from '../ipfs.js';
 import { resolveWalletContext } from '../walletContext.js';
 import { ethers } from 'ethers';
@@ -23,6 +26,27 @@ test('the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia a
   assert.deepEqual(routed, ['bloxberg_testnet', 'polygon_amoy']);
   const ecld = Object.entries(ECEcldTestnetConfig).filter(([, cfg]) => cfg.agentNetwork).map(([chainId, cfg]) => [chainId, cfg.agentNetwork]);
   assert.deepEqual(ecld, [['4441', 'litvm_liteforge'], ['11155111', 'ethereum_sepolia']]);
+});
+
+// The README's name of each network routed to the intake, by agent network name.
+const README_ROUTED = {
+  bloxberg_testnet: 'the Bloxberg testnet',
+  polygon_amoy: 'Polygon Amoy',
+  litvm_liteforge: 'LitVM LiteForge',
+  ethereum_sepolia: 'Ethereum Sepolia'
+};
+
+test('the README\'s storage section names the networks the runner routes to the intake, and the ones a run is refused on without a storage, as the descriptors do', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const section = readme.slice(readme.indexOf('### Storage and the result read'));
+  const published = [...Object.values(ECNetworkConfig), ...Object.values(ECEcldTestnetConfig)];
+  const routed = published.filter((cfg) => cfg.agentNetwork).map((cfg) => README_ROUTED[cfg.agentNetwork]);
+  const unrouted = [...published, ...Object.values(ECPox10TestnetConfig)].filter((cfg) => !cfg.agentNetwork)
+    .map((cfg) => `${cfg.networkKey} ${networkTypeOf(cfg)}`);
+  assert.deepEqual(unrouted, ['BLOXBERG MAINNET', 'POLYGON MAINNET', 'IOTEX TESTNET', 'BLOXBERG TESTNET_POX10', 'POLYGON AMOY_POX10']);
+  const sentence = `the runner routes to it ${routed.slice(0, -1).join(', ')} and ${routed.at(-1)}, each with its -unsafe twin: ` +
+    'on every other network (Bloxberg mainnet, Polygon mainnet, IoTeX and the two PoX 1.0 testnet networks) `run()` fails before any transaction is sent';
+  assert.ok(section.includes(sentence), sentence);
 });
 
 test("Sepolia's own token names its descriptor without a chainId; the shared token still needs one", () => {
@@ -90,15 +114,15 @@ test('a network with an agent network name gets the intake by default', async ()
   }
 });
 
-test('an IPFS API of the application\'s own, configured before run(), takes precedence on every network; the intake of another network serves no network without a route', async () => {
+test('an IPFS API of the application\'s own, configured before run(), takes precedence on every network; the intake serves no network without a route', async () => {
   const runner = new EthernityCloudRunner(ECAddress.IOTEX.TESTNET_ADDRESS, { provider: providerOn(4690) }, 4690);
   await runner.resolveNetworkContext();
-  // The storage in effect is the intake the test above set, the Bloxberg
-  // testnet's: IoTeX has no route, and its artefacts do not go under that one.
+  // The storage in effect is the intake the test above set: IoTeX has no
+  // route under it.
   assert.equal(intakeNetwork(), 'bloxberg_testnet');
   assert.throws(
     () => runner.initializeDefaultStorage(),
-    messageMatching(/^IOTEX TESTNET has no payload intake route, and the storage in effect is the intake route of bloxberg_testnet: configure the storage before submitting a task/)
+    messageMatching(/^IOTEX TESTNET has no payload intake route, and the storage in effect is the payload intake: configure the storage before submitting a task/)
   );
   initialize('http://127.0.0.1:5001');
   assert.equal(intakeNetwork(), null);

@@ -12,71 +12,28 @@
 // keeps the PoX, the network descriptor and the trustedzone certificate it
 // was opened with.
 //
-// The chain is a stand-in at the provider: every eth_call, gas estimate,
-// transaction and log read is recorded with the contract it is addressed to
-// and answered from the state the transactions leave (a DO request, the order
-// placed on it, its approval, its metadata rows). Two steps of a run are
-// stood in for on the runner: _sealArtefact (the seal for the trustedzone's
-// certificate and its upload), which records the network and the certificate
-// it is called with, and getOrderResult (the result's download and
-// decryption), which reads the result row through the protocol contract the
-// runner holds at that step.
+// The chain is a stand-in at the provider (fixtures/standInChain.js). Two
+// steps of a run are stood in for on the runner: _sealArtefact (the seal for
+// the trustedzone's certificate and its upload), which records the network
+// and the certificate it is called with, and getOrderResult (the result's
+// download and decryption), which reads the result row through the protocol
+// contract the runner holds at that step.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ethers } from 'ethers';
 import EthernityCloudRunner from '../runner.js';
 import { ECAddress, ECNetworkConfig, ECPox10TestnetConfig, ECRunner } from '../enums.js';
 import { initialize } from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
-import etnyAbi from '../contract/abi/etnyAbi.js';
-import ecldAbi from '../contract/abi/ecldAbi.js';
-import protocolAbi from '../contract/abi/polygonProtocolAbi.js';
-import registryAbi from '../contract/abi/imageRegistryAbi.js';
+import { SessionError } from '../session.js';
+import {
+  AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_POX10_TOKEN, BLOXBERG_TOKEN, WALLET, certificateOf, chainOf, settle
+} from './fixtures/standInChain.js';
 
-const WALLET = '0x71d005d502bd2EEBD2368f35EA33e66cD7A63CB7';
-const NODE = '0x837EA0A09612CFF93a787db84Bbe11c65E431133';
 const SECURELOCK = 'my-securelock';
 const RESOURCES = { taskPrice: 3, validators: 1, duration: 1 };
-// Order statuses the stand-in chain answers: a session's order stays
-// PROCESSING once approved, a task's order reads as closed.
-const PROCESSING = 1;
-const CLOSED = 2;
-// The key the stand-in chain signs every order's result transaction with.
-const ENCLAVE = ethers.Wallet.createRandom();
-
-const AMOY_TOKEN = ECAddress.POLYGON.TESTNET_ADDRESS;
-const BLOXBERG_TOKEN = ECAddress.BLOXBERG.TESTNET_ADDRESS;
-const BLOXBERG_POX10_TOKEN = ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS;
-
-// The contracts of Polygon Amoy's two networks, by the label the recorded
-// traffic names them with: the test ECLD both are paid in, and the PoX and
-// the image registry of each.
-const AMOY = {
-  chainId: 80002,
-  contracts: {
-    token: [AMOY_TOKEN, ecldAbi.abi],
-    pox20: [ECAddress.POLYGON.TESTNET_PROTOCOL_ADDRESS, protocolAbi.abi],
-    registry20: [ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS, registryAbi.abi],
-    pox10: [ECAddress.POLYGON.AMOY_POX10_PROTOCOL_ADDRESS, protocolAbi.abi],
-    registry10: [ECAddress.POLYGON.IMAGE_REGISTRY.PYNITHY.AMOY_POX10_ADDRESS, registryAbi.abi]
-  }
-};
-// The contracts of the bloxberg testnet's two networks: tETNY with the PoX
-// 2.0 and its registry, and the PoX 1.0 network's proxy, token and PoX in
-// one, with its registry.
-const BLOXBERG = {
-  chainId: 8995,
-  contracts: {
-    token: [BLOXBERG_TOKEN, etnyAbi.abi],
-    pox20: [ECAddress.BLOXBERG.TESTNET_PROTOCOL_ADDRESS, protocolAbi.abi],
-    registry20: [ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_ADDRESS, registryAbi.abi],
-    pox10: [BLOXBERG_POX10_TOKEN, etnyAbi.abi],
-    registry10: [ECAddress.BLOXBERG.IMAGE_REGISTRY.PYNITHY.TESTNET_POX10_ADDRESS, registryAbi.abi]
-  }
-};
 
 // What a run on a network is expected to touch (onNetwork): its PoX and
 // registry by label, the trustedzone it names by default, and the token the
@@ -85,11 +42,6 @@ const AMOY_POX20 = { pox: 'pox20', registry: 'registry20', trustedZone: ECRunner
 const AMOY_POX10 = { pox: 'pox10', registry: 'registry10', trustedZone: ECRunner.POLYGON.PYNITHY_RUNNER_AMOY_POX10, token: 'token' };
 const BLOXBERG_POX20 = { pox: 'pox20', registry: 'registry20', trustedZone: ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET, token: 'token' };
 const BLOXBERG_POX10 = { pox: 'pox10', registry: 'registry10', trustedZone: ECRunner.BLOXBERG.PYNITHY_RUNNER_TESTNET_POX10 };
-
-// The certificate the stand-in registry `registry` holds for `trustedZone`.
-const certificateOf = (trustedZone, registry) => `certificate of ${trustedZone} in ${registry}`;
-
-const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 let heldDirectory = '';
 
@@ -105,142 +57,11 @@ after(async () => {
   await rm(heldDirectory, { recursive: true, force: true });
 });
 
-// A chain holding `contracts` ({ label: [address, abi] }) on `chainId`:
-// { provider, signer, log, at, during }. log is the traffic in the order it
-// was made, one entry per eth_call ('call'), gas estimate ('estimate'),
-// transaction ('send') and log read ('logs'), each with the label of the
-// contract it is addressed to and, for the first three, the function's name
-// and arguments. during(kind, name, run) calls run() once, at the first
-// `kind` entry of the function `name`.
-const chainOf = ({ chainId, contracts }) => {
-  const byAddress = new Map(Object.entries(contracts).map(([label, [address, abi]]) => [
-    address.toLowerCase(),
-    { label, address, iface: new ethers.Interface(abi), requests: [], orders: [], placed: [] }
-  ]));
-  const at = (address) => {
-    const contract = byAddress.get(String(address).toLowerCase());
-    if (!contract) throw new Error(`no contract of this test at ${address}`);
-    return contract;
-  };
-  const log = [];
-  const receipts = new Map();
-  const hooks = [];
-  const record = (kind, tx) => {
-    const contract = at(tx.to);
-    const call = contract.iface.parseTransaction({ data: tx.data });
-    if (!call) throw new Error(`${contract.label} has no function for ${tx.data.slice(0, 10)}`);
-    const entry = { kind, label: contract.label, name: call.name, args: call.args };
-    if (call.name === 'allowance') entry.spender = at(call.args[1]).label;
-    if (call.name === 'approve') entry.spender = at(call.args[0]).label;
-    log.push(entry);
-    const hook = hooks.findIndex((h) => h.kind === kind && h.name === call.name);
-    if (hook >= 0) hooks.splice(hook, 1)[0].run();
-    return { contract, call };
-  };
-  const reverted = () => { throw Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION' }); };
-  // The result row of an order: 'v3:<result transaction>:<result CID>', the
-  // transaction an _addResultToOrder call to the order's PoX, signed for the
-  // chain by ENCLAVE.
-  const resultRow = async (contract, orderId) => {
-    const transaction = await ENCLAVE.signTransaction({
-      type: 0,
-      chainId,
-      nonce: 0,
-      gasLimit: 100000,
-      gasPrice: 1,
-      to: contract.address,
-      data: contract.iface.encodeFunctionData('_addResultToOrder', [orderId, 'v3:0:checksum:enclave challenge'])
-    });
-    return `v3:${transaction}:QmResult`;
-  };
-  const answer = async ({ contract, call }) => {
-    const request = () => contract.requests[Number(call.args[0])] || reverted();
-    const order = () => contract.orders[Number(call.args[0])] || reverted();
-    switch (call.name) {
-      case 'balanceOf': return [ethers.parseEther('5000')];
-      case 'allowance': return [0];
-      case '_getOrdersCount': return [contract.orders.length];
-      case '_getOrder': return [WALLET, NODE, order().doRequest, 0, order().status];
-      case '_getDORequest': return [WALLET, 1, 1, 40, 1, request().duration, 3, 1];
-      case '_getDORequestMetadata': return [WALLET, ...request().metadata];
-      case '_getDPRequestMetadata': return [NODE, '', '', '', ''];
-      case '_getMetadataCountForRequest': return [request().rows.length];
-      case '_getMetadataValueForRequest': return request().rows[Number(call.args[1])];
-      case '_getMetadataCountForDPRequest': return [0];
-      case '_getResultFromOrder': return [await resultRow(contract, order() && call.args[0])];
-      case 'getLatestTrustedZoneImageCertPublicKey':
-        return ['QmTrustedZone', certificateOf(call.args[0], contract.label), 'QmTrustedZoneCompose'];
-      case 'getLatestImageVersionPublicKey':
-        return [`QmImage-${contract.label}`, 'certificate of the securelock', `QmCompose-${contract.label}`];
-      default: throw new Error(`no answer of this test for ${call.name}`);
-    }
-  };
-  const eventLog = (contract, name, values) => ({ address: contract.address, ...contract.iface.encodeEventLog(name, values) });
-  // What a transaction leaves on its contract, and the logs of its receipt. A
-  // DO request is given an order at once; a session's order (a request whose
-  // input metadata is tagged v3s) is PROCESSING once approved, a task's
-  // CLOSED.
-  const effect = ({ contract, call }) => {
-    const { requests, orders, placed } = contract;
-    if (call.name === '_addDORequest') {
-      const metadata = Array.from(call.args).slice(7).map(String);
-      const request = requests.length;
-      requests.push({ metadata, duration: Number(call.args[4]), session: metadata[2].startsWith('v3s:'), rows: [] });
-      placed.push(eventLog(contract, '_orderPlacedEV', [orders.length, request, 0]));
-      orders.push({ doRequest: request, status: 0 });
-      return [eventLog(contract, '_addDORequestEV', [WALLET, request])];
-    }
-    if (call.name === '_approveOrder') {
-      const order = orders[Number(call.args[0])];
-      order.status = requests[order.doRequest].session ? PROCESSING : CLOSED;
-      return [eventLog(contract, '_orderApprovedEV', [WALLET, NODE, call.args[0]])];
-    }
-    if (call.name === '_addMetadataToRequest') {
-      requests[Number(call.args[0])].rows.push([call.args[1], call.args[2]]);
-    }
-    return [];
-  };
-  const provider = {
-    getNetwork: async () => ({ chainId: BigInt(chainId) }),
-    getBlockNumber: async () => 16,
-    call: async (tx) => {
-      const read = record('call', tx);
-      return read.contract.iface.encodeFunctionResult(read.call.fragment, await answer(read));
-    },
-    estimateGas: async (tx) => {
-      record('estimate', tx);
-      return 100000n;
-    },
-    getLogs: async (filter) => {
-      const contract = at(filter.address);
-      log.push({ kind: 'logs', label: contract.label });
-      return filter.topics[0] === contract.iface.getEvent('_orderPlacedEV').topicHash ? contract.placed : [];
-    },
-    send: async (method, [hash]) => {
-      assert.equal(method, 'eth_getTransactionReceipt');
-      return { status: '0x1', blockNumber: '0x10', logs: receipts.get(hash) };
-    },
-    getTransactionReceipt: async (hash) => ({ hash, status: 1, blockNumber: 16, logs: [] })
-  };
-  const signer = {
-    provider,
-    getAddress: async () => WALLET,
-    sendTransaction: async (tx) => {
-      const sent = record('send', tx);
-      const hash = ethers.id(`transaction ${receipts.size}`);
-      receipts.set(hash, effect(sent));
-      return { hash };
-    }
-  };
-  return { provider, signer, log, at, during: (kind, name, run) => hooks.push({ kind, name, run }) };
-};
-
-// A runner constructed with `token` on a chain of `network`, with the two
-// stand-ins of the header. Its events are kept in runner.events; an 'end'
-// entry closes each run's traffic in chain.log, once the event watchers the
-// run started have made their reads.
-const runnerOn = (network, token) => {
-  const chain = chainOf(network);
+// A runner constructed with `token` on `chain`, a chain of `network` of its
+// own when none is given, with the two stand-ins of the header. Its events
+// are kept in runner.events; an 'end' entry closes each run's traffic in
+// chain.log, once the event watchers the run started have made their reads.
+const runnerOn = (network, token, chain = chainOf(network)) => {
   const runner = new EthernityCloudRunner(token, {
     provider: chain.provider,
     signer: chain.signer,
@@ -549,19 +370,152 @@ test('attachSession() takes its turn: called during a run, after a setNetwork(),
   assert.equal(session.certificate, certificateOf(AMOY_POX10.trustedZone, 'registry10'));
 });
 
-test('the task of esrRead() takes its turn: called during a run, it is submitted once the run has ended', { timeout: 60000 }, async () => {
-  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+// The state every task of `runner` answers for the key 'counter', and what
+// esrRead() returns for it.
+const STATE = { state: '1', version: 1, cid: 'QmState', wallet: WALLET, fromCache: false, checkedOnChain: false };
+const answeringState = (runner) => {
   const end = runner.getOrderResult;
   runner.getOrderResult = async () => {
     runner.structuredResult = { esr: { wallet: WALLET, entries: [{ key: 'counter', state: '1', version: 1, cid: 'QmState' }] } };
     await end();
   };
+};
+
+test('the task of esrRead() takes its turn: called during a run, it is submitted once the run has ended, prepared as a run is', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  answeringState(runner);
   const run = task(runner);
   const read = runner.esrRead({ key: 'counter' });
   await run;
-  assert.deepEqual(await read, { state: '1', version: 1, cid: 'QmState', wallet: WALLET, fromCache: false, checkedOnChain: false });
-  const [first, second] = runsOf(chain.log);
-  assert.deepEqual(traffic(first), onNetwork(AMOY_POX20));
-  assert.deepEqual(traffic(second).sent, ['pox20._addDORequest', 'pox20._approveOrder']);
-  assert.deepEqual(traffic(second).requests, [`QmImage-registry20 ${AMOY_POX20.trustedZone}`]);
+  assert.deepEqual(await read, STATE);
+  assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX20].map(onNetwork));
+});
+
+test('esrRead() after setNetwork(), with no run in between, posts a request that is on the named network alone', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  answeringState(runner);
+  await task(runner);
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
+  assert.deepEqual(await runner.esrRead({ key: 'counter' }), STATE);
+  await runner.setNetwork('POLYGON', 'TESTNET');
+  assert.deepEqual(await runner.esrRead({ key: 'counter' }), STATE);
+  assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX10, AMOY_POX20].map(onNetwork));
+});
+
+test('esrRead() ends before any transaction when the runner holds no securelock, when the image registry of the network does not answer the securelock, and when the last request\'s trustedzone is another network\'s', { timeout: 60000 }, async () => {
+  // No request yet: no securelock.
+  const fresh = runnerOn(AMOY, AMOY_TOKEN);
+  await assert.rejects(fresh.runner.esrRead({ key: 'counter' }), {
+    message: "esrRead: the runner holds no securelock; its task runs the securelock of the runner's last request, so run a task first"
+  });
+  assert.deepEqual(fresh.chain.log, []);
+
+  // The registry of the named network does not answer: the details the
+  // runner holds are the other network's, and no request is made of them.
+  const unanswered = runnerOn(AMOY, AMOY_TOKEN);
+  await task(unanswered.runner);
+  await unanswered.runner.setNetwork('POLYGON', 'AMOY_POX10');
+  unanswered.chain.unanswered.add('registry10');
+  await settle();
+  let mark = unanswered.chain.log.length;
+  await assert.rejects(unanswered.runner.esrRead({ key: 'counter' }), {
+    message: `esrRead: the image registry of POLYGON AMOY_POX10 did not answer the enclave details of ${SECURELOCK} with the trustedzone ${AMOY_POX10.trustedZone}`
+  });
+  assert.deepEqual(traffic(unanswered.chain.log.slice(mark)).sent, []);
+  assert.deepEqual(traffic(unanswered.chain.log.slice(mark)).sealed, []);
+
+  // The last request named a trustedzone of the PoX 2.0 network.
+  const named = runnerOn(AMOY, AMOY_TOKEN);
+  await named.runner.run(RESOURCES, SECURELOCK, 'code', '', ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET, { maxRetries: 0 });
+  await named.runner.setNetwork('POLYGON', 'AMOY_POX10');
+  await settle();
+  mark = named.chain.log.length;
+  await assert.rejects(named.runner.esrRead({ key: 'counter' }), {
+    message: `POLYGON AMOY_POX10 runs only its PoX 1.0 trustedzones (${ECRunner.POLYGON.PYNITHY_RUNNER_AMOY_POX10}, ${ECRunner.POLYGON.NODENITHY_RUNNER_AMOY_POX10}), and ${ECRunner.POLYGON.NODENITHY_RUNNER_TESTNET} is not one of them`
+  });
+  assert.deepEqual(named.chain.log.slice(mark), []);
+});
+
+test('a deferred setNetwork() whose event dispatch throws rejects with that error, applies nothing and ends its turn', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  const thrown = new Error('a listener threw');
+  runner.dispatchECEvent = (message) => {
+    runner.events.push(message);
+    if (message.startsWith('setNetwork(')) throw thrown;
+  };
+  const first = task(runner);
+  await assert.rejects(runner.setNetwork('POLYGON', 'AMOY_POX10'), (error) => error === thrown);
+  // The run called after it is not held behind its turn, and is on the
+  // runner's network.
+  const second = task(runner);
+  await Promise.all([first, second]);
+  assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX20].map(onNetwork));
+  // No turn is left: a name applies in the call.
+  runner.dispatchECEvent = (message) => { runner.events.push(message); };
+  const named = runner.setNetwork('POLYGON', 'AMOY_POX10');
+  assert.equal(runner.networkConfig, ECPox10TestnetConfig.POLYGON);
+  await named;
+});
+
+test('a queued run() whose event dispatch throws rejects with that error and ends its turn', { timeout: 60000 }, async () => {
+  const { chain, runner } = runnerOn(AMOY, AMOY_TOKEN);
+  const thrown = new Error('a listener threw');
+  runner.dispatchECEvent = (message) => {
+    runner.events.push(message);
+    if (message.startsWith('Another task is in flight')) throw thrown;
+  };
+  const called = {};
+  chain.during('call', 'balanceOf', () => {
+    called.queued = assert.rejects(task(runner), (error) => error === thrown);
+  });
+  await task(runner);
+  await called.queued;
+  await task(runner);
+  assert.deepEqual(runsOf(chain.log).map(traffic), [AMOY_POX20, AMOY_POX20].map(onNetwork));
+});
+
+test('a handle made while the runner holds no certificate sends no input until the runner reads one on the session\'s network, and never takes another network\'s', { timeout: 60000 }, async () => {
+  const chain = chainOf(AMOY);
+  const opened = await runnerOn(AMOY, AMOY_TOKEN, chain).runner.runSession(RESOURCES, SECURELOCK, 'code');
+  // Another runner, which has read no enclave details, attaches without the
+  // securelock. attachSession compares the order's owner with the wallet the
+  // token contract holds once initializeWeb3Connection has run.
+  const { runner } = runnerOn(AMOY, AMOY_TOKEN, chain);
+  await runner.initializeWeb3Connection();
+  const handle = await runner.attachSession(opened.orderId);
+  assert.equal(handle.certificate, '');
+  const refused = (error) => error instanceof SessionError && error.message ===
+    "this handle holds no trustedzone certificate to seal an input for: attach with the session's securelock, attachSession(orderId, secureLockEnclave)";
+  await settle();
+  let mark = chain.log.length;
+  await assert.rejects(handle.sendInput('an input'), refused);
+  assert.deepEqual(chain.log.slice(mark), []);
+
+  // The runner reads a certificate on the PoX 1.0 network: not the session's.
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
+  await task(runner);
+  await assert.rejects(handle.sendInput('an input'), refused);
+  // Named back onto the session's network, the runner holds the PoX 1.0
+  // certificate until its next request there.
+  await runner.setNetwork('POLYGON', 'TESTNET');
+  assert.equal(runner.networkConfig, handle.network);
+  assert.equal(runner.enclavePublicKey, certificateOf(AMOY_POX10.trustedZone, 'registry10'));
+  await assert.rejects(handle.sendInput('an input'), refused);
+  assert.equal(handle.certificate, '');
+
+  // A run on the session's network reads its trustedzone's certificate: the
+  // handle takes it, and keeps it when the runner reads another.
+  await task(runner);
+  await settle();
+  mark = chain.log.length;
+  assert.equal(await handle.sendInput('an input'), 0);
+  assert.deepEqual(sessionTraffic(chain.log.slice(mark)), {
+    sent: ['pox20._addMetadataToRequest'],
+    estimated: ['pox20._addMetadataToRequest'],
+    read: ['pox20'],
+    sealed: [`pox20 ${certificateOf(AMOY_POX20.trustedZone, 'registry20')}`]
+  });
+  await runner.setNetwork('POLYGON', 'AMOY_POX10');
+  await task(runner);
+  assert.equal(handle.certificate, certificateOf(AMOY_POX20.trustedZone, 'registry20'));
 });

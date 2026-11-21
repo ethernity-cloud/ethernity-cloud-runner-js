@@ -4,10 +4,11 @@
 // intake route (a descriptor without agentNetwork: the two PoX 1.0 testnet
 // networks, Bloxberg mainnet, Polygon mainnet, IoTeX) is served by an IPFS
 // API of the application's own and by nothing else. With no storage set, and
-// with the intake another network's run or the application set, a run on
+// with the intake a run on a routed network or the application set, a run on
 // such a network is refused before any request reaches the chain, and so are
 // runSession(), attachSession(), the task of esrRead() and the seal of an
-// artefact. A network with a route takes the storage in effect.
+// artefact. A network with a route takes the storage in effect, and delivers
+// through an intake under its own route (test/intakeRoute.test.js).
 //
 // No chain: the provider answers the chain id and records every other
 // request, which fails. The tests share the process's storage and run in the
@@ -58,9 +59,10 @@ const UNROUTED = [
   ['IOTEX TESTNET', () => runnerOn(ECAddress.IOTEX.TESTNET_ADDRESS, 4690)]
 ];
 
-// The refusal of `network`, with the intake of `intake` in effect when given.
-const refusal = (network, intake = null) =>
-  `${network} has no payload intake route${intake ? `, and the storage in effect is the intake route of ${intake}` : ''}: ` +
+// The refusal of `network`, with no storage set or, when `intake` is true,
+// with an intake as the storage in effect.
+const refusal = (network, intake = false) =>
+  `${network} has no payload intake route${intake ? ', and the storage in effect is the payload intake' : ''}: ` +
   "configure the storage before submitting a task, with initializeStorage('http://127.0.0.1:5001') for your own Kubo RPC API, or " +
   `initializeStorage('${PUBLIC_INTAKE}', undefined, undefined, token) for the public API with your writer token.`;
 
@@ -75,18 +77,18 @@ test('with no storage set, a run on a network without a route is refused before 
   }
 });
 
-test('the default storage of a network with a route is the intake under that route', async () => {
+test('the default storage of a network with a route is the public intake', async () => {
   const amoy = await runnerOn(AMOY_TOKEN, 80002);
   assert.equal(amoy.storageRefusal(), null);
   amoy.initializeDefaultStorage();
   assert.equal(intakeNetwork(), 'polygon_amoy');
 });
 
-test('with the intake of Polygon Amoy in effect, the runner that set it, named onto its PoX 1.0 network, is refused before any request reaches the chain', async () => {
+test('with the intake a run on Polygon Amoy took in effect, the runner that took it, named onto its PoX 1.0 network, is refused before any request reaches the chain', async () => {
   const runner = await runnerOn(AMOY_TOKEN, 80002);
   runner.initializeDefaultStorage();
   await runner.setNetwork('POLYGON', 'AMOY_POX10');
-  await assert.rejects(task(runner), { message: refusal('POLYGON AMOY_POX10', 'polygon_amoy') });
+  await assert.rejects(task(runner), { message: refusal('POLYGON AMOY_POX10', true) });
   assert.deepEqual(runner.reached, []);
   assert.equal(intakeNetwork(), 'polygon_amoy');
   // Named back onto the PoX 2.0 network, the runner takes the intake.
@@ -94,10 +96,10 @@ test('with the intake of Polygon Amoy in effect, the runner that set it, named o
   assert.equal(runner.storageRefusal(), null);
 });
 
-test('with the intake of Polygon Amoy in effect, a run of another runner on a network without a route is refused before any request reaches the chain', async () => {
+test('with an intake in effect, a run of another runner on a network without a route is refused before any request reaches the chain', async () => {
   for (const [network, build] of UNROUTED) {
     const runner = await build();
-    await assert.rejects(task(runner), { message: refusal(network, 'polygon_amoy') }, network);
+    await assert.rejects(task(runner), { message: refusal(network, true) }, network);
     assert.deepEqual(runner.reached, [], network);
   }
   assert.equal(intakeNetwork(), 'polygon_amoy');
@@ -105,9 +107,11 @@ test('with the intake of Polygon Amoy in effect, a run of another runner on a ne
 
 test('runSession(), attachSession() and the task of esrRead() are refused as run() is', async () => {
   const runner = await runnerOn(AMOY_TOKEN, 80002, ['POLYGON', 'AMOY_POX10']);
-  const message = refusal('POLYGON AMOY_POX10', 'polygon_amoy');
+  const message = refusal('POLYGON AMOY_POX10', true);
   await assert.rejects(runner.runSession(RESOURCES, SECURELOCK, 'code'), { message });
   await assert.rejects(runner.attachSession(1), { message });
+  // The securelock a request of the runner leaves, which esrRead() runs.
+  runner.secureLockEnclave = SECURELOCK;
   await assert.rejects(runner.esrRead({ key: 'counter' }), { message });
   assert.deepEqual(runner.reached, []);
 });
@@ -118,20 +122,13 @@ test('an artefact is judged for the network it is for, before it is sealed: a se
   // A runner on the PoX 2.0 network sealing for a session of the PoX 1.0 one.
   const onPox20 = await runnerOn(AMOY_TOKEN, 80002);
   assert.equal(onPox20.storageRefusal(), null);
-  assert.equal(onPox20.storageRefusal(pox10), refusal('POLYGON AMOY_POX10', 'polygon_amoy'));
-  await assert.rejects(onPox20._sealArtefact('an input', pox10, 'a certificate'), { message: refusal('POLYGON AMOY_POX10', 'polygon_amoy') });
+  assert.equal(onPox20.storageRefusal(pox10), refusal('POLYGON AMOY_POX10', true));
+  await assert.rejects(onPox20._sealArtefact('an input', pox10, 'a certificate'), { message: refusal('POLYGON AMOY_POX10', true) });
   // A runner on the PoX 1.0 network: its own artefacts are refused, those of
   // a session of the PoX 2.0 network are not.
   const onPox10 = await runnerOn(AMOY_TOKEN, 80002, ['POLYGON', 'AMOY_POX10']);
-  await assert.rejects(onPox10._sealArtefact('a challenge'), { message: refusal('POLYGON AMOY_POX10', 'polygon_amoy') });
+  await assert.rejects(onPox10._sealArtefact('a challenge'), { message: refusal('POLYGON AMOY_POX10', true) });
   assert.equal(onPox10.storageRefusal(pox20), null);
-});
-
-test('a network with a route takes the intake in effect, whichever network it was set for', async () => {
-  const bloxberg = await runnerOn(ECAddress.BLOXBERG.TESTNET_ADDRESS, 8995);
-  assert.equal(bloxberg.storageRefusal(), null);
-  bloxberg.initializeDefaultStorage();
-  assert.equal(intakeNetwork(), 'polygon_amoy');
 });
 
 test('an IPFS API of the application\'s own serves every network', async () => {
@@ -147,14 +144,14 @@ test('an IPFS API of the application\'s own serves every network', async () => {
   assert.equal(intakeNetwork(), null);
 });
 
-test('an intake the application sets for a network with a route serves no network without one, and no intake is set for a network without a route', async () => {
+test('an intake the application sets on a network with a route serves no network without one, and no intake is set on a network without a route', async () => {
   const amoy = await runnerOn(AMOY_TOKEN, 80002);
   amoy.initializePublicIntake();
   assert.equal(intakeNetwork(), 'polygon_amoy');
   for (const [network, build] of UNROUTED) {
     const runner = await build();
-    assert.equal(runner.storageRefusal(), refusal(network, 'polygon_amoy'), network);
-    assert.throws(() => runner.initializeDefaultStorage(), { message: refusal(network, 'polygon_amoy') }, network);
+    assert.equal(runner.storageRefusal(), refusal(network, true), network);
+    assert.throws(() => runner.initializeDefaultStorage(), { message: refusal(network, true) }, network);
     assert.throws(() => runner.initializePublicIntake(), { message: 'initializePublicIntake: this network has no payload intake route' }, network);
   }
   assert.equal(intakeNetwork(), 'polygon_amoy');

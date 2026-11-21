@@ -26,10 +26,15 @@ import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
  * network's descriptor and the certificate of the trustedzone its enclave
  * runs are taken from the runner when the handle is made, so a network the
  * runner is put on afterwards (runner.setNetwork), and the certificate a
- * later run of the runner resolves, do not move the session. close(true)
- * reads the final result from the session's PoX with the runner's result
- * reader (runner.getResultFromOrder), which checks the result's signer
- * against the challenge of the runner's last request.
+ * later run of the runner resolves, do not move the session. A handle made
+ * while the runner holds no certificate (an attach without the securelock in
+ * a process that has resolved none) takes the first one the runner reads on
+ * the session's network, never one of another network, and sends no input
+ * until then (_certificate). Its inputs go to the intake under the route of
+ * the session's network. close(true) reads the final result from the
+ * session's PoX with the runner's result reader (runner.getResultFromOrder),
+ * which checks the result's signer against the challenge of the runner's
+ * last request.
  */
 
 export const SESSION_INPUT_KEY = 'etny-si';
@@ -128,6 +133,18 @@ export class EthernityCloudSession {
     return this.protocol.getContract();
   }
 
+  /** The certificate of the session's trustedzone: the one the runner held
+      when the handle was made. A handle made while the runner held none takes
+      the runner's once the runner holds one it read on the session's network
+      (runner.enclaveDetailsNetwork) and keeps it; a certificate the runner
+      read on another network is not taken. '' until then. */
+  _certificate() {
+    if (!this.certificate && this.runner.enclavePublicKey && this.runner.enclaveDetailsNetwork === this.network) {
+      this.certificate = this.runner.enclavePublicKey;
+    }
+    return this.certificate;
+  }
+
   /** Resume seq from chain state so a reattached session continues exactly
       where the previous process stopped. */
   async _countMyInputs() {
@@ -170,7 +187,7 @@ export class EthernityCloudSession {
     if (parts.length !== 4 || parts[0] !== SESSION_WIRE_VERSION || Number(parts[1]) !== this.orderId) return false;
     const [, , wallet, sig] = parts;
     const message = `${SESSION_WALLET_KEY}|${this.orderId}|${wallet}`;
-    if (!verifyCertificateSignature(this.certificate, message, sig)) {
+    if (!verifyCertificateSignature(this._certificate(), message, sig)) {
       this.runner.dispatchECEvent(
         `Session: the task wallet attestation of ${wallet} does not verify against the trustedzone's certificate -- IGNORING`, 1);
       return false;
@@ -221,19 +238,20 @@ export class EthernityCloudSession {
 
   /** Lodge input `cid`'s queued bytes with the intake before the row that
       names them, under the request owner's signature, asked of the wallet
-      once per session (one prompt in a browser wallet). True when the intake
-      took them. False when the bytes are to go after the row instead: no
-      intake, no wallet, a wallet that did not sign, or an intake without the
-      signed path (its 403 INTAKE_UNSIGNED_PATH). Throws when the intake
+      once per session (one prompt in a browser wallet) over the route of the
+      session's network, the route the input is queued for. True when the
+      intake took them. False when the bytes are to go after the row instead:
+      no intake, no wallet, a wallet that did not sign, or an intake without
+      the signed path (its 403 INTAKE_UNSIGNED_PATH). Throws when the intake
       refused the lodged bytes otherwise, or could not be reached: the row is
       not committed without its bytes in place, and the input can be sent
       again. */
   async _lodgeInput(cid) {
-    const network = ipfsClient.intakeNetwork();
-    if (network === null || !this.runner.walletContext) return false;
+    if (ipfsClient.intakeNetwork() === null || !this.runner.walletContext) return false;
     if (this.ownerSignature === undefined) {
       try {
-        this.ownerSignature = await this.runner.walletContext.signMessage(ipfsClient.ownerSignatureMessage(network, this.doReq));
+        const message = ipfsClient.ownerSignatureMessage(this.network.agentNetwork, this.doReq);
+        this.ownerSignature = await this.runner.walletContext.signMessage(message);
       } catch (e) {
         this.ownerSignature = null;
         this.runner.dispatchECEvent(
@@ -252,9 +270,17 @@ export class EthernityCloudSession {
 
   /** Encrypt for the enclave, deliver the ciphertext through the configured
       storage (the bootnode's intake by default), commit the etny-si row.
-      Returns the input seq. Refuses when the session cannot answer any more. */
+      Returns the input seq. Refuses when the session cannot answer any more,
+      and when the handle holds no certificate to seal the input for
+      (_certificate). */
   async sendInput(data) {
     if (this.closed) throw new SessionError('session is closed');
+    const certificate = this._certificate();
+    if (!certificate) {
+      throw new SessionError(
+        "this handle holds no trustedzone certificate to seal an input for: attach with the session's securelock, " +
+        'attachSession(orderId, secureLockEnclave)');
+    }
     if (this.inputSeq >= MAX_SESSION_MESSAGES) {
       throw new SessionError(`session input cap reached (${MAX_SESSION_MESSAGES})`);
     }
@@ -269,7 +295,7 @@ export class EthernityCloudSession {
     // The input sealed for the session's trustedzone, its CID and digest
     // through the configured storage; _sealArtefact throws when the storage
     // does not take it for the session's network, before any transaction.
-    const { cid, digest } = await this.runner._sealArtefact(String(data), this.network, this.certificate);
+    const { cid, digest } = await this.runner._sealArtefact(String(data), this.network, certificate);
     // The bytes reach the intake before the row that names them, under the
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.

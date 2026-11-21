@@ -34,6 +34,7 @@ import {
   ZERO_CHECKSUM,
   ECAddress,
   ECError,
+  ECNetworkByChainId,
   ECRunner,
   ECPox10TestnetConfig,
   UNSAFE_NETWORK_SUFFIX,
@@ -313,7 +314,9 @@ class EthernityCloudRunner extends EventTarget {
    * the protocol contract against the correct PoX address. No-op for networks
    * that were already unambiguously resolved by token address. The network
    * type setNetwork() named is part of the resolution, so a runner
-   * setNetwork() put on a PoX 1.0 testnet network stays on it.
+   * setNetwork() put on a PoX 1.0 testnet network stays on it. A runner on a
+   * PoX 1.0 testnet network whose wallet is on another chain than the
+   * network's (ECNetworkByChainId) is refused here, with both chain ids.
    */
   async resolveNetworkContext() {
     const provisional = this.networkConfig && this.networkConfig.provisional;
@@ -340,6 +343,15 @@ class EthernityCloudRunner extends EventTarget {
     if (!chainId) {
       if (provisional) throw new Error('Unable to detect chainId to resolve the ECLD testnet.');
       return;
+    }
+    const current = this.networkConfig;
+    if (isPox10Testnet(current)) {
+      const expected = ECNetworkByChainId[current.networkKey][current.networkType];
+      if (chainId !== expected) {
+        throw new Error(
+          `${current.networkKey} ${current.networkType} is on chain ${expected} and the wallet is on chain ${chainId}: ` +
+          `switch the wallet to chain ${expected}`);
+      }
     }
     const cfg = resolveNetworkConfig(this.networkAddress, chainId, this.networkType);
     if (!cfg || cfg.provisional) {
@@ -382,6 +394,7 @@ class EthernityCloudRunner extends EventTarget {
     this.enclaveImageIPFSHash = '';
     this.enclavePublicKey = '';
     this.enclaveDockerComposeIPFSHash = '';
+    this.enclaveDetailsNetwork = null;
     this.imageRegistryContract = null;
     this.status = ECStatus.DEFAULT;
     this.progress = ECEvent.INIT;
@@ -449,7 +462,7 @@ class EthernityCloudRunner extends EventTarget {
     }
     if (!this.shortOfEscrow(balance)) return;
     if (this.v2Terms) {
-      throw new Error(`Insufficient wallet balance (${balance} tokens for an escrow of ${ethers.formatEther(this.v2Terms.escrowWei)})${this.fundingNote(wallet, balance)}`);
+      throw new Error(`Insufficient wallet balance (${balance} tokens for an escrow of ${ethers.formatEther(this.v2Terms.escrowWei)})`);
     }
     throw new Error(`Insufficient wallet balance (${balance}/${requestEscrow(this.resources)})${this.fundingNote(wallet, balance)}`);
   }
@@ -491,11 +504,12 @@ class EthernityCloudRunner extends EventTarget {
   // What an "Insufficient wallet balance" error adds on a network whose
   // descriptor carries faucet: the amount `wallet`, holding `balance` tokens,
   // lacks for the request's escrow, and where the token comes from. Empty on
-  // every other network.
+  // every other network. Such a network takes legacy requests alone
+  // (selectRequestTerms), so the escrow is requestEscrow's.
   fundingNote(wallet, balance) {
     const cfg = this.networkConfig;
     if (!cfg || cfg.faucet === undefined) return '';
-    const escrowWei = this.v2Terms ? this.v2Terms.escrowWei : ethers.parseEther(String(requestEscrow(this.resources)));
+    const escrowWei = ethers.parseEther(String(requestEscrow(this.resources)));
     const lacking = ethers.formatEther(escrowWei - ethers.parseEther(String(balance)));
     return `: ${wallet} lacks ${lacking} ${cfg.tokenName}. ${this.tokenSource()}`;
   }
@@ -513,9 +527,16 @@ class EthernityCloudRunner extends EventTarget {
   // The request terms of this run: the V2 terms of options.v2 (v2TermsOf),
   // or null for a legacy request. V2 terms need a PoX apart from the token
   // (hasSeparateProtocol), the EthernityImplementationV2 whose ABI carries
-  // addDORequestV2; called once the network context is resolved.
+  // addDORequestV2. A PoX 1.0 testnet network takes none: its PoX is a copy
+  // of a mainnet's PoX 1.0, apart from its token or not. Called once the
+  // network context is resolved, before the balance read and any
+  // transaction.
   selectRequestTerms(v2) {
     const terms = v2TermsOf(v2);
+    const cfg = this.networkConfig;
+    if (terms && isPox10Testnet(cfg)) {
+      throw new Error(`options.v2: ${cfg.networkKey} ${cfg.networkType} is a PoX 1.0 network, whose PoX takes no V2 request`);
+    }
     if (terms && !hasSeparateProtocol(this.networkConfig, this.networkAddress)) {
       throw new Error("options.v2: this network's PoX is the token's own proxy and takes no V2 request");
     }
@@ -600,6 +621,9 @@ class EthernityCloudRunner extends EventTarget {
     this.nodeAddress = node;
   }
 
+  // Binds the image registry of the network in effect and reads the enclave
+  // details of `secureLockEnclave` from it (getEnclaveDetails, whose answer
+  // this returns).
   async initializeImageRegistry(secureLockEnclave) {
     this.dispatchECEvent('Checking image registry...');
     this.secureLockEnclave = secureLockEnclave;
@@ -616,7 +640,7 @@ class EthernityCloudRunner extends EventTarget {
       this.walletContext,
       registryAddress
     );
-    await this.getEnclaveDetails();
+    return this.getEnclaveDetails();
   }
 
   async initializeWeb3Connection() {
@@ -795,18 +819,25 @@ class EthernityCloudRunner extends EventTarget {
     return 'etny-pynithy-testnet';
   }
 
+  // The enclave details of the securelock and the trustedzone in effect, read
+  // from the bound image registry: the securelock's image and compose hashes
+  // and the trustedzone's certificate. True when the registry answers them:
+  // the runner holds them from then on, with the network descriptor they
+  // were read on (enclaveDetailsNetwork). False when it does not: the details
+  // the runner holds stay as they are.
   async getEnclaveDetails() {
     const details = await this.imageRegistryContract.getEnclaveDetailsV3(
       this.secureLockEnclave,
       VERSION,
       this.resolveTrustedZoneImage()
     );
-    if (details) {
-      [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
-      this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
-      this.dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.enclavePublicKey}`, ECLog.DEBUG);
-      this.dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.enclaveDockerComposeIPFSHash}`, ECLog.DEBUG);
-    }
+    if (!details) return false;
+    [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
+    this.enclaveDetailsNetwork = this.networkConfig;
+    this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
+    this.dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.enclavePublicKey}`, ECLog.DEBUG);
+    this.dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.enclaveDockerComposeIPFSHash}`, ECLog.DEBUG);
+    return true;
   }
 
   // On a network whose descriptor carries faucet (the PoX 1.0 testnet
@@ -1680,15 +1711,38 @@ class EthernityCloudRunner extends EventTarget {
     }
 
     // Miss / stale / forced: run one state-fetch task, cache from its envelope.
-    // The task is submitted as run() submits one: in this runner's turn
-    // (_takeTurn), on the resolved network, with the configured storage or the
-    // default.
+    // The task is submitted in this runner's turn (_takeTurn) and prepared on
+    // the network in effect as run() prepares one (_runExclusive), with the
+    // securelock, the node and the trustedzone of the runner's last request:
+    // the trustedzone is judged for the network, the wallet's balance, the
+    // PoX and the node are checked on it, the enclave details are read from
+    // its image registry and the allowance is raised for its PoX, so the
+    // request holds nothing of a network the runner was on before a
+    // setNetwork(). A runner that has made no request holds no securelock,
+    // and an image registry that does not answer the securelock's details
+    // leaves the runner with those of an earlier request: both end the read
+    // here, before the allowance step and any transaction.
     const code = readCode || `esrFetch('${key}')`;
     const endTurn = await this._takeTurn();
     let structured;
     try {
+      if (!this.secureLockEnclave) {
+        throw new Error("esrRead: the runner holds no securelock; its task runs the securelock of the runner's last request, so run a task first");
+      }
       await this.resolveNetworkContext();
       this.initializeDefaultStorage();
+      this.selectTrustedZone(this.runTrustedZoneImage);
+      await this.checkWalletBalance();
+      await this.verifyProtocol();
+      await this.verifyNodeAddress(this.requestedNodeAddress);
+      if (!await this.initializeImageRegistry(this.secureLockEnclave)) {
+        const cfg = this.networkConfig;
+        throw new Error(
+          `esrRead: the image registry of ${cfg.networkKey} ${networkTypeOf(cfg)} did not answer the enclave details of ` +
+          `${this.secureLockEnclave} with the trustedzone ${this.resolveTrustedZoneImage()}`);
+      }
+      await this.initializeWeb3Connection();
+      await this.checkAllowance();
       await this.processTask(code);
       structured = this.getStructuredResult();
     } finally {
@@ -1895,8 +1949,11 @@ class EthernityCloudRunner extends EventTarget {
   // `certificate` the trustedzone certificate it is sealed for: this runner's,
   // or the ones a session was opened with; an artefact the storage in effect
   // does not take for that network (storageRefusal) is refused here, before
-  // it is sealed and before any transaction names it. A runner without a
-  // network descriptor (LOCAL mode) has no network to judge the storage for.
+  // it is sealed and before any transaction names it. Through the intake the
+  // artefact is queued for the route of that network (its agentNetwork),
+  // whichever network the intake was set for. A runner without a network
+  // descriptor (LOCAL mode) has no network to judge the storage for, and its
+  // artefact goes under the intake's own route.
   async _sealArtefact(plaintext, cfg = this.networkConfig, certificate = this.enclavePublicKey) {
     const refusal = cfg ? this.storageRefusal(cfg) : null;
     if (refusal) throw new Error(refusal);
@@ -1914,7 +1971,7 @@ class EthernityCloudRunner extends EventTarget {
     }
     const ciphertext = await encryptWithCertificate(String(plaintext), certificate);
     try {
-      return await ipfsClient.uploadArtefact(ciphertext, key);
+      return await ipfsClient.uploadArtefact(ciphertext, key, cfg ? cfg.agentNetwork : undefined);
     } catch (e) {
       if (e instanceof ipfsClient.StorageLimitError) this.dispatchECEvent(e.message, 2);
       throw e;
@@ -1935,10 +1992,13 @@ class EthernityCloudRunner extends EventTarget {
     return outcome;
   }
 
-  // Upload through the bootnode's payload intake and read through its public
-  // API: artefact CIDs are computed locally and the bytes are delivered once
-  // the DO request is on chain. Routed by the network descriptor's
-  // agentNetwork, which only the networks the intake serves carry.
+  // Upload through the bootnode's payload intake at `baseUrl` and read through
+  // its public API: artefact CIDs are computed locally and the bytes are
+  // delivered once the DO request is on chain. The intake becomes the storage
+  // of the process, and every run on a network with a route (a descriptor
+  // with agentNetwork, which only the networks the intake serves carry)
+  // delivers through it under its own network's route (_sealArtefact). Taken
+  // on such a network alone.
   initializePublicIntake(baseUrl = ipfsClient.PUBLIC_INTAKE) {
     const network = this.networkConfig && this.networkConfig.agentNetwork;
     if (!network) {
@@ -1947,16 +2007,17 @@ class EthernityCloudRunner extends EventTarget {
     ipfsClient.initializeIntake(network, baseUrl);
   }
 
-  // The storage a run uses when the application configured none before run():
-  // the bootnode's payload intake, routed by the network descriptor's agent
-  // network name, which only the networks the intake serves carry (enums.js
-  // ECNetworkConfig). On every other network the run is refused here, before
-  // any transaction, until the storage is configured: the application's own
-  // Kubo RPC API, or the public API with its writer token (its add is closed
-  // without one); an intake another network set does not serve it
-  // (storageRefusal). An initializeStorage() or initializePublicIntake() call
-  // before run() takes precedence. Called once the network context is
-  // resolved, which the intake's network name needs.
+  // The storage a run uses when none is set in the process: the bootnode's
+  // public payload intake, which serves the networks whose descriptor carries
+  // an agent network name (enums.js ECNetworkConfig). On every other network
+  // the run is refused here, before any transaction, until the storage is
+  // configured: the application's own Kubo RPC API, or the public API with
+  // its writer token (its add is closed without one); an intake does not
+  // serve it (storageRefusal). A storage that is set, by an
+  // initializeStorage() or initializePublicIntake() call or by an earlier run
+  // of any runner, stays: an IPFS API is used as it was set, and through an
+  // intake each run delivers under the route of its own network. Called once
+  // the network context is resolved, which the network's route needs.
   initializeDefaultStorage() {
     const refusal = this.storageRefusal();
     if (refusal) throw new Error(refusal);
@@ -1967,20 +2028,20 @@ class EthernityCloudRunner extends EventTarget {
   // Why the storage in effect takes no artefact of the network `cfg` (this
   // runner's when not given), or null when it takes them. The storage is the
   // process's (ipfs.js), whichever runner set it: an IPFS API of the
-  // application's own serves every network; the bootnode's intake delivers
-  // under the route of the network it was set for, so a network without a
-  // route (a descriptor without agentNetwork) is served by an IPFS API alone,
-  // not by an intake and not while no storage is set. Judged at the start of
-  // every run (initializeDefaultStorage) and for every artefact
-  // (_sealArtefact).
+  // application's own serves every network; the bootnode's intake takes an
+  // artefact under the route of the network whose request names it, so a
+  // network with a route (a descriptor with agentNetwork) is served by any
+  // storage, and a network without one by an IPFS API alone, not by an
+  // intake and not while no storage is set. Judged at the start of every run
+  // (initializeDefaultStorage) and for every artefact (_sealArtefact).
   storageRefusal(cfg = this.networkConfig) {
     if (cfg && cfg.agentNetwork) return null;
-    const intake = ipfsClient.intakeNetwork();
-    if (ipfsClient.isInitialized() && intake === null) return null;
+    const intake = ipfsClient.intakeNetwork() !== null;
+    if (ipfsClient.isInitialized() && !intake) return null;
     const network = cfg && cfg.networkKey
       ? `${cfg.networkKey} ${networkTypeOf(cfg)}`
       : 'This network';
-    const inEffect = intake === null ? '' : `, and the storage in effect is the intake route of ${intake}`;
+    const inEffect = intake ? ', and the storage in effect is the payload intake' : '';
     return `${network} has no payload intake route${inEffect}: configure the storage before submitting a task, with ` +
       "initializeStorage('http://127.0.0.1:5001') for your own Kubo RPC API, or " +
       `initializeStorage('${ipfsClient.PUBLIC_INTAKE}', undefined, undefined, token) for the public API ` +
@@ -2035,20 +2096,25 @@ class EthernityCloudRunner extends EventTarget {
   // the call. With one, it takes its turn in the queue (_takeTurn): the
   // operations called before it run to their end on the network they started
   // on, the ones called after it run on the network it names, and the promise
-  // resolves, or rejects with the refusal, when its turn has come. A session
-  // handle keeps the PoX it was opened on (EthernityCloudSession).
+  // resolves, or rejects with the refusal, when its turn has come. Its turn
+  // ends whatever it does: when the dispatch of its event throws, the promise
+  // rejects with that error, the name is not applied, and the turn is ended
+  // when it comes. A session handle keeps the PoX it was opened on
+  // (EthernityCloudSession).
   async setNetwork(network, type) {
     if (!this._turns) {
       this._applyNetwork(network, type);
       return;
     }
     const turn = this._takeTurn();
-    this.dispatchECEvent(`setNetwork(${network}, ${type}) takes effect once the operations in flight on this runner have ended.`);
-    const endTurn = await turn;
+    let endTurn = null;
     try {
+      this.dispatchECEvent(`setNetwork(${network}, ${type}) takes effect once the operations in flight on this runner have ended.`);
+      endTurn = await turn;
       this._applyNetwork(network, type);
     } finally {
-      endTurn();
+      if (endTurn) endTurn();
+      else turn.then((end) => end());
     }
   }
 
@@ -2143,20 +2209,28 @@ class EthernityCloudRunner extends EventTarget {
     // one queue of operations (_takeTurn): a setNetwork() called while this
     // run is queued or in flight applies after it, so the run uses the
     // network selected when it was called from its first step to its last.
+    // The turn ends whatever the run does: when the dispatch of the queued
+    // event throws, the run rejects with that error and its turn is ended
+    // when it comes.
     const turn = this._takeTurn();
-    if (this._runInFlight) {
-      this.dispatchECEvent('Another task is in flight on this runner -- queued; it will get its own order when the current one finishes.');
-    }
-    const endTurn = await turn;
-    this._runInFlight = true;
+    let endTurn = null;
     try {
+      if (this._runInFlight) {
+        this.dispatchECEvent('Another task is in flight on this runner -- queued; it will get its own order when the current one finishes.');
+      }
+      endTurn = await turn;
+      this._runInFlight = true;
       this.inputData = inputData;
       this.lastError = null;
       return await this._runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options);
     } finally {
-      this.v2Terms = null;
-      this._runInFlight = false;
-      endTurn();
+      if (endTurn) {
+        this.v2Terms = null;
+        this._runInFlight = false;
+        endTurn();
+      } else {
+        turn.then((end) => end());
+      }
     }
   }
 

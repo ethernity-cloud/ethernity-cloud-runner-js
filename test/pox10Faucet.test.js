@@ -209,18 +209,22 @@ test('the Amoy PoX 1.0 network: a read after the draw that still answers the old
   assert.equal(unchanged.sent.length, 1);
 });
 
-test('the Amoy PoX 1.0 network: a V2 request\'s escrow is judged in wei, before and after the draw', async () => {
-  const terms = { maxPricePerCuHourWei: 1n, maxGflops: 0n, relaysPerHour: 1n, gasLevel: 1n };
-  const covered = await amoyPox10(['0.5', '1000.5']);
-  covered.runner.selectRequestTerms({ ...terms, escrowWei: ethers.parseEther('0.75') });
-  await covered.runner.checkWalletBalance();
-  assert.equal(covered.sent.length, 1);
-  const short = await amoyPox10(['150']);
-  short.runner.selectRequestTerms({ ...terms, escrowWei: ethers.parseEther('150.25') });
-  await assert.rejects(short.runner.checkWalletBalance(), {
-    message: `Insufficient wallet balance (150.0 tokens for an escrow of 150.25): ${WALLET} lacks 0.25 tECLD. The tECLD faucet mints 1000 tECLD to a wallet holding less than 100, and to no other.`
+test('the PoX 1.0 networks take no V2 request: its terms are refused, and no balance is read and no faucet drawn for them', async () => {
+  const terms = { maxPricePerCuHourWei: 1n, maxGflops: 0n, relaysPerHour: 1n, gasLevel: 1n, escrowWei: ethers.parseEther('0.75') };
+  const amoy = await amoyPox10([0, 1000]);
+  assert.throws(() => amoy.runner.selectRequestTerms(terms), {
+    message: 'options.v2: POLYGON AMOY_POX10 is a PoX 1.0 network, whose PoX takes no V2 request'
   });
-  assert.deepEqual(short.sent, []);
+  await assert.rejects(amoy.runner.run({ taskPrice: 3, validators: 1, duration: 1 }, 'a-securelock', 'code', '', null, { v2: terms }), {
+    message: 'options.v2: POLYGON AMOY_POX10 is a PoX 1.0 network, whose PoX takes no V2 request'
+  });
+  assert.equal(amoy.read.calls, 0);
+  assert.deepEqual(amoy.sent, []);
+  const bloxberg = await runnerOn(BLOXBERG_POX10, 8995, [0]);
+  assert.throws(() => bloxberg.runner.selectRequestTerms(terms), {
+    message: 'options.v2: BLOXBERG TESTNET_POX10 is a PoX 1.0 network, whose PoX takes no V2 request'
+  });
+  assert.equal(bloxberg.read.calls, 0);
 });
 
 test('the Amoy PoX 1.0 network: no faucet is drawn on a balance read that failed', async () => {

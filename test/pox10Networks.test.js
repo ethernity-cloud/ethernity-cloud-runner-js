@@ -38,6 +38,9 @@ const AMOY_POX20_REGISTRY = '0x0C0f52ebd72cd2d2cBe94F385c9e23cec528b706';
 const AMOY_POX10 = '0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02';
 const AMOY_POX10_REGISTRY = '0xa2EE2a9118d0011AF05a6196c862D37d8c29F8eC';
 
+// The V2 terms of a request (runner.v2TermsOf).
+const V2_TERMS = { maxPricePerCuHourWei: 1n, maxGflops: 0n, relaysPerHour: 1n, gasLevel: 1n, escrowWei: 1n };
+
 // A provider that answers the chain id and nothing else.
 const providerOn = (chainId) => ({ getNetwork: async () => ({ chainId: BigInt(chainId) }) });
 
@@ -181,8 +184,8 @@ test('a runner on the bloxberg PoX 1.0 token is built as a bloxberg mainnet runn
   runner.tokenContract.checkAndSetAllowance = async () => assert.fail('approved');
   await runner.checkAllowance();
   // The PoX takes no V2 request.
-  assert.throws(() => runner.selectRequestTerms({ maxPricePerCuHourWei: 1n, maxGflops: 0n, relaysPerHour: 1n, gasLevel: 1n, escrowWei: 1n }),
-    { message: "options.v2: this network's PoX is the token's own proxy and takes no V2 request" });
+  assert.throws(() => runner.selectRequestTerms(V2_TERMS),
+    { message: 'options.v2: BLOXBERG TESTNET_POX10 is a PoX 1.0 network, whose PoX takes no V2 request' });
   // A result is this order's when it is addressed to the copy's PoX on chain 8995.
   runner.orderId = 7;
   assert.equal(await runner.resultBindingError({ orderId: 7n, to: BLOXBERG_POX10, chainId: 8995n }), null);
@@ -264,6 +267,76 @@ test('setNetwork(POLYGON, AMOY_POX10) puts the Amoy runner on the PoX 1.0 networ
   assert.equal(await runner.resultBindingError({ orderId: 7n, to: AMOY_POX10, chainId: 80002n }), null);
   assert.match(await runner.resultBindingError({ orderId: 7n, to: AMOY_POX20, chainId: 80002n }),
     /addressed to 0xd1182deA61CDa785C320cdBE5888EaC4178cAAF2, not 0x9Aad82557c84c11C4031382d8Bf2cacF8f256a02/);
+});
+
+test('a PoX 1.0 testnet network takes no V2 request: options.v2 ends the run before any request reaches the chain', async () => {
+  const resources = { taskPrice: 3, duration: 1, validators: 1 };
+  const refusals = [
+    [await amoyPox10(), 'options.v2: POLYGON AMOY_POX10 is a PoX 1.0 network, whose PoX takes no V2 request'],
+    [await runnerOn(BLOXBERG_POX10, 8995), 'options.v2: BLOXBERG TESTNET_POX10 is a PoX 1.0 network, whose PoX takes no V2 request']
+  ];
+  for (const [runner, message] of refusals) {
+    assert.throws(() => runner.selectRequestTerms(V2_TERMS), { message });
+    // The provider of these runners answers the chain id alone: a balance
+    // read, an allowance read or a transaction would fail with another error.
+    await assert.rejects(runner.run(resources, 'a-securelock', 'code', '', null, { v2: V2_TERMS }), { message });
+    await assert.rejects(runner.runSession(resources, 'a-securelock', 'code', '', null, { v2: V2_TERMS }), { message });
+    assert.equal(runner.v2Terms, null);
+  }
+  // The Amoy runner named back onto the PoX 2.0 network takes V2 terms, and
+  // a Polygon mainnet runner is judged as published, by its PoX being apart
+  // from its token.
+  const amoy = await amoyPox10();
+  await amoy.setNetwork('POLYGON', 'TESTNET');
+  amoy.selectRequestTerms(V2_TERMS);
+  assert.deepEqual(amoy.v2Terms, V2_TERMS);
+  const mainnet = await runnerOn(ECAddress.POLYGON.MAINNET_ADDRESS, 137);
+  mainnet.selectRequestTerms(V2_TERMS);
+  assert.deepEqual(mainnet.v2Terms, V2_TERMS);
+});
+
+test('a PoX 1.0 testnet network is on one chain: on a wallet of another chain the network resolution of a run is refused with both chain ids', async () => {
+  const walletOn = (address, chainId) => {
+    const runner = new EthernityCloudRunner(address, { provider: providerOn(chainId) });
+    runner.dispatchECEvent = () => {};
+    return runner;
+  };
+  const resources = { taskPrice: 3, duration: 1, validators: 1 };
+  // The bloxberg copy's token on a wallet of Amoy, of Polygon mainnet and of
+  // Sepolia, a chain whose id alone names a descriptor.
+  for (const chainId of [80002, 137, 11155111]) {
+    const runner = walletOn(BLOXBERG_POX10, chainId);
+    const message = `BLOXBERG TESTNET_POX10 is on chain 8995 and the wallet is on chain ${chainId}: switch the wallet to chain 8995`;
+    await assert.rejects(runner.resolveNetworkContext(), { message });
+    await assert.rejects(runner.run(resources, 'a-securelock', 'code'), { message });
+    assert.equal(runner.networkConfig, ECPox10TestnetConfig.BLOXBERG);
+    assert.equal(runner.protocolContract.getContract().target, BLOXBERG_POX10);
+  }
+  // The Amoy token named onto the PoX 1.0 network on a wallet of Polygon
+  // mainnet, of bloxberg and of LitVM.
+  for (const chainId of [137, 8995, 4441]) {
+    const runner = walletOn(AMOY_TOKEN, chainId);
+    await runner.setNetwork('POLYGON', 'AMOY_POX10');
+    const message = `POLYGON AMOY_POX10 is on chain 80002 and the wallet is on chain ${chainId}: switch the wallet to chain 80002`;
+    await assert.rejects(runner.resolveNetworkContext(), { message });
+    await assert.rejects(runner.run(resources, 'a-securelock', 'code'), { message });
+    await assert.rejects(runner.attachSession(1), { message });
+    assert.equal(runner.networkConfig, ECPox10TestnetConfig.POLYGON);
+    assert.equal(runner.protocolContract.getContract().target, AMOY_POX10);
+  }
+  // On the network's chain the resolution keeps the runner on it.
+  const bloxberg = walletOn(BLOXBERG_POX10, 8995);
+  await bloxberg.resolveNetworkContext();
+  assert.equal(bloxberg.networkConfig, ECPox10TestnetConfig.BLOXBERG);
+  const amoy = walletOn(AMOY_TOKEN, 80002);
+  await amoy.setNetwork('POLYGON', 'AMOY_POX10');
+  await amoy.resolveNetworkContext();
+  assert.equal(amoy.networkConfig, ECPox10TestnetConfig.POLYGON);
+  // A published network is resolved as published: the Amoy token on a wallet
+  // of Polygon mainnet stays the Amoy testnet's descriptor, with no refusal.
+  const published = walletOn(AMOY_TOKEN, 137);
+  await published.resolveNetworkContext();
+  assert.equal(published.networkConfig, ECNetworkConfig[AMOY_TOKEN]);
 });
 
 test('the named PoX 1.0 network is kept by the network resolution of a run, and the names of the PoX 2.0 network put the runner back on it', async () => {

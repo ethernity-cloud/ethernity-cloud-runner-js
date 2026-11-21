@@ -9,12 +9,27 @@ let ipfs = null;
 // The bootnode's payload intake, when the application configured no IPFS API
 // of its own: artefact CIDs are computed here and the bytes are delivered to
 // POST {intake}/payload/<network>/<doRequestId>/<cid> once the DO request is
-// on chain (mvp-pox-node ipfs_intake.py). Reads go to {intake}/api/v0.
+// on chain (mvp-pox-node ipfs_intake.py). Reads go to {intake}/api/v0. The
+// intake is the process's: { baseUrl, network, maxBytes }, `network` being the
+// route of a blob queued without one.
 let intake = null;
-// cid -> Uint8Array awaiting delivery to the intake. The queue is shared by
-// every runner instance of the process; flushPending delivers only the CIDs
-// its caller names, so one request's blobs never go out under another's id.
+// cid -> { bytes, network }: a blob awaiting delivery to the intake and the
+// route it goes under, the network segment of its POST. The intake takes a
+// blob only under the route of the network whose DO request names it, so the
+// route is fixed when the blob is queued, from the network of the run that
+// queues it (uploadArtefact), and not read from the intake when it is
+// delivered: runners on several networks share one intake. The queue is
+// shared by every runner instance of the process; flushPending delivers only
+// the CIDs its caller names, so one request's blobs never go out under
+// another's id.
 const pending = new Map();
+
+// Queue `bytes` under `cid` for the intake's route `network` (the intake's
+// own when none is given); returns the CID.
+const queueForIntake = (cid, bytes, network) => {
+  pending.set(cid, { bytes, network: network || intake.network });
+  return cid;
+};
 
 export const PUBLIC_INTAKE = 'https://ipfs.ethernity.cloud';
 
@@ -117,11 +132,16 @@ export const releaseHeld = async (cids) => {
 // The CID and the digest (sha256, hex) of the artefact `content` through the
 // configured storage, held under the artefact `key` with StorageLimitError
 // when the intake does not take it (runner._sealArtefact finds it there).
-export const uploadArtefact = async (content, key) => {
+// Through the intake the artefact is queued for the route `network`, the
+// agent name of the network whose DO request names it (the intake's own when
+// none is given).
+export const uploadArtefact = async (content, key, network) => {
   const bytes = toBytes(content);
   const digest = sha256Hex(bytes);
-  if (intake && bytes.length > intake.maxBytes) await holdAndRefuse(key, unixfsCid(bytes), bytes);
-  return { cid: await uploadToIPFS(bytes), digest };
+  if (!intake) return { cid: await uploadToIPFS(bytes), digest };
+  const cid = unixfsCid(bytes);
+  if (bytes.length > intake.maxBytes) await holdAndRefuse(key, cid, bytes);
+  return { cid: queueForIntake(cid, bytes, network), digest };
 };
 
 // Whether a storage endpoint is configured (initialize or initializeIntake).
@@ -141,9 +161,9 @@ export const initialize = (host, protocol, port, token) => {
   }
 };
 
-// `network` is the name the node agent uses (`bloxberg_testnet`, ...);
-// `maxBytes` is what this intake takes per blob (INTAKE_MAX_BYTES for the
-// public one).
+// `network` is the name the node agent uses (`bloxberg_testnet`, ...), the
+// route of the blobs queued without one (uploadToIPFS); `maxBytes` is what
+// this intake takes per blob (INTAKE_MAX_BYTES for the public one).
 export const initializeIntake = (network, baseUrl = PUBLIC_INTAKE, maxBytes = INTAKE_MAX_BYTES) => {
   ipfs = null;
   intake = { baseUrl: baseUrl.replace(/\/+$/, ''), network, maxBytes };
@@ -271,8 +291,7 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
     const bytes = toBytes(code);
     const cid = unixfsCid(bytes);
     if (bytes.length > intake.maxBytes) await holdAndRefuse(cid, cid, bytes);
-    pending.set(cid, bytes);
-    return cid;
+    return queueForIntake(cid, bytes);
   }
   let last = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -300,12 +319,13 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
   throw new Error(`uploadToIPFS: upload failed after ${attempts} attempts: ${last?.message || last}`);
 };
 
-// Deliver the queued blobs `cids` names to the intake for `doRequest`: the
-// artefacts that request carries, which its caller uploaded. A blob the intake
-// confirms (200) leaves the queue; one it refuses (4xx other than 409) throws
-// at once, since retrying the same bytes cannot change the answer; a network
-// failure or 5xx is retried. A CID with no queued blob throws: nothing was
-// uploaded through the intake under it. No-op without an intake.
+// Deliver the queued blobs `cids` names to the intake for `doRequest`, each
+// under the route it was queued for: the artefacts that request carries,
+// which its caller uploaded. A blob the intake confirms (200) leaves the
+// queue; one it refuses (4xx other than 409) throws at once, since retrying
+// the same bytes cannot change the answer; a network failure or 5xx is
+// retried. A CID with no queued blob throws: nothing was uploaded through the
+// intake under it. No-op without an intake.
 // The intake answers 403 with this text while its own RPC replica has not yet
 // seen the row that names the cid; the row is on chain (its receipt came
 // back before the delivery), so the answer changes within seconds.
@@ -321,15 +341,17 @@ export const INTAKE_NOT_NAMED_ATTEMPTS = 12;
 // ipfs_intake.py).
 export const OWNER_SIGNATURE_HEADER = 'X-Etny-Owner-Signature';
 export const ownerSignatureMessage = (network, doRequest) => `etny-intake|${network}|${doRequest}`;
-// The network the intake is configured for, null without an intake.
+// The network the intake was set for, the route of a blob queued without
+// one; null without an intake.
 export const intakeNetwork = () => (intake ? intake.network : null);
 // The text of the 403 an intake without the signed path answers a lodged blob
 // with: its row path still delivers the blob, after the row.
 export const INTAKE_UNSIGNED_PATH = INTAKE_NOT_NAMED;
 
 // Deliver the queued blobs `cids` names to the intake for `doRequest` under
-// the owner's `signature`, before the request names them, each tried
-// `attempts` times `delayMs` apart through connection failures and 5xx.
+// the owner's `signature`, before the request names them, each under the
+// route it was queued for and tried `attempts` times `delayMs` apart through
+// connection failures and 5xx.
 // Returns the CIDs the intake took (`delivered`), which leave the queue, and
 // the answer for each it did not take (`refused`, cid -> text), which stays
 // queued for flushPending after the row. Never throws for an intake answer.
@@ -339,9 +361,10 @@ export const deliverSigned = async (doRequest, cids, signature, attempts = 3, de
   const refused = {};
   if (!intake) return { delivered, refused };
   for (const cid of cids) {
-    const bytes = pending.get(cid);
-    if (!bytes) continue;
-    const url = `${intake.baseUrl}/payload/${intake.network}/${doRequest}/${cid}`;
+    const queued = pending.get(cid);
+    if (!queued) continue;
+    const { bytes, network } = queued;
+    const url = `${intake.baseUrl}/payload/${network}/${doRequest}/${cid}`;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -372,11 +395,12 @@ export const deliverSigned = async (doRequest, cids, signature, attempts = 3, de
 export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000) => {
   if (!intake) return;
   for (const cid of cids) {
-    const bytes = pending.get(cid);
-    if (!bytes) {
+    const queued = pending.get(cid);
+    if (!queued) {
       throw new Error(`flushPending: ${cid} was not uploaded through the intake`);
     }
-    const url = `${intake.baseUrl}/payload/${intake.network}/${doRequest}/${cid}`;
+    const { bytes, network } = queued;
+    const url = `${intake.baseUrl}/payload/${network}/${doRequest}/${cid}`;
     let last = '';
     let delivered = false;
     let allowed = attempts;

@@ -92,6 +92,51 @@ test('an attestation for another order is ignored', async () => {
   assert.deepEqual(await session.pollOutputs(), []);
 });
 
+test('the attestation is verified with the certificate the handle was made with, whatever certificate the runner holds afterwards', async () => {
+  const { kp, pem } = certificate();
+  const later = certificate();
+  const task = ethers.Wallet.createRandom();
+  // Signed with the key of the handle's certificate: accepted while the
+  // runner holds another one.
+  const session = sessionWith([['etny-sw', attestation(kp, task.address)], ['etny-so', await noticeRow(task, 0)]], pem);
+  session.runner.enclavePublicKey = later.pem;
+  assert.deepEqual((await session.pollOutputs()).map((m) => m.seq), [0]);
+  assert.equal(session._taskWallet(), task.address);
+  // Signed with the key of the certificate the runner holds afterwards: ignored.
+  const other = sessionWith([['etny-sw', attestation(later.kp, task.address)], ['etny-so', await noticeRow(task, 0)]], pem);
+  other.runner.enclavePublicKey = later.pem;
+  assert.deepEqual(await other.pollOutputs(), []);
+  assert.equal(other._taskWallet(), null);
+});
+
+test('a handle made while the runner holds no certificate verifies with the one the runner reads on the session\'s network, and with no other network\'s', async () => {
+  const { kp, pem } = certificate();
+  const task = ethers.Wallet.createRandom();
+  const rows = [['etny-sw', attestation(kp, task.address)], ['etny-so', await noticeRow(task, 0)]];
+  const network = { networkKey: 'POLYGON' };
+  const made = () => {
+    const session = sessionWith(rows, '');
+    session.network = network;
+    return session;
+  };
+  // No certificate: the attestation cannot be verified.
+  const without = made();
+  assert.deepEqual(await without.pollOutputs(), []);
+  assert.equal(without.certificate, '');
+  // The runner holds a certificate it read on another network: not taken.
+  const elsewhere = made();
+  elsewhere.runner.enclavePublicKey = pem;
+  elsewhere.runner.enclaveDetailsNetwork = { networkKey: 'POLYGON' };
+  assert.deepEqual(await elsewhere.pollOutputs(), []);
+  assert.equal(elsewhere.certificate, '');
+  // The runner holds the certificate it read on the session's network: taken.
+  const here = made();
+  here.runner.enclavePublicKey = pem;
+  here.runner.enclaveDetailsNetwork = network;
+  assert.deepEqual((await here.pollOutputs()).map((m) => m.seq), [0]);
+  assert.equal(here.certificate, pem);
+});
+
 test('an output not signed by the attested wallet is discarded', async () => {
   const { kp, pem } = certificate();
   const task = ethers.Wallet.createRandom();

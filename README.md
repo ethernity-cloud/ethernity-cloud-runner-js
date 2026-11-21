@@ -88,8 +88,9 @@ const executeTask = async () => {
     //   new EthernityCloudRunner(ECAddress.POLYGON.TESTNET_ADDRESS);
     const runner = new EthernityCloudRunner();
     // On the Bloxberg testnet the task's artefacts are delivered through the
-    // bootnode's payload intake: no storage call is needed. Every other network
-    // needs your own Kubo RPC API, which also replaces the intake here:
+    // bootnode's payload intake: no storage call is needed. A network the
+    // intake does not serve (see "Storage and the result read") needs your
+    // own Kubo RPC API, which also replaces the intake here:
     //   runner.initializeStorage('http://127.0.0.1:5001');
 
     // Events are dispatched named by task status (the ECStatus values).
@@ -230,9 +231,9 @@ The Bloxberg testnet and Polygon Amoy each have a PoX 1.0 network beside the tes
 
 These two addresses are the only ones a runner on a PoX 1.0 network is constructed with. `ECAddress.POLYGON` holds no token address for Amoy's PoX 1.0 network: `ECAddress.POLYGON.AMOY_POX10_PROTOCOL_ADDRESS` is its PoX, which the runner selects itself, and `('POLYGON', 'TESTNET_POX10')` is not a name `setNetwork()` takes. The constructor takes an address that is `undefined`, such as an `ECAddress` entry that does not exist, as no argument: the runner is then on the Bloxberg testnet.
 
-`setNetwork('BLOXBERG', 'TESTNET_POX10')` is taken on a runner constructed with `ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS` and changes nothing there. Neither PoX 1.0 network has an intake route: a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()`. The storage is shared by every runner of the process (the page, the Node process), and the intake a run on the table's testnet takes by default does not serve the PoX 1.0 network: a run there is refused before any transaction until `initializeStorage()` sets an IPFS API, which serves both.
+`setNetwork('BLOXBERG', 'TESTNET_POX10')` is taken on a runner constructed with `ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS` and changes nothing there. Neither PoX 1.0 network has an intake route: a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()`. The storage is shared by every runner of the process (the page, the Node process), and the intake a run on the table's testnet takes by default does not serve the PoX 1.0 network: a run there is refused before any transaction until `initializeStorage()` sets an IPFS API, which serves both. A PoX 1.0 network takes legacy requests alone: a run with `options.v2` is refused before any transaction. Each is on one chain (8995, 80002): a run from a wallet on another chain is refused with both chain ids.
 
-A runner has one queue of operations. `setNetwork()` called while a run, a session start, an attach or the task of `esrRead()` is queued or in flight on the runner takes its turn in that queue: the operations called before it run to their end on the network they started on, the ones called after it run on the network it names, and its promise resolves, or rejects with the refusal, when its turn has come. With nothing queued or in flight it applies in the call. A session handle keeps the network it was opened on, its PoX and its trustedzone's certificate, whatever network the runner is named onto afterwards.
+A runner has one queue of operations. `setNetwork()` called while a run, a session start, an attach or the task of `esrRead()` is queued or in flight on the runner takes its turn in that queue: the operations called before it run to their end on the network they started on, the ones called after it run on the network it names, and its promise resolves, or rejects with the refusal, when its turn has come. With nothing queued or in flight it applies in the call. The task of `esrRead()` is prepared on the network in effect as a run is, with the securelock, the node and the trustedzone of the runner's last request: the trustedzone is judged for that network, the enclave details are read from its image registry and the allowance is raised for its PoX, and the read ends before any transaction when the runner has made no request or the registry does not answer the securelock. A session handle keeps the network it was opened on, its PoX and its trustedzone's certificate, whatever network the runner is named onto afterwards; a handle attached without the securelock while the runner holds no certificate sends no input until the runner has read one on the session's network, by a run there or by `attachSession(orderId, secureLockEnclave)`.
 
 ```javascript
 import { ECAddress, ECRunner } from "@ethernity-cloud/runner/enums";
@@ -271,9 +272,11 @@ The second constructor argument chooses the wallet: `{ privateKey, rpcUrl }` sig
 
 ### Storage and the result read
 
-A task's artefacts (the encrypted challenge and code, and a session's inputs) are delivered through the bootnode's payload intake by default: the runner computes their CIDs locally and, once the DO request is on chain, POSTs the bytes to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>`, which takes no token. The intake serves the networks the bootnode's agent runs, and the runner routes to it the Bloxberg testnet and LitVM LiteForge, each with its -unsafe twin: on every other network (Bloxberg mainnet, Polygon mainnet, Polygon Amoy, IoTeX and Sepolia) `run()` fails before any transaction is sent, until a storage is configured. On the Bloxberg testnet, `runner.initializePublicIntake(baseUrl)` selects the intake explicitly, at another base URL when needed.
+A task's artefacts (the encrypted challenge and code, and a session's inputs) are delivered through the bootnode's payload intake by default: the runner computes their CIDs locally and, once the DO request is on chain, POSTs the bytes to `https://ipfs.ethernity.cloud/payload/<network>/<doRequestId>/<cid>`, which takes no token. The intake serves the networks the bootnode's agent runs, and the runner routes to it the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia, each with its -unsafe twin: on every other network (Bloxberg mainnet, Polygon mainnet, IoTeX and the two PoX 1.0 testnet networks) `run()` fails before any transaction is sent, until `initializeStorage` sets an IPFS API.
 
-`initializeStorage` delivers through an IPFS API of your own instead, as a URL or as host, protocol and port, and takes precedence over the intake:
+The storage is one per process (the page, the Node process), shared by every runner in it. The first run that finds none takes the public intake, which stays the storage from then on. `<network>` in the POST is the route of the run's own network, whichever run or runner set the intake: runners on several routed networks deliver through the one intake, each under its own network's route, also when they run at once, and a session's inputs go under the route of the session's network. `runner.initializePublicIntake(baseUrl)`, taken on a routed network, makes the intake at `baseUrl` the storage of the process: every run on a routed network then delivers to it under its own route.
+
+`initializeStorage` delivers through an IPFS API of your own instead, as a URL or as host, protocol and port. It takes precedence over the intake and serves every network, for every runner of the process:
 
 ```javascript
 // Your own Kubo RPC API.
