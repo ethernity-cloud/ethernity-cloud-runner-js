@@ -92,11 +92,12 @@ export const SESSION_ERROR_CODE_NAMES = {
 
 export class EthernityCloudSession {
   // `trustedZone` is the name of the trustedzone the session's order was
-  // placed with. When it is not given, the handle takes the trustedzone the
-  // runner's enclave details were last read for
-  // (runner.enclaveDetailsTrustedZone) at the first certificate lookup that
-  // finds them read on the handle's network (_runnerCertificate): when it is
-  // made, or later when the runner has read none there by then.
+  // placed with. When it is not given (undefined), the handle takes the
+  // trustedzone of the runner's last enclave details read on the handle's
+  // network (runner.enclaveDetailsTrustedZoneOn) at the first certificate
+  // lookup that finds one (_runnerCertificate): when it is made, or later
+  // when the runner has read none there by then. A trustedzone given as null
+  // is kept: such a handle holds no certificate.
   constructor(runner, orderId, trustedZone) {
     this.runner = runner;
     // The network the session is on: the runner's protocol contract (the PoX
@@ -157,13 +158,15 @@ export class EthernityCloudSession {
       another trustedzone of this one (its -unsafe twin's, the other service
       type's), is not the session's, and the reads the runner made since do
       not change the answer. A handle made without a trustedzone takes here
-      the one the runner's enclave details were last read for, once they
-      were read on the session's network, and keeps it; until then it holds
-      none, and no certificate. */
+      the one of the runner's last enclave details read on the session's
+      network (runner.enclaveDetailsTrustedZoneOn), whatever the runner has
+      read on another network since, and keeps it; while the runner has read
+      none there it holds none, and no certificate. */
   _runnerCertificate() {
     const { runner } = this;
-    if (this.trustedZone === undefined && runner.enclaveDetailsTrustedZone && runner.enclaveDetailsNetwork === this.network) {
-      this.trustedZone = runner.enclaveDetailsTrustedZone;
+    if (this.trustedZone === undefined) {
+      const trustedZone = runner.enclaveDetailsTrustedZoneOn(this.network);
+      if (trustedZone) this.trustedZone = trustedZone;
     }
     return runner.trustedZoneCertificate(this.network, this.trustedZone);
   }

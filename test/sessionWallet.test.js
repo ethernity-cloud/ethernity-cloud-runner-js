@@ -50,9 +50,10 @@ const noticeRow = async (signer, seq, order = ORDER) => {
 
 // A runner as a handle reads it, on NETWORK, whose PoX answers the metadata
 // `rows` of the session's DP request: its PoX contract, its network
-// descriptor, the trustedzone of its last registry read and the certificates
-// it has read, kept and answered as the runner keeps and answers them
-// (trustedZoneCertificates, trustedZoneCertificate).
+// descriptor, the trustedzone of its last registry read on each network and
+// the certificates it has read, kept and answered as the runner keeps and
+// answers them (enclaveDetailsTrustedZones, enclaveDetailsTrustedZoneOn,
+// trustedZoneCertificates, trustedZoneCertificate).
 const runnerOver = (rows) => ({
   protocolContract: {
     getContract: () => ({
@@ -61,7 +62,8 @@ const runnerOver = (rows) => ({
     })
   },
   networkConfig: NETWORK,
-  enclaveDetailsTrustedZone: null,
+  enclaveDetailsTrustedZones: new Map(),
+  enclaveDetailsTrustedZoneOn: EthernityCloudRunner.prototype.enclaveDetailsTrustedZoneOn,
   trustedZoneCertificates: new Map(),
   trustedZoneCertificate: EthernityCloudRunner.prototype.trustedZoneCertificate,
   dispatchECEvent: () => {}
@@ -72,6 +74,7 @@ const runnerOver = (rows) => ({
 const reads = (runner, network, trustedZone, pem) => {
   if (!runner.trustedZoneCertificates.has(network)) runner.trustedZoneCertificates.set(network, new Map());
   runner.trustedZoneCertificates.get(network).set(trustedZone, pem);
+  runner.enclaveDetailsTrustedZones.set(network, trustedZone);
   Object.assign(runner, { enclavePublicKey: pem, enclaveDetailsNetwork: network, enclaveDetailsTrustedZone: trustedZone });
 };
 
@@ -236,15 +239,23 @@ test('a handle made with two arguments is of the trustedzone of the runner\'s la
   assert.equal(waiting._certificate(), pem);
   assert.equal(waiting.trustedZone, ZONE);
 
-  // The runner last read on another network: the handle, on the runner's
-  // network, takes neither the trustedzone nor the certificate of that read.
+  // The runner read on the handle's network, then on another: the handle
+  // takes the trustedzone and the certificate of its own network's read,
+  // nothing of the other's.
   const moved = runnerOver([]);
   reads(moved, NETWORK, ZONE, pem);
   reads(moved, OTHER_NETWORK, OTHER_ZONE, stranger.pem);
   const elsewhere = new EthernityCloudSession(moved, ORDER);
   assert.equal(elsewhere.network, NETWORK);
-  assert.equal(elsewhere.trustedZone, undefined);
-  assert.equal(elsewhere.certificate, '');
+  assert.equal(elsewhere.trustedZone, ZONE);
+  assert.equal(elsewhere.certificate, pem);
+
+  // A runner that read only on another network: the handle holds neither.
+  const away = runnerOver([]);
+  reads(away, OTHER_NETWORK, OTHER_ZONE, stranger.pem);
+  const none = new EthernityCloudSession(away, ORDER);
+  assert.equal(none.trustedZone, undefined);
+  assert.equal(none.certificate, '');
 });
 
 test('an output not signed by the attested wallet is discarded', async () => {

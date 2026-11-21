@@ -51,17 +51,18 @@ const sessionWith = async (rowsOf, served, serveFrom = 1) => {
     _getMetadataValueForDPRequest: async (dpReq, i) => rows[i]
   };
   // The runner as the handle reads it: its PoX contract, its network
-  // descriptor, the network and the trustedzone its enclave details were
-  // last read for and the certificate it read for that trustedzone on that
-  // network, kept and answered as the runner keeps and answers it
-  // (trustedZoneCertificates, trustedZoneCertificate). The handle is made
-  // with two arguments: its trustedzone is the runner's.
+  // descriptor, the trustedzone of its last enclave details read on that
+  // network and the certificate it read for that trustedzone there, kept and
+  // answered as the runner keeps and answers them (enclaveDetailsTrustedZones,
+  // enclaveDetailsTrustedZoneOn, trustedZoneCertificates,
+  // trustedZoneCertificate). The handle is made with two arguments: its
+  // trustedzone is the runner's.
   const network = { networkKey: 'BLOXBERG' };
   const runner = {
     protocolContract: { getContract: () => contract },
     networkConfig: network,
-    enclaveDetailsNetwork: network,
-    enclaveDetailsTrustedZone: 'etny-pynithy-testnet',
+    enclaveDetailsTrustedZones: new Map([[network, 'etny-pynithy-testnet']]),
+    enclaveDetailsTrustedZoneOn: EthernityCloudRunner.prototype.enclaveDetailsTrustedZoneOn,
     trustedZoneCertificates: new Map([[network, new Map([['etny-pynithy-testnet', pem]])]]),
     trustedZoneCertificate: EthernityCloudRunner.prototype.trustedZoneCertificate,
     dispatchECEvent: () => {}

@@ -396,6 +396,10 @@ class EthernityCloudRunner extends EventTarget {
     this.enclaveDockerComposeIPFSHash = '';
     this.enclaveDetailsNetwork = null;
     this.enclaveDetailsTrustedZone = null;
+    this.enclaveDetailsSecureLock = null;
+    // The trustedzone of the runner's last enclave details read on each
+    // network: network descriptor -> trustedzone.
+    this.enclaveDetailsTrustedZones = new Map();
     // The certificate each image registry answered at the runner's last read
     // of a trustedzone: network descriptor -> (trustedzone -> certificate).
     this.trustedZoneCertificates = new Map();
@@ -633,7 +637,7 @@ class EthernityCloudRunner extends EventTarget {
   // details of `secureLockEnclave` from it (getEnclaveDetails, whose answer
   // this returns). A registry that does not answer leaves the runner with
   // the details it holds, which a request of the same network goes on with
-  // when they were read for the trustedzone in effect
+  // when they were read for the trustedzone and the securelock in effect
   // (requestEnclaveDetails, esrRead). Details read on another network
   // descriptor (a runner setNetwork() moved between Polygon Amoy's two
   // networks, a wallet that changed chain on a token several networks
@@ -669,23 +673,47 @@ class EthernityCloudRunner extends EventTarget {
   }
 
   // Whether the enclave details the runner holds were read from the image
-  // registry of the network in effect for the trustedzone in effect.
+  // registry of the network in effect for the trustedzone and the securelock
+  // in effect.
   enclaveDetailsInEffect() {
     return this.enclaveDetailsNetwork === this.networkConfig &&
-      this.enclaveDetailsTrustedZone === this.resolveTrustedZoneImage();
+      this.enclaveDetailsTrustedZone === this.resolveTrustedZoneImage() &&
+      this.enclaveDetailsSecureLock === this.secureLockEnclave;
+  }
+
+  // The refusal of a request whose image registry answered the enclave
+  // details on a network, or for a trustedzone, that is not the one in
+  // effect once the read has ended: a network context resolved while the
+  // registry answered (listSessions takes no turn, and a wallet that changed
+  // chain resolves to that chain's network) puts the runner on another
+  // network, whose PoX the request would go to. `operation` is the name
+  // the message starts with ('esrRead'), none for a run or a session start.
+  enclaveDetailsReadElsewhere(operation = '') {
+    const held = this.enclaveDetailsNetwork;
+    const cfg = this.networkConfig;
+    const sentence = `image registry of ${held.networkKey} ${networkTypeOf(held)} answered the enclave details of ${this.enclaveDetailsSecureLock} ` +
+      `with the trustedzone ${this.enclaveDetailsTrustedZone}, and the network in effect is now ${cfg.networkKey} ${networkTypeOf(cfg)} ` +
+      `with the trustedzone ${this.resolveTrustedZoneImage()}: no request is made with the enclave details of another network`;
+    return operation ? `${operation}: the ${sentence}` : `The ${sentence}`;
   }
 
   // The enclave details the request of a run or a session start is made
-  // with: the ones the image registry of the network in effect answers
-  // (initializeImageRegistry, which throws for details read on another
-  // network), else the ones the runner holds when they were read on this
-  // network for the trustedzone in effect (enclaveDetailsInEffect). Otherwise
-  // the call throws, before the allowance step and the request: details read
-  // for another trustedzone of the network (its -unsafe twin's, the other
-  // service type's) carry that trustedzone's certificate, and the
-  // trustedzone the request names cannot decrypt what is sealed for it.
+  // with: the ones the runner holds once the image registry of the network
+  // in effect has been read (initializeImageRegistry, which throws for
+  // details read on another network when it does not answer), when they
+  // were read on the network in effect for the trustedzone and the
+  // securelock in effect (enclaveDetailsInEffect), whether the registry
+  // answered or not. Otherwise the call throws, before the allowance step
+  // and the request: details the registry answered before the network in
+  // effect changed are the other network's (enclaveDetailsReadElsewhere);
+  // details read for another trustedzone of the network (its -unsafe twin's,
+  // the other service type's) carry that trustedzone's certificate, which
+  // the trustedzone the request names cannot decrypt with; details read for
+  // another securelock name that securelock's image.
   async requestEnclaveDetails(secureLockEnclave) {
-    if (await this.initializeImageRegistry(secureLockEnclave) || this.enclaveDetailsInEffect()) return;
+    const answered = await this.initializeImageRegistry(secureLockEnclave);
+    if (this.enclaveDetailsInEffect()) return;
+    if (answered) throw new Error(this.enclaveDetailsReadElsewhere());
     const cfg = this.networkConfig;
     throw new Error(
       `The image registry of ${cfg.networkKey} ${networkTypeOf(cfg)} did not answer the enclave details of ${secureLockEnclave} ` +
@@ -890,21 +918,26 @@ class EthernityCloudRunner extends EventTarget {
   // from the bound image registry: the securelock's image and compose hashes
   // and the trustedzone's certificate. True when the registry answers them:
   // the runner holds them from then on, with the network descriptor they
-  // were read on and the trustedzone they were read for
-  // (enclaveDetailsNetwork, enclaveDetailsTrustedZone), and keeps the
+  // were read on, the trustedzone and the securelock they were read for
+  // (enclaveDetailsNetwork, enclaveDetailsTrustedZone,
+  // enclaveDetailsSecureLock), keeps that trustedzone as the one of its last
+  // read on that network (enclaveDetailsTrustedZones) and keeps the
   // certificate under that network and trustedzone (trustedZoneCertificates).
-  // Both are the ones in effect when the read is made: a network context
+  // All are the ones in effect when the read is made: a network context
   // resolved while the registry answers (listSessions takes no turn) does not
   // change where the answer is kept. False when it does not answer: the
   // details the runner holds stay as they are.
   async getEnclaveDetails() {
     const network = this.networkConfig;
     const trustedZone = this.resolveTrustedZoneImage();
-    const details = await this.imageRegistryContract.getEnclaveDetailsV3(this.secureLockEnclave, VERSION, trustedZone);
+    const secureLock = this.secureLockEnclave;
+    const details = await this.imageRegistryContract.getEnclaveDetailsV3(secureLock, VERSION, trustedZone);
     if (!details) return false;
     [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
     this.enclaveDetailsNetwork = network;
     this.enclaveDetailsTrustedZone = trustedZone;
+    this.enclaveDetailsSecureLock = secureLock;
+    this.enclaveDetailsTrustedZones.set(network, trustedZone);
     if (!this.trustedZoneCertificates.has(network)) this.trustedZoneCertificates.set(network, new Map());
     this.trustedZoneCertificates.get(network).set(trustedZone, this.enclavePublicKey);
     this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
@@ -921,6 +954,14 @@ class EthernityCloudRunner extends EventTarget {
   trustedZoneCertificate(network, trustedZone) {
     const read = this.trustedZoneCertificates.get(network);
     return (read && read.get(trustedZone)) || '';
+  }
+
+  // The trustedzone the runner's last enclave details read on `network` was
+  // for, null when the runner has read none there, whatever it has read on
+  // another network since: the trustedzone a session handle of that network
+  // made without one takes (EthernityCloudSession).
+  enclaveDetailsTrustedZoneOn(network) {
+    return this.enclaveDetailsTrustedZones.get(network) || null;
   }
 
   // On a network whose descriptor carries faucet (the PoX 1.0 testnet
@@ -1804,10 +1845,14 @@ class EthernityCloudRunner extends EventTarget {
     //
     //  - the trustedzone is judged for the network (selectTrustedZone);
     //  - the enclave details are read again from the network's image
-    //    registry. A registry that does not answer is passed over when the
-    //    details the runner holds were read on this network for this
-    //    trustedzone (enclaveDetailsInEffect), and ends the read when they
-    //    were not, or when the runner holds none;
+    //    registry, and the read goes on only when the details the runner
+    //    holds after it were read on the network in effect for this
+    //    trustedzone and this securelock (enclaveDetailsInEffect), whether
+    //    the registry answered or not: a registry that does not answer is
+    //    passed over when the details held were read for them, and ends the
+    //    read when they were not, or when the runner holds none; details the
+    //    registry answered before the network in effect changed end it too
+    //    (enclaveDetailsReadElsewhere);
     //  - the node the last request was pinned to is verified when it was
     //    verified on another network, and not read again when it was
     //    verified on this one (requestedNodeNetwork);
@@ -1828,7 +1873,9 @@ class EthernityCloudRunner extends EventTarget {
       await this.resolveNetworkContext();
       this.initializeDefaultStorage();
       this.selectTrustedZone(this.runTrustedZoneImage);
-      if (!await this.initializeImageRegistry(this.secureLockEnclave) && !this.enclaveDetailsInEffect()) {
+      const answered = await this.initializeImageRegistry(this.secureLockEnclave);
+      if (!this.enclaveDetailsInEffect()) {
+        if (answered) throw new Error(this.enclaveDetailsReadElsewhere('esrRead'));
         const cfg = this.networkConfig;
         throw new Error(
           `esrRead: the image registry of ${cfg.networkKey} ${networkTypeOf(cfg)} did not answer the enclave details of ` +

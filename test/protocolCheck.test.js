@@ -353,8 +353,13 @@ test('on a PoX its storage lists, a run and a session that name no node go on to
   for (const start of ['run', 'runSession']) {
     const wallet = chainWallet(true);
     const { runner, provider } = runnerOver(wallet);
-    // The image registry is a contract outside this chain; it answers.
-    runner.initializeImageRegistry = async () => true;
+    // The image registry is a contract outside this chain; it answers, and
+    // the runner keeps the answer as it keeps a read's (getEnclaveDetails).
+    runner.initializeImageRegistry = async (secureLockEnclave) => {
+      runner.secureLockEnclave = secureLockEnclave;
+      runner.imageRegistryContract = { getEnclaveDetailsV3: async () => ['QmImage', 'a certificate', 'QmCompose'] };
+      return runner.getEnclaveDetails();
+    };
     try {
       await assert.rejects(runner[start](RESOURCES, 'demo', 'code'), { code: 'ACTION_REJECTED' });
     } finally {
@@ -364,10 +369,13 @@ test('on a PoX its storage lists, a run and a session that name no node go on to
       'eth_call tETNY.balanceOf', 'eth_call PoX._getOrdersCount', 'eth_call tETNY.allowance'
     ], start);
     assert.equal(wallet.requests.at(-1), 'eth_sendTransaction tETNY.approve', start);
-    assert.deepEqual(runner.events.slice(0, 6), [
+    assert.deepEqual(runner.events.slice(0, 9), [
       'Checking wallet balance....',
       CHECKING,
       'Verifying node address...',
+      'ENCLAVE_IMAGE_IPFS_HASH:QmImage',
+      'ENCLAVE_PUBLIC_KEY:a certificate',
+      'ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:QmCompose',
       'Checking allowance on the current wallet...',
       `Allowance for ${POX}: 0.0 tokens, 3 required`,
       'Approving allowance for 3 tokens'
