@@ -17,7 +17,7 @@ class EtnyContract {
   currentWallet = null;
 
   // The token's name in the messages of this instance: the network
-  // descriptor's tokenName (tETNY, ETNY), 'token' when built without one.
+  // descriptor's tokenName (tETNY, ETNY, tE10), 'token' when built without one.
   tokenName = 'token';
 
   constructor(networkAddress, walletContext = null, tokenName = 'token') {

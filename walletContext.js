@@ -9,6 +9,7 @@ import { ECAddress } from './enums.js';
 // an embedded wallet (Web3Auth, etc.) happens to be on.
 const DEFAULT_RPC_BY_ADDRESS = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: 'https://bloxberg.ethernity.cloud',
+  [ECAddress.BLOXBERG.TESTNET_POX10_ADDRESS]: 'https://bloxberg.ethernity.cloud',
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: 'https://bloxberg.ethernity.cloud',
   [ECAddress.POLYGON.MAINNET_ADDRESS]: 'https://polygon-bor-rpc.publicnode.com',
   [ECAddress.POLYGON.TESTNET_ADDRESS]: 'https://polygon-amoy-bor-rpc.publicnode.com',

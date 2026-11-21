@@ -12,6 +12,7 @@ import {
   providerMessage,
   queryFilterChunked,
   READ_ATTEMPTS,
+  READ_RETRY_MS,
   retryRead,
   waitForReceipt
 } from './utils.js';
@@ -34,9 +35,13 @@ import {
   ECAddress,
   ECError,
   ECRunner,
+  ECPox10TestnetConfig,
+  POX10_TESTNET_TYPE,
   UNSAFE_NETWORK_SUFFIX,
   UNSAFE_TRUSTEDZONE_SUFFIX,
   hasSeparateProtocol,
+  networkTypeOf,
+  pox10NetworkOf,
   resolveNetworkConfig,
   taskStatusName,
   isOperatorFaultCode
@@ -44,6 +49,7 @@ import {
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
 import { requestEscrow } from './contract/operation/requestTerms.js';
+import { drawTokenFaucet } from './contract/operation/tokenFaucet.js';
 import { Buffer } from 'buffer';
 
 // Deep, browser-safe object dump for DEBUG events. Replaces node's util.inspect
@@ -287,8 +293,8 @@ class EthernityCloudRunner extends EventTarget {
   // decoded with. A PoX apart from the token (hasSeparateProtocol: the ecld
   // family, the bloxberg testnet) is an EthernityImplementationV2 at the
   // protocol address, read with the V2 ABI; where the protocol address is the
-  // token address (bloxberg mainnet) the PoX is the token's own proxy, read
-  // with the legacy ABI.
+  // token address (bloxberg mainnet and the bloxberg testnet's PoX 1.0
+  // network) the PoX is the token's own proxy, read with the legacy ABI.
   initializeProtocolContract(cfg) {
     const wc = this.walletContext;
     if (hasSeparateProtocol(cfg, this.networkAddress)) {
@@ -305,7 +311,9 @@ class EthernityCloudRunner extends EventTarget {
    * testnets IoTeX / Sepolia / LitVM share a token address, so when no chainId
    * hint was passed to the constructor we read it from the provider and rebuild
    * the protocol contract against the correct PoX address. No-op for networks
-   * that were already unambiguously resolved by token address.
+   * that were already unambiguously resolved by token address. The network
+   * type setNetwork() named is part of the resolution, so a runner
+   * setNetwork() put on a PoX 1.0 testnet network stays on it.
    */
   async resolveNetworkContext() {
     const provisional = this.networkConfig && this.networkConfig.provisional;
@@ -333,7 +341,7 @@ class EthernityCloudRunner extends EventTarget {
       if (provisional) throw new Error('Unable to detect chainId to resolve the ECLD testnet.');
       return;
     }
-    const cfg = resolveNetworkConfig(this.networkAddress, chainId);
+    const cfg = resolveNetworkConfig(this.networkAddress, chainId, this.networkType);
     if (!cfg || cfg.provisional) {
       if (provisional) throw new Error(`Unsupported chainId ${chainId} for this token address.`);
       return;
@@ -410,24 +418,96 @@ class EthernityCloudRunner extends EventTarget {
   // the token, the wallet and the provider's message
   // (tokenBalance.readTokenBalance), is thrown as it is: a wallet whose
   // balance cannot be read is never reported as empty.
+  //
+  // On a network whose descriptor carries faucet (the PoX 1.0 testnet
+  // networks) a wallet read short of the escrow is funded or told how it is:
+  // where the token has a faucet that serves the wallet (faucetServes) the
+  // runner draws it (drawFaucet), reads the balance again and judges that
+  // read; a wallet still short, and a wallet short on a token without a
+  // faucet, is refused with the amount it lacks and where the token comes
+  // from (fundingNote). The read after a draw is repeated, up to
+  // READ_ATTEMPTS times READ_RETRY_MS apart, while it answers the balance the
+  // draw was made at: a replica of a load-balanced RPC answers it until it
+  // has the draw's block. No faucet is drawn on a read that failed, nor on
+  // any other network.
   async checkWalletBalance() {
     this.dispatchECEvent('Checking wallet balance....');
     const wallet = await this.tokenContract.getSigner().getAddress();
-    const balance = await retryRead(() => this.tokenContract.getBalance(wallet), {
+    const readBalance = () => retryRead(() => this.tokenContract.getBalance(wallet), {
       onError: (error, attempt) =>
         this.dispatchECEvent(`Wallet balance read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${error.message}`, ECLog.WARNING)
     });
-    if (this.v2Terms) {
-      // A V2 request's escrow is a wei figure, compared in wei.
-      if (ethers.parseEther(String(balance)) < this.v2Terms.escrowWei) {
-        throw new Error(`Insufficient wallet balance (${balance} tokens for an escrow of ${ethers.formatEther(this.v2Terms.escrowWei)})`);
+    let balance = await readBalance();
+    if (this.shortOfEscrow(balance) && this.faucetServes(balance)) {
+      const before = balance;
+      await this.drawFaucet(before);
+      for (let attempt = 1; ; attempt += 1) {
+        balance = await readBalance();
+        if (balance !== before || attempt >= READ_ATTEMPTS) break;
+        await delay(READ_RETRY_MS);
       }
-      return;
     }
-    const escrow = requestEscrow(this.resources);
-    if (parseInt(balance, 10) < escrow) {
-      throw new Error(`Insufficient wallet balance (${balance}/${escrow})`);
+    if (!this.shortOfEscrow(balance)) return;
+    if (this.v2Terms) {
+      throw new Error(`Insufficient wallet balance (${balance} tokens for an escrow of ${ethers.formatEther(this.v2Terms.escrowWei)})${this.fundingNote(wallet, balance)}`);
     }
+    throw new Error(`Insufficient wallet balance (${balance}/${requestEscrow(this.resources)})${this.fundingNote(wallet, balance)}`);
+  }
+
+  // Whether `balance`, the wallet's balance in tokens as getBalance reads it,
+  // is short of the request's escrow. A V2 request's escrow is a wei figure,
+  // compared in wei; a legacy request's is whole tokens, compared with the
+  // balance's whole tokens.
+  shortOfEscrow(balance) {
+    if (this.v2Terms) return ethers.parseEther(String(balance)) < this.v2Terms.escrowWei;
+    return parseInt(balance, 10) < requestEscrow(this.resources);
+  }
+
+  // Whether the network's token has a faucet that mints to a wallet holding
+  // `balance` tokens: the descriptor's faucet names one and the balance is
+  // below its threshold.
+  faucetServes(balance) {
+    const faucet = this.networkConfig && this.networkConfig.faucet;
+    return Boolean(faucet) && ethers.parseEther(String(balance)) < ethers.parseEther(String(faucet.below));
+  }
+
+  // Draws the faucet of the network's token for the run's wallet, which holds
+  // `balance` tokens, and returns once the transaction is mined
+  // (tokenFaucet.drawTokenFaucet), reporting the draw as events.
+  async drawFaucet(balance) {
+    const { tokenName, faucet } = this.networkConfig;
+    this.dispatchECEvent(
+      `The wallet holds ${balance} ${tokenName}: drawing the ${tokenName} faucet (${faucet.amount} ${tokenName} to a wallet holding less than ${faucet.below})...`
+    );
+    const hash = await drawTokenFaucet(
+      this.tokenContract.contractAddress(),
+      this.tokenContract.getSigner(),
+      this.tokenContract.getProvider(),
+      (sent) => this.dispatchECEvent(`${sent} is pending...`)
+    );
+    this.dispatchECEvent(`Faucet drawn (${hash}).`);
+  }
+
+  // What an "Insufficient wallet balance" error adds on a network whose
+  // descriptor carries faucet: the amount `wallet`, holding `balance` tokens,
+  // lacks for the request's escrow, and where the token comes from. Empty on
+  // every other network.
+  fundingNote(wallet, balance) {
+    const cfg = this.networkConfig;
+    if (!cfg || cfg.faucet === undefined) return '';
+    const escrowWei = this.v2Terms ? this.v2Terms.escrowWei : ethers.parseEther(String(requestEscrow(this.resources)));
+    const lacking = ethers.formatEther(escrowWei - ethers.parseEther(String(balance)));
+    return `: ${wallet} lacks ${lacking} ${cfg.tokenName}. ${this.tokenSource()}`;
+  }
+
+  // Where the token of a network whose descriptor carries faucet comes from:
+  // its faucet and the wallets it serves, or, for a token without one, a
+  // transfer from the owner of the network's contracts.
+  tokenSource() {
+    const { tokenName, faucet, networkKey } = this.networkConfig;
+    return faucet
+      ? `The ${tokenName} faucet mints ${faucet.amount} ${tokenName} to a wallet holding less than ${faucet.below}, and to no other.`
+      : `${tokenName} has no faucet: a wallet receives it by a transfer from the owner of the ${networkKey} ${networkTypeOf(this.networkConfig)} contracts.`;
   }
 
   // The request terms of this run: the V2 terms of options.v2 (v2TermsOf),
@@ -550,8 +630,9 @@ class EthernityCloudRunner extends EventTarget {
     // A PoX apart from the token (hasSeparateProtocol: the ecld family, the
     // bloxberg testnet) pulls the DO request's escrow from the wallet with
     // transferFrom, so the wallet's allowance for it on the token is raised
-    // to the escrow first when it is below it. Bloxberg mainnet's PoX is the
-    // token's own proxy and takes the escrow in the request itself.
+    // to the escrow first when it is below it. Bloxberg mainnet's PoX, and
+    // that of the bloxberg testnet's PoX 1.0 network, is the token's own
+    // proxy and takes the escrow in the request itself.
     if (!hasSeparateProtocol(this.networkConfig, this.networkAddress)) return;
     this.dispatchECEvent('Checking allowance on the current wallet...');
     // The escrow is the exact amount the PoX pulls: a V2 request's escrowWei
@@ -664,14 +745,20 @@ class EthernityCloudRunner extends EventTarget {
   // The trustedzone a run uses: the run's own trustedZoneEnclave, else the one
   // setNetwork() chose, else the pynithy variant of the resolved network, else
   // the legacy Bloxberg testnet name. An -unsafe trustedzone runs without a
-  // CAS, and runs only on an -unsafe network, which runs no other.
+  // CAS, and runs only on an -unsafe network, which runs no other. A PoX 1.0
+  // testnet network has no -unsafe network; it runs its two trustedzones
+  // (ECRunner's *_RUNNER_TESTNET_POX10) and no other, and they run on no other
+  // network: a run that names one without the other is refused here, before
+  // any transaction.
   selectTrustedZone(trustedZoneEnclave) {
     this.runTrustedZoneImage = trustedZoneEnclave || null;
     const name = this.resolveTrustedZoneImage();
+    const cfg = this.networkConfig;
+    const pox10 = Boolean(cfg && cfg.networkType === POX10_TESTNET_TYPE);
     const unsafeZone = name.endsWith(UNSAFE_TRUSTEDZONE_SUFFIX);
     if (unsafeZone && !this.isUnsafe()) {
       const key = this.networkConfig && this.networkConfig.networkKey;
-      const twin = !this.isMainnet() && key && ECRunner[key] &&
+      const twin = !this.isMainnet() && !pox10 && key && ECRunner[key] &&
         ECRunner[key][`PYNITHY_RUNNER_TESTNET${UNSAFE_NETWORK_SUFFIX}`];
       throw new Error(twin
         ? `${name} runs without a CAS: run it on the -unsafe network, setNetwork('${key}', 'TESTNET${UNSAFE_NETWORK_SUFFIX}')`
@@ -682,6 +769,19 @@ class EthernityCloudRunner extends EventTarget {
         `${this.network} runs only -unsafe trustedzones, and ${name} is provisioned by a CAS: ` +
         `run it on setNetwork(<network>, '${this.networkType.slice(0, -UNSAFE_NETWORK_SUFFIX.length)}')`);
     }
+    const zoneNetwork = pox10NetworkOf(name);
+    if (pox10 && zoneNetwork !== cfg.networkKey) {
+      const zones = ECRunner[cfg.networkKey];
+      throw new Error(
+        `${cfg.networkKey} ${POX10_TESTNET_TYPE} runs only its PoX 1.0 trustedzones ` +
+        `(${zones[`PYNITHY_RUNNER_${POX10_TESTNET_TYPE}`]}, ${zones[`NODENITHY_RUNNER_${POX10_TESTNET_TYPE}`]}), and ${name} is not one of them`);
+    }
+    if (!pox10 && zoneNetwork) {
+      throw new Error(
+        `${name} is a trustedzone of the PoX 1.0 network ${zoneNetwork} ${POX10_TESTNET_TYPE}: construct the runner with ` +
+        `that network's token ${ECPox10TestnetConfig[zoneNetwork].tokenAddress} and name the network with ` +
+        `setNetwork('${zoneNetwork}', '${POX10_TESTNET_TYPE}')`);
+    }
   }
 
   resolveTrustedZoneImage() {
@@ -689,7 +789,7 @@ class EthernityCloudRunner extends EventTarget {
     if (this.trustedZoneImage) return this.trustedZoneImage;
     const key = this.networkConfig && this.networkConfig.networkKey;
     if (key && ECRunner[key]) {
-      const suffix = this.networkConfig.isMainnet ? 'PYNITHY_RUNNER' : 'PYNITHY_RUNNER_TESTNET';
+      const suffix = this.networkConfig.isMainnet ? 'PYNITHY_RUNNER' : `PYNITHY_RUNNER_${networkTypeOf(this.networkConfig)}`;
       if (ECRunner[key][suffix]) return ECRunner[key][suffix];
     }
     return 'etny-pynithy-testnet';
@@ -709,7 +809,26 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
+  // On a network whose descriptor carries faucet (the PoX 1.0 testnet
+  // networks): where the token has none, { success: false, message } naming
+  // where the token comes from, with no transaction sent; where it has one,
+  // the faucet is drawn for a wallet it serves (faucetServes, drawFaucet) and
+  // the answer is { success: true }, drawn or not, or { success: false,
+  // message } with the provider's message when the draw fails. A balance read
+  // that fails is thrown, as on every other network.
   getTokensFromFaucet = async () => {
+    if (this.networkConfig && this.networkConfig.faucet !== undefined) {
+      if (!this.networkConfig.faucet) return { success: false, message: this.tokenSource() };
+      const wallet = await this.tokenContract.getSigner().getAddress();
+      const held = await this.tokenContract.getBalance(wallet);
+      if (!this.faucetServes(held)) return { success: true };
+      try {
+        await this.drawFaucet(held);
+      } catch (error) {
+        return { success: false, message: `The ${this.networkConfig.tokenName} faucet was not drawn: ${providerMessage(error)}` };
+      }
+      return { success: true };
+    }
     const account = this.tokenContract.getCurrentWallet();
     const balance = await this.tokenContract.getBalance(account);
     if (parseInt(balance, 10) <= 100) {
@@ -1821,7 +1940,7 @@ class EthernityCloudRunner extends EventTarget {
     const cfg = this.networkConfig;
     if (!(cfg && cfg.agentNetwork)) {
       const network = cfg && cfg.networkKey
-        ? `${cfg.networkKey} ${cfg.isMainnet ? 'MAINNET' : 'TESTNET'}`
+        ? `${cfg.networkKey} ${networkTypeOf(cfg)}`
         : 'This network';
       throw new Error(
         `${network} has no payload intake route: configure the storage before submitting a task, with ` +
@@ -1840,10 +1959,20 @@ class EthernityCloudRunner extends EventTarget {
 
 
   // The network a run names, by ECRunner's keys: ('BLOXBERG', 'TESTNET'),
-  // ('BLOXBERG', 'MAINNET'), or an -unsafe network such as
-  // ('BLOXBERG', 'TESTNET_UNSAFE'), whose trustedzones run without a CAS. It
-  // sets the default trustedzone; the chain stays the one the constructor's
-  // address resolved, and a network of another chain is refused.
+  // ('BLOXBERG', 'MAINNET'), an -unsafe network such as
+  // ('BLOXBERG', 'TESTNET_UNSAFE'), whose trustedzones run without a CAS, or
+  // a PoX 1.0 testnet network, ('BLOXBERG', 'TESTNET_POX10') and
+  // ('POLYGON', 'TESTNET_POX10'). It sets the default trustedzone; the chain
+  // stays the one the constructor's address resolved, and a network of
+  // another chain is refused.
+  //
+  // A PoX 1.0 testnet network is named on a runner constructed with its token
+  // (ECPox10TestnetConfig) and on no other. Where that token is also the PoX
+  // 2.0 network's (Polygon Amoy), naming the network puts the runner on its
+  // PoX and image registry, and naming ('POLYGON', 'TESTNET') or its -unsafe
+  // network afterwards puts it back on theirs. A runner whose token only a
+  // PoX 1.0 testnet network is paid with (the bloxberg testnet's) is on that
+  // network from its construction and takes no other network's name.
   async setNetwork(network, type) {
     const key = network.toUpperCase();
     const kind = type.toUpperCase();
@@ -1856,7 +1985,22 @@ class EthernityCloudRunner extends EventTarget {
     if (cfg && cfg.networkKey && (cfg.networkKey !== key || cfg.isMainnet !== (kind === 'MAINNET'))) {
       throw new Error(
         `setNetwork: ${network} ${type} is not on the chain of this runner's address ` +
-        `(${cfg.networkKey} ${cfg.isMainnet ? 'MAINNET' : 'TESTNET'})`);
+        `(${cfg.networkKey} ${networkTypeOf(cfg)})`);
+    }
+    const named = resolveNetworkConfig(this.networkAddress, this.chainId, kind);
+    if (kind === POX10_TESTNET_TYPE && !named) {
+      throw new Error(
+        `setNetwork: ${network} ${type} is paid with the token ${ECPox10TestnetConfig[key].tokenAddress}: ` +
+        'construct the runner with that address');
+    }
+    if (kind !== POX10_TESTNET_TYPE && named && named.networkType === POX10_TESTNET_TYPE) {
+      throw new Error(
+        `setNetwork: ${network} ${type} is not the network of this runner's address ` +
+        `(${named.networkKey} ${POX10_TESTNET_TYPE})`);
+    }
+    if (named && named !== cfg) {
+      this.networkConfig = named;
+      this.initializeProtocolContract(named);
     }
     this.network = `${network.toLowerCase()}_${kind}`;
     this.networkType = kind;
