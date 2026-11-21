@@ -27,12 +27,12 @@ import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
  * that trustedzone's certificate are taken when the handle is made, so a
  * network the runner is put on afterwards (runner.setNetwork), and the
  * certificate a later run of the runner resolves, do not move the session.
- * The certificate is the runner's only when the runner read it from the
- * image registry of the session's network for the session's trustedzone
- * (_runnerCertificate): a handle made while the runner holds no such
- * certificate (an attach without the securelock) takes the first one the
- * runner reads, and until then sends no input and leaves the attestation row
- * and the outputs after it unread (_certificate, pollOutputs). Its inputs go
+ * The certificate is the one the runner read from the image registry of the
+ * session's network for the session's trustedzone, whatever the runner has
+ * read since (runner.trustedZoneCertificate): a handle made while the runner
+ * has read none (an attach without the securelock) takes it once the runner
+ * has, and until then sends no input and leaves the attestation row and the
+ * outputs after it unread (_certificate, pollOutputs). Its inputs go
  * to the intake under the route of the session's network. close(true) reads
  * the final result from the session's PoX with the runner's result reader
  * (runner.getResultFromOrder), which checks the result's signer against the
@@ -88,15 +88,16 @@ export const SESSION_ERROR_CODE_NAMES = {
 
 export class EthernityCloudSession {
   // `trustedZone` is the name of the trustedzone the session's order was
-  // placed with.
-  constructor(runner, orderId, trustedZone) {
+  // placed with; when it is not given, the trustedzone the runner's enclave
+  // details were last read for (runner.enclaveDetailsTrustedZone).
+  constructor(runner, orderId, trustedZone = runner.enclaveDetailsTrustedZone) {
     this.runner = runner;
     // The network the session is on: the runner's protocol contract (the PoX
     // and its provider), the ABI its result transaction is decoded with and
     // the network's descriptor, as the runner holds them now; the session's
     // trustedzone and its certificate (the one the inputs are sealed for and
-    // the task wallet attestation is verified with), '' while the runner
-    // holds none it read for that trustedzone on that network.
+    // the task wallet attestation is verified with), '' while the runner has
+    // read none for that trustedzone on that network.
     this.protocol = runner.protocolContract;
     this.protocolAbi = runner.protocolAbi;
     this.network = runner.networkConfig;
@@ -141,21 +142,20 @@ export class EthernityCloudSession {
     return this.protocol.getContract();
   }
 
-  /** The certificate the runner holds when it is the session's: one the
-      runner read from the image registry of the session's network for the
-      session's trustedzone (runner.enclaveDetailsNetwork,
-      runner.enclaveDetailsTrustedZone). '' otherwise: a certificate read on
-      another network, or for another trustedzone of this one (its -unsafe
-      twin's, the other service type's), is not the session's. */
+  /** The certificate the runner read from the image registry of the
+      session's network for the session's trustedzone, at its last read of
+      that trustedzone there (runner.trustedZoneCertificate); '' when it has
+      read none. A certificate the runner read on another network, or for
+      another trustedzone of this one (its -unsafe twin's, the other service
+      type's), is not the session's, and the reads the runner made since do
+      not change the answer. */
   _runnerCertificate() {
-    const { runner } = this;
-    const own = runner.enclaveDetailsNetwork === this.network && runner.enclaveDetailsTrustedZone === this.trustedZone;
-    return own && runner.enclavePublicKey ? runner.enclavePublicKey : '';
+    return this.runner.trustedZoneCertificate(this.network, this.trustedZone);
   }
 
   /** The certificate of the session's trustedzone: the one the handle took
-      when it was made, else the first one the runner holds for the session
-      (_runnerCertificate), which the handle keeps. '' until then. */
+      when it was made, else the one the runner has read for the session
+      since (_runnerCertificate), which the handle keeps. '' until then. */
   _certificate() {
     if (!this.certificate) this.certificate = this._runnerCertificate();
     return this.certificate;

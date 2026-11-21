@@ -396,6 +396,9 @@ class EthernityCloudRunner extends EventTarget {
     this.enclaveDockerComposeIPFSHash = '';
     this.enclaveDetailsNetwork = null;
     this.enclaveDetailsTrustedZone = null;
+    // The certificate each image registry answered at the runner's last read
+    // of a trustedzone: network descriptor -> (trustedzone -> certificate).
+    this.trustedZoneCertificates = new Map();
     this.requestedNodeNetwork = null;
     this.imageRegistryContract = null;
     this.status = ECStatus.DEFAULT;
@@ -733,12 +736,30 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
+  // The image, code and input metadata of the DO request for `code` and the
+  // challenge in this.challengeHash, its artefacts sealed and stored
+  // (getV3ImageMetadata, getV3CodeMetadata, getV3InputMedata). When one of the
+  // three fails (a wallet that gives no encryption key, an artefact the
+  // storage refuses), the artefacts the request has sealed so far and queued
+  // for an intake are forgotten: no request is made that would deliver them.
+  // The three fields hold the CIDs of this request's artefacts, or those of
+  // an earlier request of the runner, which are queued no more.
+  async requestMetadata(code) {
+    try {
+      const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
+      const codeMetadata = await this.getV3CodeMetadata(code);
+      const inputMetadata = await this.getV3InputMedata();
+      return [imageMetadata, codeMetadata, inputMetadata];
+    } catch (error) {
+      ipfsClient.discardPending([this.challengeIPFSHash, this.scriptHash, this.fileSetHash]);
+      throw error;
+    }
+  }
+
   async processTaskAttempt(code) {
     this.nodeAddress = this.requestedNodeAddress;
     this.challengeHash = generateRandomHexOfSize(20);
-    const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
-    const codeMetadata = await this.getV3CodeMetadata(code);
-    const inputMetadata = await this.getV3InputMedata();
+    const [imageMetadata, codeMetadata, inputMetadata] = await this.requestMetadata(code);
     await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
     await this.findOrder();
     if (!this.requestedNodeAddress) {
@@ -852,8 +873,9 @@ class EthernityCloudRunner extends EventTarget {
   // and the trustedzone's certificate. True when the registry answers them:
   // the runner holds them from then on, with the network descriptor they
   // were read on and the trustedzone they were read for
-  // (enclaveDetailsNetwork, enclaveDetailsTrustedZone). False when it does
-  // not: the details the runner holds stay as they are.
+  // (enclaveDetailsNetwork, enclaveDetailsTrustedZone), and keeps the
+  // certificate under that network and trustedzone (trustedZoneCertificates).
+  // False when it does not: the details the runner holds stay as they are.
   async getEnclaveDetails() {
     const trustedZone = this.resolveTrustedZoneImage();
     const details = await this.imageRegistryContract.getEnclaveDetailsV3(this.secureLockEnclave, VERSION, trustedZone);
@@ -861,10 +883,22 @@ class EthernityCloudRunner extends EventTarget {
     [this.enclaveImageIPFSHash, this.enclavePublicKey, this.enclaveDockerComposeIPFSHash] = details;
     this.enclaveDetailsNetwork = this.networkConfig;
     this.enclaveDetailsTrustedZone = trustedZone;
+    if (!this.trustedZoneCertificates.has(this.networkConfig)) this.trustedZoneCertificates.set(this.networkConfig, new Map());
+    this.trustedZoneCertificates.get(this.networkConfig).set(trustedZone, this.enclavePublicKey);
     this.dispatchECEvent(`ENCLAVE_IMAGE_IPFS_HASH:${this.enclaveImageIPFSHash}`, ECLog.DEBUG);
     this.dispatchECEvent(`ENCLAVE_PUBLIC_KEY:${this.enclavePublicKey}`, ECLog.DEBUG);
     this.dispatchECEvent(`ENCLAVE_DOCKER_COMPOSE_IPFS_HASH:${this.enclaveDockerComposeIPFSHash}`, ECLog.DEBUG);
     return true;
+  }
+
+  // The certificate the image registry of `network` answered for
+  // `trustedZone` at the runner's last read of that trustedzone there, ''
+  // when the runner has read none: what a session handle of that network and
+  // trustedzone seals its inputs for, whatever the runner has read since
+  // (EthernityCloudSession).
+  trustedZoneCertificate(network, trustedZone) {
+    const read = this.trustedZoneCertificates.get(network);
+    return (read && read.get(trustedZone)) || '';
   }
 
   // On a network whose descriptor carries faucet (the PoX 1.0 testnet
@@ -2302,16 +2336,14 @@ class EthernityCloudRunner extends EventTarget {
       await this.initializeWeb3Connection();
       await this.checkAllowance();
       this.challengeHash = generateRandomHexOfSize(20);
-      const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
-      const codeMetadata = await this.getV3CodeMetadata(code);
       this._sessionRequest = true;
-      let inputMetadata;
+      let metadata;
       try {
-        inputMetadata = await this.getV3InputMedata();
+        metadata = await this.requestMetadata(code);
       } finally {
         this._sessionRequest = false;
       }
-      await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
+      await this.createDORequest(...metadata);
       await this.findOrder();
       if (!this.requestedNodeAddress) {
         await this.approveOrder();

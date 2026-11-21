@@ -118,14 +118,27 @@ test('flushPending delivers only the CIDs it is given, under the request they be
   assert.equal(requests[1].body.toString(), 'beta');
 });
 
-test('flushPending refuses a CID that was not uploaded through the intake', async () => {
+test('flushPending passes over a CID with no queued blob: one delivered already, and one added to an IPFS API before the intake was set', async () => {
   initializeIntake('bloxberg_testnet', base);
   const cid = await uploadToIPFS('gamma');
   await flushPending(9, [cid]);
   assert.equal(requests.length, 1);
-  await assert.rejects(flushPending(10, [cid]), /was not uploaded through the intake/);
-  await assert.rejects(flushPending(10, [cidOf('never')]), /was not uploaded through the intake/);
+  // Delivered: the queue holds it no more.
+  await flushPending(10, [cid]);
   assert.equal(requests.length, 1);
+
+  // Added to an IPFS API; an intake is the storage when its request is
+  // flushed, together with a blob queued since.
+  initialize(base);
+  answer = () => addAnswer(cidOf('added to the API'));
+  const added = await uploadToIPFS('added to the API', 1, 0);
+  assert.equal(added, cidOf('added to the API'));
+  initializeIntake('bloxberg_testnet', base);
+  answer = () => ({ status: 200, body: '' });
+  const queued = await uploadToIPFS('queued since');
+  requests.length = 0;
+  await flushPending(11, [added, queued]);
+  assert.deepEqual(requests.map((r) => r.url), [`/payload/bloxberg_testnet/11/${queued}`]);
 });
 
 test('a blob queued for an intake stays deliverable to that intake, under its route, whatever storage is set afterwards', async () => {
@@ -162,8 +175,7 @@ test('discardPending forgets the queued blobs it is given, and no others', async
   const kept = await uploadToIPFS('kept');
   const dropped = await uploadToIPFS('dropped');
   discardPending([dropped, cidOf('never queued')]);
-  await assert.rejects(flushPending(11, [dropped]), /was not uploaded through the intake/);
-  await flushPending(11, [kept]);
+  await flushPending(11, [dropped, kept]);
   assert.deepEqual(requests.map((r) => r.url), [`/payload/bloxberg_testnet/11/${kept}`]);
 });
 

@@ -24,7 +24,9 @@ import { join } from 'node:path';
 import jsrsasign from 'jsrsasign';
 import EthernityCloudRunner from '../runner.js';
 import { ECAddress } from '../enums.js';
-import { cidv1Raw, flushPending, intakeNetwork, isInitialized, OWNER_SIGNATURE_HEADER, PUBLIC_INTAKE } from '../ipfs.js';
+import {
+  cidv1Raw, flushPending, initializeIntake, intakeNetwork, isInitialized, OWNER_SIGNATURE_HEADER, PUBLIC_INTAKE, StorageLimitError
+} from '../ipfs.js';
 import { configureHeldCache } from '../heldCache.js';
 import { AMOY, AMOY_TOKEN, BLOXBERG, BLOXBERG_TOKEN, chainOf, settle } from '../testing/standInChain.js';
 
@@ -105,13 +107,14 @@ beforeEach(() => {
 });
 
 // A runner constructed with `token` on a chain of `network` of its own, whose
-// registries answer PEM for every trustedzone.
-const runnerOn = (network, token) => {
+// registries answer PEM for every trustedzone. Its wallet gives the
+// encryption key `encryptionPublicKey`; with null it gives none.
+const runnerOn = (network, token, encryptionPublicKey = 'ab'.repeat(32)) => {
   const chain = chainOf(network, { certificate: () => PEM });
   const runner = new EthernityCloudRunner(token, {
     provider: chain.provider,
     signer: chain.signer,
-    encryptionPublicKey: 'ab'.repeat(32)
+    encryptionPublicKey
   });
   runner.dispatchECEvent = () => {};
   runner.getOrderResult = async () => {
@@ -251,7 +254,25 @@ test('a storage call of another runner between the seal and the delivery of a ru
     assert.deepEqual(posts, due(bloxberg.chain, BLOXBERG_POX, 0, 'bloxberg_testnet'));
     assert.equal(intakeNetwork(), storage);
   }
+
+  // The other direction: the run's artefacts are added to an IPFS API, and
+  // another runner sets the intake while the request is being sent. The run
+  // has nothing queued, and nothing to deliver to the intake.
+  const bloxberg = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+  const amoy = runnerOn(AMOY, AMOY_TOKEN);
+  await bloxberg.runner.initializeStorage(apiBase);
+  posts.length = 0;
+  added.length = 0;
+  bloxberg.chain.during('send', '_addDORequest', () => amoy.runner.initializePublicIntake());
+  await task(bloxberg.runner);
+  assert.deepEqual(added, namedBy(bloxberg.chain, BLOXBERG_POX, 0));
+  assert.deepEqual(posts, []);
+  assert.equal(intakeNetwork(), 'polygon_amoy');
 });
+
+// The artefacts `runner` holds the CIDs of: its challenge, its code and its
+// input dataset.
+const artefactsOf = (runner) => [runner.challengeIPFSHash, runner.scriptHash, runner.fileSetHash].filter(Boolean);
 
 test('a request that is not made, and a session input whose row is not committed, leave none of their artefacts queued', { timeout: 60000 }, async () => {
   const { chain, runner } = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
@@ -259,10 +280,10 @@ test('a request that is not made, and a session input whose row is not committed
   chain.during('send', '_addDORequest', () => { throw new Error('the wallet refused the transaction'); });
   await assert.rejects(task(runner), { message: 'Transaction failed: the wallet refused the transaction' });
   assert.deepEqual(posts, []);
-  for (const cid of [runner.challengeIPFSHash, runner.scriptHash]) {
-    assert.match(cid, /^b[a-z2-7]+$/);
-    await assert.rejects(flushPending(0, [cid]), /was not uploaded through the intake/);
-  }
+  // A flush delivers what is queued: for these CIDs it sends nothing.
+  assert.equal(artefactsOf(runner).length, 2);
+  for (const cid of artefactsOf(runner)) assert.match(cid, /^b[a-z2-7]+$/);
+  await flushPending(0, artefactsOf(runner));
   assert.deepEqual(posts, []);
 
   // A session's input: the CID its seal gives is kept here, the transaction
@@ -279,12 +300,60 @@ test('a request that is not made, and a session input whose row is not committed
   chain.during('send', '_addMetadataToRequest', () => { throw new Error('the wallet refused the transaction'); });
   await assert.rejects(session.sendInput('an input'), { message: 'the wallet refused the transaction' });
   assert.equal(sealed.length, 1);
-  await assert.rejects(flushPending(session.doReq, sealed), /was not uploaded through the intake/);
+  await flushPending(session.doReq, sealed);
   assert.deepEqual(posts, []);
   // The input sent again is sealed again and delivered.
   assert.equal(await session.sendInput('an input'), 0);
   assert.equal(sealed.length, 2);
   assert.deepEqual(posts, [`${PUBLIC_INTAKE}/payload/bloxberg_testnet/${session.doReq}/${sealed[1]}`]);
+});
+
+test('a failure before the request (a wallet that gives no encryption key, an artefact the intake does not take) leaves none of the artefacts sealed so far queued', { timeout: 60000 }, async () => {
+  const noKey = 'Cannot obtain the wallet encryption public key: this wallet has no eth_getEncryptionPublicKey. ' +
+    'Pass { privateKey } (to derive it) or { encryptionPublicKey } to EthernityCloudRunner.';
+  // What the intake set below takes per blob, and a text it does not take.
+  // The blobs it refuses are held in a cache of this test's own.
+  const limit = 4096;
+  const large = 'x'.repeat(4 * limit);
+  const refusedDirectory = await mkdtemp(join(tmpdir(), 'etny-held-'));
+  configureHeldCache({ directory: refusedDirectory });
+  const starts = {
+    'run()': (runner, code, options = {}) => runner.run(RESOURCES, SECURELOCK, code, '', null, { maxRetries: 0, ...options }),
+    'runSession()': (runner, code) => runner.runSession(RESOURCES, SECURELOCK, code)
+  };
+  // After each failure a flush of the runner's CIDs, which delivers what is
+  // queued, sends nothing.
+  const nothingQueued = async (runner, label) => {
+    await flushPending(0, artefactsOf(runner));
+    assert.deepEqual(posts, [], label);
+  };
+  for (const [label, start] of Object.entries(starts)) {
+    // The challenge is sealed and queued, then the wallet gives no key.
+    const keyless = runnerOn(BLOXBERG, BLOXBERG_TOKEN, null);
+    keyless.runner.initializePublicIntake();
+    posts.length = 0;
+    await assert.rejects(start(keyless.runner, 'code'), { message: noKey }, label);
+    assert.match(keyless.runner.challengeIPFSHash, /^b[a-z2-7]+$/, label);
+    assert.deepEqual(keyless.chain.at(BLOXBERG_POX).requests, [], label);
+    await nothingQueued(keyless.runner, `${label}, no encryption key`);
+
+    // The challenge is sealed and queued, then the code is above the limit.
+    const { chain, runner } = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+    initializeIntake('bloxberg_testnet', PUBLIC_INTAKE, limit);
+    await assert.rejects(start(runner, large), (error) => error instanceof StorageLimitError && error.limit === limit, label);
+    assert.match(runner.challengeIPFSHash, /^b[a-z2-7]+$/, label);
+    assert.deepEqual(chain.at(BLOXBERG_POX).requests, [], label);
+    await nothingQueued(runner, `${label}, the code refused`);
+  }
+  // A run's input dataset above the limit: the challenge and the code are
+  // sealed and queued before it.
+  const { chain, runner } = runnerOn(BLOXBERG, BLOXBERG_TOKEN);
+  await assert.rejects(starts['run()'](runner, 'code', { inputData: large }), (error) => error instanceof StorageLimitError);
+  assert.match(runner.scriptHash, /^b[a-z2-7]+$/);
+  assert.deepEqual(chain.at(BLOXBERG_POX).requests, []);
+  await nothingQueued(runner, 'run(), the input refused');
+  configureHeldCache({ directory: heldDirectory });
+  await rm(refusedDirectory, { recursive: true, force: true });
 });
 
 test('an intake the application chose on one network is the intake of every run, each under its own route', { timeout: 60000 }, async () => {

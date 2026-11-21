@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import jsrsasign from 'jsrsasign';
 import { ethers } from 'ethers';
+import EthernityCloudRunner from '../runner.js';
 import { EthernityCloudSession, PAYLOAD_RETRY_MS } from '../session.js';
 import { sha256 } from '../crypto.js';
 
@@ -49,7 +50,21 @@ const sessionWith = async (rowsOf, served, serveFrom = 1) => {
     _getMetadataCountForDPRequest: async () => rows.length,
     _getMetadataValueForDPRequest: async (dpReq, i) => rows[i]
   };
-  const runner = { protocolContract: { getContract: () => contract }, enclavePublicKey: pem, dispatchECEvent: () => {} };
+  // The runner as the handle reads it: its PoX contract, its network
+  // descriptor, the trustedzone its enclave details were last read for and
+  // the certificate it read for that trustedzone on that network, kept and
+  // answered as the runner keeps and answers it (trustedZoneCertificates,
+  // trustedZoneCertificate). The handle is made with two arguments: its
+  // trustedzone is the runner's.
+  const network = { networkKey: 'BLOXBERG' };
+  const runner = {
+    protocolContract: { getContract: () => contract },
+    networkConfig: network,
+    enclaveDetailsTrustedZone: 'etny-pynithy-testnet',
+    trustedZoneCertificates: new Map([[network, new Map([['etny-pynithy-testnet', pem]])]]),
+    trustedZoneCertificate: EthernityCloudRunner.prototype.trustedZoneCertificate,
+    dispatchECEvent: () => {}
+  };
   const session = new EthernityCloudSession(runner, ORDER);
   session.dpReq = 9;
   session.doReq = 7;

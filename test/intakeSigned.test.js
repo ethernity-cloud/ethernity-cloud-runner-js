@@ -55,7 +55,9 @@ test('a lodged blob goes out with the signature and leaves the queue', async () 
   assert.equal(requests[0].url, `/payload/bloxberg_testnet/7/${cid}`);
   assert.equal(requests[0].headers['x-etny-owner-signature'], '0xsignature');
   assert.equal(requests[0].body.toString(), 'alpha');
-  await assert.rejects(flushPending(7, [cid]), /was not uploaded through the intake/);
+  // Delivered: the flush after the row has nothing to send for it.
+  await flushPending(7, [cid]);
+  assert.equal(requests.length, 1);
 });
 
 test('a blob an intake without the signed path refuses stays queued and goes after the row', async () => {

@@ -335,10 +335,14 @@ export const uploadToIPFS = async (code, attempts = 3, delayMs = 5000, timeoutMs
 // artefacts that request carries, which its caller uploaded. A blob the
 // intake confirms (200) leaves the queue; one it refuses (4xx other than 409)
 // throws at once, since retrying the same bytes cannot change the answer; a
-// network failure or 5xx is retried. A CID with no queued blob throws while
-// the storage is an intake: nothing was uploaded through it under that CID.
-// While the storage is an IPFS API such a CID was added to the API and has
-// nothing to deliver.
+// network failure or 5xx is retried. A CID with no queued blob is passed
+// over: it has nothing to deliver. An upload returns a CID only once its
+// blob is queued or added to an IPFS API, and a queued blob leaves the queue
+// only when it is delivered or discarded, so such a CID was added to an API,
+// was delivered already (deliverSigned, an earlier flush) or was discarded.
+// A blob is discarded only by the operation whose request or row names it,
+// and that operation then fails with its own error (runner.requestMetadata,
+// runner.createDORequest, session.sendInput).
 // The intake answers 403 with this text while its own RPC replica has not yet
 // seen the row that names the cid; the row is on chain (its receipt came
 // back before the delivery), so the answer changes within seconds.
@@ -407,10 +411,7 @@ export const deliverSigned = async (doRequest, cids, signature, attempts = 3, de
 export const flushPending = async (doRequest, cids, attempts = 3, delayMs = 5000) => {
   for (const cid of cids) {
     const queued = pending.get(cid);
-    if (!queued) {
-      if (!intake) continue;
-      throw new Error(`flushPending: ${cid} was not uploaded through the intake`);
-    }
+    if (!queued) continue;
     const { bytes, baseUrl, network } = queued;
     const url = `${baseUrl}/payload/${network}/${doRequest}/${cid}`;
     let last = '';
