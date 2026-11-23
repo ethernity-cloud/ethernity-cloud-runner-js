@@ -244,6 +244,23 @@ const runner = new EthernityCloudRunner(
 
 In this release the bootnode's payload intake serves the Bloxberg testnet, Polygon Amoy, LitVM LiteForge and Ethereum Sepolia (each with its -unsafe twin). On every other network in the table (Bloxberg mainnet, Polygon mainnet and IoTeX) a run needs `runner.initializeStorage(<your own Kubo RPC URL>)` before `run()` (see **Storage and the result read**); without it `run()` fails before any transaction is sent, with an error that says so.
 
+### Requests served by claims (PoX 2.0 matching)
+
+A network descriptor that names a PoxMatching (`matchingAddress`) and its reader (`matchReaderAddress`) serves its requests by claims while PoxMatching's `claimsOn()` answers true; the runner reads it before each request. No descriptor names one yet. On every other network, the PoX 1.0 networks among them, and while claims are off, a request is added and approved as described above. On a network with PoxMatching a request pinned to a node that is banned is refused before it is sent, with the end of the ban.
+
+A request served by claims needs `options.v2` (its `maxPricePerCuHourWei` is the bid, its `escrowWei` the escrow `addDORequestV2` pulls), and takes besides:
+
+| Option | Meaning | Default |
+|---|---|---|
+| `options.v2.requiredGflops` | the GFLOPS the request requires, stated beside the ceiling `maxGflops` (one CU is 100 GFLOPS) | 0, one CU |
+| `options.v2.maxBidPerCuHourWei` | the bid ceiling a raise of the bid stays within | none: a raise is reported, not sent |
+| `options.minNodeScore` | the minimum node score, in points (0.50); 0 switches the test off | see below |
+| `options.recentFailureSlots` | a claimer whose last failed order is fewer slots ago is approved only when no other claim stands | 14 |
+| `options.allowMarkedImage` | send a request for an image marked likely broken | false |
+| `options.expireUnstarted`, `options.noteRefund`, `options.noteAmbiguous` | end an order not started 900 s after its approval; record an expired order against its node; send `noteAmbiguous` an hour after a result the validators have not noted | true |
+
+Before the add the runner reads the trustedzone template's record, the image's health (a marked image is refused unless `allowMarkedImage` is set), the image registry's records (an image its session name's newest version is not bound to is refused, naming the dApp's current image) and the quote at the request's terms (`bidQuoteFor`). After the add it reads the request every `runner.claimsPollMs` (2000), approves a claim by the design's rule (3.10), the node mandated for the step first, an in-time claim before a late one, and raises the bid to the quote's lowest matching bid within `maxBidPerCuHourWei` when no claim it would approve can come. The minimum score is `minNodeScore` when set; else, for a dApp of the default class, 0.50 once the network's first node reached 1.00 (`minimumOn()`); else the top tier of the request's round (`tierScore`). The runner passes over the nodes of its local list (two of its orders of the dApp on the node ended in 20, 62, 59 or 63 within 7 days) and, for a paid class, those the image's counted failures of the last 7 days name. What it tells the client is dispatched as events and kept in `runner.matchingNotices`; a code 20, 62, 44, 47, 59 or 63 is reported by the class the result states, in `getLastError()`. An expiry the PoX does not admit yet and a `noteAmbiguous` due later are kept in `runner.matchingPending` and sent by `await runner.settleMatching()`, which a later request served by claims calls before its add.
+
 ### Wallet options
 
 The second constructor argument chooses the wallet: `{ privateKey, rpcUrl }` signs with a raw key on the network's RPC (or `rpcUrl`); `{ signer }` and/or `{ provider }` use a wallet you already hold; with neither, the runner uses the browser wallet at `window.ethereum`. `encryptionPublicKey` (hex) supplies the key results are encrypted to when the wallet cannot answer `eth_getEncryptionPublicKey`. The runner is built on ethers 6, so a `signer` or `provider` you pass must be an ethers 6 object; with a provider alone, the runner asks it for its account the first time it needs one.

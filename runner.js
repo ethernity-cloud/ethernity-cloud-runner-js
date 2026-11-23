@@ -43,7 +43,10 @@ import {
 } from './enums.js';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
+import MatchingContracts from './contract/operation/matchingContract.js';
 import { requestEscrow } from './contract/operation/requestTerms.js';
+import { ClaimsPath, claimsSettings, pinnedBan, settlePending } from './claims.js';
+import { LocalList } from './matching.js';
 import { Buffer } from 'buffer';
 
 // Deep, browser-safe object dump for DEBUG events. Replaces node's util.inspect
@@ -188,6 +191,16 @@ class EthernityCloudRunner extends EventTarget {
   constructor(networkAddress = ECAddress.BLOXBERG.TESTNET_ADDRESS, walletOptions = {}, chainId = undefined) {
     super();
     this.networkAddress = networkAddress;
+    // The work requests served by claims left for later (an expiry the PoX
+    // does not admit yet, a noteAmbiguous due an hour after a result), which
+    // settleMatching() sends when it is due.
+    this.matchingPending = [];
+    // The nodes whose claims the runner approves for no request of a dApp
+    // for 7 days (matching.LocalList), from its own orders.
+    this.localList = new LocalList();
+    // How often a request served by claims is read while it waits for an
+    // approvable claim, in milliseconds.
+    this.claimsPollMs = 2000;
     // LOCAL mode: run tasks against the SDK's local test API (`ecld-test
     // serve`) instead of the blockchain. Same runner surface — run(), events,
     // getResult() — no wallet, no gas, no SGX. Endpoint override:
@@ -384,6 +397,12 @@ class EthernityCloudRunner extends EventTarget {
     this.running = false;
     this.network = "Bloxberg_Testnet";
     this.v2Terms = null;
+    // The request in hand when it is served by claims (claims.ClaimsPath),
+    // chosen before each add (claimsPath); null on every other path.
+    this.claims = null;
+    // What the claims path told the client during the last run or session
+    // submission, in order.
+    this.matchingNotices = [];
   }
 
   logAppend(message, logLevel = ECLog.INFO) {
@@ -602,18 +621,87 @@ class EthernityCloudRunner extends EventTarget {
 
   async processTaskAttempt(code) {
     this.nodeAddress = this.requestedNodeAddress;
+    await this.prepareRequest();
     this.challengeHash = generateRandomHexOfSize(20);
     const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
     const codeMetadata = await this.getV3CodeMetadata(code);
     const inputMetadata = await this.getV3InputMedata();
     await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
     await this.findOrder();
-    if (!this.requestedNodeAddress) {
+    if (!this.requestedNodeAddress && !this.claims) {
       await this.approveOrder();
     }
     await this.waitforTaskToBeProcessed();
     await this.getOrderResult();
     return this.result != null;
+  }
+
+  // The path of the request about to be added (section 8; 13, roll-out step
+  // 3), chosen before each add: on a network whose descriptor names a
+  // PoxMatching (matchingAddress) and its reader (matchReaderAddress), a
+  // request pinned to a banned node is refused (D33, 8.11), and while
+  // claimsOn() answers true the request is served by claims (this.claims):
+  // the work earlier requests left (settleMatching) is sent first, the
+  // settings are read (claims.claimsSettings) and the reads before the add are
+  // made (ClaimsPath.checkBeforeAdd). On every other network and while claims
+  // are off this.claims is null and the request is served as before; on a
+  // network whose descriptor names no PoxMatching nothing of it is read.
+  async prepareRequest() {
+    this.claims = null;
+    const cfg = this.networkConfig;
+    if (!cfg || !cfg.matchingAddress || !cfg.matchReaderAddress) return;
+    const chain = this.matchingContracts(cfg);
+    const node = normalizeNodeAddress(this.requestedNodeAddress);
+    if (node) {
+      const ban = await pinnedBan(chain, node);
+      if (ban) throw new Error(ban);
+    }
+    if (!(await chain.claimsOn())) return;
+    const options = this.runOptions || {};
+    const path = new ClaimsPath(this, chain, claimsSettings(this.v2Terms, options.v2, options));
+    await settlePending(this);
+    await path.checkBeforeAdd(this.enclaveImageIPFSHash);
+    this.claims = path;
+  }
+
+  // The MatchingContracts of the descriptor `cfg` on the wallet's provider and
+  // signer.
+  matchingContracts(cfg) {
+    return new MatchingContracts(cfg.protocolAddress, cfg.matchingAddress, cfg.matchReaderAddress,
+      this.protocolContract.getProvider(), this.protocolContract.getSigner(), cfg.matchPageEntries);
+  }
+
+  // Whether the run or session submission a request served by claims waits
+  // in is still in flight.
+  claimsRunning() {
+    return Boolean(this._runInFlight);
+  }
+
+  // Tells the client what the claims path found: an event at `level` and
+  // matchingNotices.
+  matchingNotice(text, level = ECLog.WARNING) {
+    this.matchingNotices.push(text);
+    this.dispatchECEvent(text, level);
+  }
+
+  // The wallet's allowance for the PoX raised to `wei` when it is below it
+  // (tokenAllowance.checkAndSetAllowance), for the escrow a raise of the bid
+  // adds.
+  async allowWei(wei) {
+    const covered = await this.tokenContract.checkAndSetAllowance(this.networkConfig.protocolAddress,
+      ethers.formatEther(wei), (message) => this.dispatchECEvent(message));
+    if (!covered) throw new Error('Allowance approval failed');
+  }
+
+  // Sends the work requests served by claims left for later
+  // (matchingPending) that is due: the expireOrder and noteRefund of an order
+  // whose time ran out, once the PoX admits the expiry, and the noteAmbiguous
+  // of an end the validators' members have not noted an hour after its result
+  // (section 8 items 10 and 16). Each is made as a call first; what is not due
+  // stays pending, what the contracts refuse is dropped. A request served by
+  // claims calls it before its add.
+  async settleMatching() {
+    await settlePending(this);
   }
 
   handleError(error) {
@@ -820,18 +908,23 @@ class EthernityCloudRunner extends EventTarget {
     const orderId = parseInt(this.orderId);
 
     // The node's start, checked when its DP request advertises the started
-    // row: the row must name this order within ORDER_START_WINDOW_BLOCKS.
+    // row: the row must name this order within ORDER_START_WINDOW_BLOCKS. For
+    // a request served by claims the start is the PoX's orderStartedAt, and an
+    // order that has not started startTimeoutSeconds after its approval is
+    // ended with expireUnstarted (ClaimsPath.startCheck).
+    const { claims } = this;
     const dpRequest = Number(this.order && this.order.dpRequest);
     let startWindowEnd = null;
     try {
       const dpMeta = await protocolContract._getDPRequestMetadata(dpRequest);
-      if (startedRowAdvertised(dpMeta.metadata4 ?? dpMeta[4])) {
+      if (!claims && startedRowAdvertised(dpMeta.metadata4 ?? dpMeta[4])) {
         startWindowEnd = (await this.protocolContract.getProvider().getBlockNumber()) + ORDER_START_WINDOW_BLOCKS;
       }
     } catch (e) {
       this.dispatchECEvent(`DP request ${dpRequest} not readable (${e.message}); the start of order ${orderId} is not checked`, ECLog.DEBUG);
     }
     let started = startWindowEnd === null;
+    let startWatched = Boolean(claims);
 
     // EVENT-FIRST: _orderClosedEV(_orderNumber) fires the moment the operator
     // records the result. Like _orderPlacedEV it has no indexed params, so we
@@ -853,11 +946,21 @@ class EthernityCloudRunner extends EventTarget {
     const viaPoll = (async () => {
       while (!stopPolling) {
         if (Date.now() > deadline) {
+          if (claims) await claims.expired(orderId);
           const err = new Error(`Order ${this.orderId} was not completed within its duration (operator hung or offline)`);
           err.operatorFault = true;
           throw err;
         }
         try {
+          if (startWatched) {
+            const check = await claims.startCheck(orderId);
+            startWatched = !check.started;
+            if (check.fault) {
+              const err = new Error(check.fault);
+              err.operatorFault = true;
+              throw err;
+            }
+          }
           if (!started) {
             const block = await this.protocolContract.getProvider().getBlockNumber();
             const verdict = orderStartVerdict(await this.dpRequestRows(dpRequest), orderId, block, startWindowEnd);
@@ -929,6 +1032,7 @@ class EthernityCloudRunner extends EventTarget {
         // error report.
         this.status = ECStatus.ERROR;
         this.lastError = `The task failed in the enclave with ${this.resultTaskCodeName} (${this.resultTaskCode})`;
+        if (parsedOrderResult.endReport) this.lastError += `. ${parsedOrderResult.endReport}`;
         this.dispatchECEvent(`${this.lastError}: ${this.result}`, ECLog.ERROR);
       }
     }
@@ -1031,13 +1135,18 @@ class EthernityCloudRunner extends EventTarget {
       // address there would pin it to 0x0, which no node can place. A request
       // resubmitted after an operator fault is pinned the same way, not to
       // the node that failed the previous one. A run with V2 terms posts
-      // through addDORequestV2 (PoX 2.0), the legacy request otherwise.
-      const tx = this.v2Terms
+      // through addDORequestV2 (PoX 2.0), the legacy request otherwise; a
+      // request served by claims through the claims path, whose V2 add states
+      // the required GFLOPS beside the ceiling.
+      const node = normalizeNodeAddress(this.requestedNodeAddress);
+      const tx = this.claims
+        ? await this.claims.addRequest([imageMetadata, codeMetadata, inputMetadata, node])
+        : this.v2Terms
         ? await this.protocolContract.addDORequestV2(
           imageMetadata,
           codeMetadata,
           inputMetadata,
-          normalizeNodeAddress(this.requestedNodeAddress),
+          node,
           this.resources,
           this.v2Terms,
         )
@@ -1045,7 +1154,7 @@ class EthernityCloudRunner extends EventTarget {
           imageMetadata,
           codeMetadata,
           inputMetadata,
-          normalizeNodeAddress(this.requestedNodeAddress),
+          node,
           this.resources,
         );
 
@@ -1077,8 +1186,27 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
+  // A request served by claims and pinned to no node: the runner approves a
+  // claim itself (ClaimsPath.awaitApproval) within the order wait, and the
+  // order that approval placed, PROCESSING at once, is the run's; a request
+  // with no approval by then is cancelled (cancelUnclaimedRequest).
+  awaitClaimApproval = async () => {
+    const doReq = parseInt(this.doRequest);
+    const waitSeconds = Number.isFinite(this.orderWaitSeconds) ? this.orderWaitSeconds : DEFAULT_ORDER_WAIT_SECONDS;
+    this.dispatchECEvent(`Request ${doReq} is served by claims: approving a claim...`);
+    let orderId = await this.claims.awaitApproval(doReq, waitSeconds);
+    if (orderId === null) orderId = await this.cancelUnclaimedRequest(doReq, waitSeconds);
+    this.orderId = orderId;
+    this.order = await this.readOrder(orderId);
+    this.nodeAddress = this.order.dproc;
+    this.progress = ECEvent.ORDER_PLACED;
+    this.dispatchECEvent(`Connected! (order ${orderId}, request ${doReq})`);
+    return true;
+  }
+
   findOrder = async () => {
     this.progress = ECEvent.CREATED;
+    if (this.claims && !this.requestedNodeAddress) return this.awaitClaimApproval();
     this.dispatchECEvent(`Waiting for Ethernity CLOUD network... `);
     const protocolContract = this.protocolContract.getContract();
     const doReq = parseInt(this.doRequest);
@@ -1277,7 +1405,8 @@ class EthernityCloudRunner extends EventTarget {
         taskCode: arr[1],
         taskCodeString: taskStatusName(arr[1]),
         checksum: arr[2],
-        enclaveChallenge: arr[3]
+        enclaveChallenge: arr[3],
+        result: result.result
       };
     } catch (e) {
       throw new Error(ECError.PARSE_ERROR);
@@ -1358,6 +1487,12 @@ class EthernityCloudRunner extends EventTarget {
         return { success: false, operatorFault: true, message: 'Integrity check failed, signer wallet address is wrong.' };
       }
 
+      // A request served by claims reports a code 20, 62, 44, 47, 59 or 63 by
+      // the class its result states (ClaimsPath.afterResult).
+      const report = this.claims
+        ? await this.claims.afterResult(this.orderId, this.nodeAddress, Number(transactionResult.taskCode), transactionResult.result)
+        : null;
+
       // get the result value from IPFS using the `parsedOrderResult.resultIPFSHash`
       const ipfsResult = await ipfsClient.getFromIPFS(parsedOrderResult.resultIPFSHash, this.resultDeadline);
       // decrypt data
@@ -1397,7 +1532,8 @@ class EthernityCloudRunner extends EventTarget {
         resultTaskCode: transactionResult.taskCodeString,
         resultTaskCodeInt: Number(transactionResult.taskCode),
         resultValue: ipfsResult,
-        result: decryptedData.data
+        result: decryptedData.data,
+        ...(report ? { endReport: report.text } : {})
       };
     } catch (ex) {
       //console.log(ex);
@@ -1896,7 +2032,12 @@ class EthernityCloudRunner extends EventTarget {
     // options.inputData: the task's input dataset, a string the payload reads
     // as ___etny_data_set___ (ecld.input). options.v2: the V2 terms of the
     // request (v2TermsOf); the request is then posted through the PoX 2.0's
-    // addDORequestV2 and the token allowance raised to its exact escrow.
+    // addDORequestV2 and the token allowance raised to its exact escrow. On a
+    // network whose requests are served by claims (prepareRequest) the V2
+    // terms are required, options.v2 also takes requiredGflops and
+    // maxBidPerCuHourWei, and options takes minNodeScore, recentFailureSlots,
+    // allowMarkedImage, expireUnstarted, noteRefund and noteAmbiguous
+    // (claims.claimsSettings).
     const inputData = options.inputData == null ? null : options.inputData;
     if (inputData !== null && typeof inputData !== 'string') {
       throw new TypeError('options.inputData must be a string');
@@ -1929,6 +2070,8 @@ class EthernityCloudRunner extends EventTarget {
       return await this._runExclusive(resources, secureLockEnclave, code, nodeAddress, trustedZoneEnclave, options);
     } finally {
       this.v2Terms = null;
+      this.claims = null;
+      this.runOptions = null;
       this._runInFlight = false;
       release();
     }
@@ -1964,6 +2107,8 @@ class EthernityCloudRunner extends EventTarget {
       await this.initializeImageRegistry(secureLockEnclave);
       await this.initializeWeb3Connection();
       await this.checkAllowance();
+      this.runOptions = options;
+      await this.prepareRequest();
       this.challengeHash = generateRandomHexOfSize(20);
       const imageMetadata = await this.getV3ImageMetadata(this.challengeHash);
       const codeMetadata = await this.getV3CodeMetadata(code);
@@ -1976,7 +2121,7 @@ class EthernityCloudRunner extends EventTarget {
       }
       await this.createDORequest(imageMetadata, codeMetadata, inputMetadata);
       await this.findOrder();
-      if (!this.requestedNodeAddress) {
+      if (!this.requestedNodeAddress && !this.claims) {
         await this.approveOrder();
       }
       this.dispatchECEvent(`Session order ${this.orderId} is processing`);
@@ -1985,6 +2130,8 @@ class EthernityCloudRunner extends EventTarget {
       this.handleError(error);
     } finally {
       this.v2Terms = null;
+      this.claims = null;
+      this.runOptions = null;
       this._runInFlight = false;
       release();
     }
@@ -2056,6 +2203,7 @@ class EthernityCloudRunner extends EventTarget {
       this.maxTaskRetries = Number.isInteger(options.maxRetries) ? options.maxRetries : 2;
       this.taskRetryDelayMs = Number.isInteger(options.retryDelayMs) ? options.retryDelayMs : 30000;
       this.orderWaitSeconds = Number.isFinite(options.orderWaitSeconds) ? options.orderWaitSeconds : DEFAULT_ORDER_WAIT_SECONDS;
+      this.runOptions = options;
       // Disambiguate shared-token ECLD testnets (IoTeX/Sepolia/LitVM) from the
       // live provider before any contract call depends on the PoX address.
       await this.resolveNetworkContext();

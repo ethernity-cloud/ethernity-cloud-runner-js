@@ -352,6 +352,14 @@ export const ECNetworkName1Dictionary = {
 //                    descriptor without it has no default storage and is refused
 //                    before any transaction until initializeStorage() is called
 //                    (runner.initializeDefaultStorage).
+//   matchingAddress, matchReaderAddress, matchPageEntries: the PoxMatching and
+//                    the PoxMatchReader of a PoX 2.0 deployment that carries
+//                    them, and the roll entries one paged read of the reader
+//                    asks for (spec/matching.md section 2: 650 on bloxberg, 800
+//                    on Polygon and Amoy, 1,450 on LitVM). A request on such a
+//                    network is served by claims while PoxMatching's claimsOn()
+//                    answers true (runner.prepareRequest). No descriptor names
+//                    them: no PoxMatching is deployed.
 // ---------------------------------------------------------------------------
 export const ECNetworkConfig = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: {
