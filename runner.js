@@ -161,14 +161,21 @@ export const orderStartVerdict = (rows, orderId, block, windowEnd) => {
 // chain fee), which the run approves on the token before the request. Each
 // field is a bigint, a string of decimal digits (surrounding whitespace
 // allowed) or a safe integer; the empty string, a boolean and a hex string are
-// refused. Null when `v2` is not given.
+// refused. Null when `v2` is not given. With `escrowOptional` (a network whose
+// descriptor names a PoxMatching, whose requests may be served by claims) an
+// escrowWei left out is null: the claims path reads the escrow from the
+// reader's escrowFor, and prepareRequest refuses it while claims are off.
 export const V2_TERM_FIELDS = ['maxPricePerCuHourWei', 'maxGflops', 'relaysPerHour', 'gasLevel', 'escrowWei'];
-export const v2TermsOf = (v2) => {
+export const v2TermsOf = (v2, { escrowOptional = false } = {}) => {
   if (v2 === undefined || v2 === null) return null;
   if (typeof v2 !== 'object') throw new TypeError('options.v2 must be an object with the V2 terms');
   const terms = {};
   for (const field of V2_TERM_FIELDS) {
     const value = v2[field];
+    if (field === 'escrowWei' && escrowOptional && (value === undefined || value === null)) {
+      terms[field] = null;
+      continue;
+    }
     let parsed;
     if (typeof value === 'bigint') {
       parsed = value;
@@ -428,14 +435,13 @@ class EthernityCloudRunner extends EventTarget {
   // WARNING event; when every try fails the last try's error, which names
   // the token, the wallet and the provider's message
   // (tokenBalance.readTokenBalance), is thrown as it is: a wallet whose
-  // balance cannot be read is never reported as empty.
+  // balance cannot be read is never reported as empty. V2 terms without an
+  // escrowWei read nothing here: the claims path checks the balance against
+  // the escrow escrowFor answers (ClaimsPath.checkEscrow).
   async checkWalletBalance() {
+    if (this.v2Terms && this.v2Terms.escrowWei === null) return;
     this.dispatchECEvent('Checking wallet balance....');
-    const wallet = await this.tokenContract.getSigner().getAddress();
-    const balance = await retryRead(() => this.tokenContract.getBalance(wallet), {
-      onError: (error, attempt) =>
-        this.dispatchECEvent(`Wallet balance read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${error.message}`, ECLog.WARNING)
-    });
+    const balance = await this.readWalletBalance();
     if (this.v2Terms) {
       // A V2 request's escrow is a wei figure, compared in wei.
       if (ethers.parseEther(String(balance)) < this.v2Terms.escrowWei) {
@@ -449,12 +455,25 @@ class EthernityCloudRunner extends EventTarget {
     }
   }
 
+  // The wallet's token balance, in tokens: the wallet's address resolved
+  // once, then the balance read up to READ_ATTEMPTS times (utils.retryRead),
+  // each failed try a WARNING event, the last try's error thrown as it is.
+  async readWalletBalance() {
+    const wallet = await this.tokenContract.getSigner().getAddress();
+    return retryRead(() => this.tokenContract.getBalance(wallet), {
+      onError: (error, attempt) =>
+        this.dispatchECEvent(`Wallet balance read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${error.message}`, ECLog.WARNING)
+    });
+  }
+
   // The request terms of this run: the V2 terms of options.v2 (v2TermsOf),
   // or null for a legacy request. V2 terms need a PoX apart from the token
   // (hasSeparateProtocol), the EthernityImplementationV2 whose ABI carries
-  // addDORequestV2; called once the network context is resolved.
+  // addDORequestV2; called once the network context is resolved. Their
+  // escrowWei may be left out on a network whose descriptor names a
+  // PoxMatching (matchingAddress).
   selectRequestTerms(v2) {
-    const terms = v2TermsOf(v2);
+    const terms = v2TermsOf(v2, { escrowOptional: Boolean(this.networkConfig && this.networkConfig.matchingAddress) });
     if (terms && !hasSeparateProtocol(this.networkConfig, this.networkAddress)) {
       throw new Error("options.v2: this network's PoX is the token's own proxy and takes no V2 request");
     }
@@ -570,8 +589,11 @@ class EthernityCloudRunner extends EventTarget {
     // bloxberg testnet) pulls the DO request's escrow from the wallet with
     // transferFrom, so the wallet's allowance for it on the token is raised
     // to the escrow first when it is below it. Bloxberg mainnet's PoX is the
-    // token's own proxy and takes the escrow in the request itself.
+    // token's own proxy and takes the escrow in the request itself. V2 terms
+    // without an escrowWei approve nothing here: the claims path approves the
+    // escrow escrowFor answers (ClaimsPath.checkEscrow).
     if (!hasSeparateProtocol(this.networkConfig, this.networkAddress)) return;
+    if (this.v2Terms && this.v2Terms.escrowWei === null) return;
     this.dispatchECEvent('Checking allowance on the current wallet...');
     // The escrow is the exact amount the PoX pulls: a V2 request's escrowWei
     // at addDORequestV2, a legacy request's taskPrice x validators x duration
@@ -638,37 +660,54 @@ class EthernityCloudRunner extends EventTarget {
 
   // The path of the request about to be added (section 8; 13, roll-out step
   // 3), chosen before each add: on a network whose descriptor names a
-  // PoxMatching (matchingAddress) and its reader (matchReaderAddress), a
-  // request pinned to a banned node is refused (D33, 8.11), and while
-  // claimsOn() answers true the request is served by claims (this.claims):
-  // the work earlier requests left (settleMatching) is sent first, the
-  // settings are read (claims.claimsSettings) and the reads before the add are
-  // made (ClaimsPath.checkBeforeAdd). On every other network and while claims
-  // are off this.claims is null and the request is served as before; on a
-  // network whose descriptor names no PoxMatching nothing of it is read.
+  // PoxMatching (matchingAddress), a request pinned to a banned node is
+  // refused (D33, 8.11), and while claimsOn() answers true the request is
+  // served by claims (this.claims): the settings are read
+  // (claims.claimsSettings), the PoxMatchReader PoxMatching names (reader())
+  // is bound, refused while it names none, the work earlier requests left
+  // (settleMatching) is sent, the reads before the add are made
+  // (ClaimsPath.checkBeforeAdd) and the escrow escrowFor answers is checked
+  // and approved (ClaimsPath.checkEscrow). On every other network and while
+  // claims are off this.claims is null and the request is served as before,
+  // V2 terms without an escrowWei refused; on a network whose descriptor
+  // names no PoxMatching nothing of it is read.
   async prepareRequest() {
     this.claims = null;
     const cfg = this.networkConfig;
-    if (!cfg || !cfg.matchingAddress || !cfg.matchReaderAddress) return;
+    if (!cfg || !cfg.matchingAddress) return;
     const chain = this.matchingContracts(cfg);
     const node = normalizeNodeAddress(this.requestedNodeAddress);
     if (node) {
       const ban = await pinnedBan(chain, node);
       if (ban) throw new Error(ban);
     }
-    if (!(await chain.claimsOn())) return;
+    if (!(await chain.claimsOn())) {
+      if (this.v2Terms && this.v2Terms.escrowWei === null) {
+        throw new TypeError('options.v2.escrowWei must be an integer (a bigint, a decimal string or a safe integer): this network serves requests without claims now');
+      }
+      return;
+    }
     const options = this.runOptions || {};
-    const path = new ClaimsPath(this, chain, claimsSettings(this.v2Terms, options.v2, options));
+    const settings = claimsSettings(this.v2Terms, options.v2, options);
+    await chain.bindReader();
+    const path = new ClaimsPath(this, chain, settings);
     await settlePending(this);
     await path.checkBeforeAdd(this.enclaveImageIPFSHash);
+    await path.checkEscrow(`${VERSION}:${this.enclaveImageIPFSHash}:${path.templateName()}`);
     this.claims = path;
   }
 
   // The MatchingContracts of the descriptor `cfg` on the wallet's provider and
   // signer.
   matchingContracts(cfg) {
-    return new MatchingContracts(cfg.protocolAddress, cfg.matchingAddress, cfg.matchReaderAddress,
-      this.protocolContract.getProvider(), this.protocolContract.getSigner(), cfg.matchPageEntries);
+    return new MatchingContracts(cfg.protocolAddress, cfg.matchingAddress, this.protocolContract.getProvider(),
+      this.protocolContract.getSigner(), cfg.matchPageEntries);
+  }
+
+  // The wallet's token balance in wei (readWalletBalance), for the escrow of a
+  // request served by claims.
+  async balanceWei() {
+    return ethers.parseEther(String(await this.readWalletBalance()));
   }
 
   // Whether the run or session submission a request served by claims waits
@@ -2034,10 +2073,11 @@ class EthernityCloudRunner extends EventTarget {
     // request (v2TermsOf); the request is then posted through the PoX 2.0's
     // addDORequestV2 and the token allowance raised to its exact escrow. On a
     // network whose requests are served by claims (prepareRequest) the V2
-    // terms are required, options.v2 also takes requiredGflops and
-    // maxBidPerCuHourWei, and options takes minNodeScore, recentFailureSlots,
-    // allowMarkedImage, expireUnstarted, noteRefund and noteAmbiguous
-    // (claims.claimsSettings).
+    // terms are required, their escrowWei is the most the add may pull and
+    // may be left out (the escrow is the reader's escrowFor), options.v2 also
+    // takes requiredGflops and maxBidPerCuHourWei, and options takes
+    // minNodeScore, recentFailureSlots, allowMarkedImage, expireUnstarted,
+    // noteRefund and noteAmbiguous (claims.claimsSettings).
     const inputData = options.inputData == null ? null : options.inputData;
     if (inputData !== null && typeof inputData !== 'string') {
       throw new TypeError('options.inputData must be a string');

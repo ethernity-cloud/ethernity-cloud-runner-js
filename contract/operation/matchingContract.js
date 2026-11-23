@@ -3,7 +3,7 @@ import {
   imageRegistry as imageRegistryAbi, matching as matchingAbi, pox as poxAbi, reader as readerAbi,
   sessionRegistry as sessionRegistryAbi
 } from '../abi/matchingAbi.js';
-import { decodeTemplate, templateKey } from '../../matching.js';
+import { KIND_DEFAULT_RELEASE, decodeTemplate, templateKey } from '../../matching.js';
 import { withGasHeadroom } from '../../utils.js';
 
 // The roll entries one paged read of the reader asks for (`count` of
@@ -18,19 +18,35 @@ const ZERO_BYTES32 = ethers.ZeroHash;
 // The named answers of an ethers Result as a plain object.
 const named = (result) => result.toObject();
 
+// A bigint of a struct's or a view's answers as a Number when it is a safe
+// integer.
+const plain = (value) => (typeof value === 'bigint' && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value);
+
 // The PoX 2.0 contracts of a network with matching, as a runner reads and
 // sends to them (MATCHING-DESIGN.md section 8): the PoX at `poxAddress`,
-// PoxMatching at `matchingAddress` and PoxMatchReader at `readerAddress`, on
-// the wallet's provider and signer. Every transaction is first made as a call
-// from the runner's wallet (staticCall) and sent only when the call passes; a
-// call that reverts throws what the provider threw and nothing is sent.
+// PoxMatching at `matchingAddress` and PoxMatchReader at the address
+// PoxMatching's reader() answers (bindReader), on the wallet's provider and
+// signer. Every transaction is first made as a call from the runner's wallet
+// (staticCall) and sent only when the call passes; a call that reverts throws
+// what the provider threw and nothing is sent.
 class MatchingContracts {
-  constructor(poxAddress, matchingAddress, readerAddress, provider, signer, pageEntries) {
+  constructor(poxAddress, matchingAddress, provider, signer, pageEntries) {
     this.provider = provider;
     this.pox = new ethers.Contract(poxAddress, poxAbi, signer);
     this.matching = new ethers.Contract(matchingAddress, matchingAbi, signer);
-    this.reader = new ethers.Contract(readerAddress, readerAbi, provider);
+    this.reader = null;
     this.pageEntries = BigInt(pageEntries || DEFAULT_PAGE_ENTRIES);
+  }
+
+  // Binds the PoxMatchReader PoxMatching names (reader(), written once by its
+  // owner) and resolves its address. Throws while PoxMatching names none.
+  async bindReader() {
+    const address = await this.matching.reader();
+    if (BigInt(address) === 0n) {
+      throw new Error(`PoxMatching ${this.matching.target} names no PoxMatchReader (reader() is zero): a request cannot be served by claims on this network yet, and none is sent.`);
+    }
+    this.reader = new ethers.Contract(address, readerAbi, this.provider);
+    return address;
   }
 
   async send(contract, name, args) {
@@ -119,17 +135,43 @@ class MatchingContracts {
     return decodeTemplate(word);
   }
 
-  // The parameter set of a request: the one its record names (the index in
-  // bits 216 to 223 of requestOf's record), by field name.
-  async requestParameters(doRequestId) {
-    const [record] = await this.matching.requestOf(doRequestId);
-    const set = await this.matching.parameterSet((BigInt(record) >> 216n) & 255n);
-    return Object.fromEntries(Object.entries(set.toObject()).map(([k, v]) => [k, typeof v === 'bigint' && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v]));
+  // PoxMatching's parameter set `index`, by field name.
+  async parameterSet(index) {
+    const set = await this.matching.parameterSet(index);
+    return Object.fromEntries(Object.entries(set.toObject()).map(([k, v]) => [k, plain(v)]));
   }
 
+  // Whether a code 33 in the order's stored result is a timeout before its
+  // time on its template's constants, as PoxMatching judges it.
+  async early33(orderId) { return Boolean(await this.matching.early33(orderId)); }
+
+  // requestInfo by field name; `parameterSet` is the index of the set the
+  // request takes, NO_PARAMETER_SET (256) when none is in force.
   async requestInfo(doRequestId) { return named(await this.reader.requestInfo(doRequestId)); }
 
-  async scheduleOf(doRequestId) { return named(await this.reader.scheduleOf(doRequestId)); }
+  // { roundStamp, canClaim } of `nodes` at the request's current round:
+  // whether each can still claim it, as scheduleOf's canClaim answers it for
+  // the mandated nodes.
+  async canClaimOf(doRequestId, nodes) {
+    const [roundStamp, canClaim] = await this.reader.canClaimOf(doRequestId, nodes);
+    return { roundStamp: ethers.hexlify(roundStamp), canClaim: [...canClaim].map(Boolean) };
+  }
+
+  // What addDORequestV2 pulls for these terms in the latest block, by field
+  // name: escrowWei, its work part workWei at escrowGflops, chainFeeWei, and
+  // the publishers' fee percents trustedZoneFee and secureLockFee that
+  // `metadata1` (fields 1 and 2) carries.
+  async escrowFor(hours, bidWei, maxGflops, relaysPerHour, gasLevel, metadata1) {
+    const e = named(await this.reader.escrowFor(hours, bidWei, maxGflops, relaysPerHour, gasLevel, metadata1));
+    return {
+      escrowWei: BigInt(e.escrowWei),
+      workWei: BigInt(e.workWei),
+      chainFeeWei: BigInt(e.chainFeeWei),
+      escrowGflops: Number(e.escrowGflops),
+      trustedZoneFee: Number(e.trustedZoneFee),
+      secureLockFee: Number(e.secureLockFee)
+    };
+  }
 
   // The `candidates` pages of one read of round `round`: from the top of the
   // roll, or with `beyond` set on from the last page of `start`, a read without
@@ -225,17 +267,30 @@ class MatchingContracts {
 
   // What the image registry PoxMatching names (ECImageRegistryV4) and its
   // SessionRegistry hold for the securelock image `imageCid`: `registry`
-  // (null when PoxMatching names none), `defaultRelease` (hasDefaultRelease),
-  // the session it is bound to (`session`, zero for none), the newest version
-  // of that session's name (`latest`) and the image that version is bound to
-  // (`currentImage`).
+  // (null when PoxMatching names none), `records` (imageRecords: { kind,
+  // release, networkOn, enclaveMemoryGiB, minScoreSet, minScore }, null
+  // without a registry), `releaseLanguage` (the language of the default
+  // release kind 1 records name, else null), the session it is bound to
+  // (`session`, zero for none), the newest version of that session's name
+  // (`latest`) and the image that version is bound to (`currentImage`).
   async imageRecords(imageCid) {
-    const found = { registry: null, defaultRelease: false, session: ZERO_BYTES32, latest: ZERO_BYTES32, currentImage: null };
+    const found = { registry: null, records: null, releaseLanguage: null, session: ZERO_BYTES32, latest: ZERO_BYTES32, currentImage: null };
     const registry = await this.matching.imageRegistry();
     if (BigInt(registry) === 0n) return found;
     found.registry = registry;
     const images = new ethers.Contract(registry, imageRegistryAbi, this.provider);
-    found.defaultRelease = Boolean(await images.hasDefaultRelease(imageCid));
+    const held = (await images.imageRecords(imageCid)).toObject();
+    found.records = {
+      kind: Number(held.kind),
+      release: Number(held.release),
+      networkOn: Boolean(held.networkOn),
+      enclaveMemoryGiB: Number(held.enclaveMemoryGiB),
+      minScoreSet: Boolean(held.minScoreSet),
+      minScore: Number(held.minScore)
+    };
+    if (found.records.kind === KIND_DEFAULT_RELEASE) {
+      found.releaseLanguage = Number((await images.defaultRelease(found.records.release)).language);
+    }
     const sessionsAddress = await images.sessionRegistry();
     if (BigInt(sessionsAddress) === 0n) return found;
     const sessions = new ethers.Contract(sessionsAddress, sessionRegistryAbi, this.provider);

@@ -1,11 +1,12 @@
 // matching.js (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 // sections 3 to 9, 13 and 17) on the shared fixtures of
-// pox-smart-contract-litvm spec/ at 0c8a06b, held byte for byte in
-// test/fixtures/matching/ with their MANIFEST lines.
+// pox-smart-contract-litvm spec/ at 7611a81, held byte for byte in
+// test/fixtures/matching/ with their MANIFEST lines, and the runner's ABI
+// entries (contract/abi/matchingAbi.js) against that commit's.
 //
 // ranking.json holds, per ranking case, the reader's `candidates` answers;
 // the runner's merge of those pages, its list hash, its matching count, the
-// band it gives each entry and its mandated sequence equal the reader's
+// band each entry's place names and its mandated sequence equal the reader's
 // answers and each roll node's turn. matching-rank.json holds the reference
 // rule's results: the seed, the keys, the need, the template and image keys,
 // the list's order, the mandated sequence, the stop band, the steps, the
@@ -21,12 +22,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import * as matching from '../matching.js';
+import * as matchingAbi from '../contract/abi/matchingAbi.js';
 import EthernityCloudRunner from '../runner.js';
 import protocolContractPolygon from '../contract/abi/polygonProtocolAbi.js';
 
 const SPEC = fileURLToPath(new URL('./fixtures/matching/', import.meta.url));
 const SOURCE = path.resolve(SPEC, '..', '..', '..', '..', 'pox-smart-contract-litvm');
-const SOURCE_COMMIT = '0c8a06b';
+const SOURCE_COMMIT = '7611a81';
 const COPIES = ['matching-rank.json', 'matching.md', 'ranking.json', 'result-fields.json'];
 const load = (name) => JSON.parse(readFileSync(path.join(SPEC, name), 'utf8'));
 const RANKING = load('ranking.json');
@@ -44,14 +46,15 @@ const manifest = () => {
   return entries;
 };
 
-const shown = (name) => {
+const shownAt = (file) => {
   if (!existsSync(path.join(SOURCE, '.git'))) return null;
   try {
-    return execFileSync('git', ['-C', SOURCE, 'show', `${SOURCE_COMMIT}:spec/${name}`], { maxBuffer: 1 << 24 });
+    return execFileSync('git', ['-C', SOURCE, 'show', `${SOURCE_COMMIT}:${file}`], { maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) {
     return null;
   }
 };
+const shown = (name) => shownAt(`spec/${name}`);
 
 for (const name of COPIES) {
   test(`${name} hashes to its manifest line`, () => {
@@ -78,6 +81,33 @@ test('the manifest lines are the source commit\'s', (t) => {
   assert.deepEqual(Object.fromEntries(COPIES.map((n) => [n, lines[n]])), manifest());
 });
 
+// Where each group of the runner's ABI entries comes from in the source
+// commit; an artifact holds its ABI under "abi".
+const ABI_SOURCES = {
+  pox: 'abi/EthernityImplementationV2_2_0.json',
+  matching: 'abi/IPoxMatching.json',
+  reader: 'abi/IPoxMatchReader.json',
+  imageRegistry: 'abi/IECImageRegistryV4.json',
+  sessionRegistry: 'artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json'
+};
+
+for (const [group, file] of Object.entries(ABI_SOURCES)) {
+  test(`the ${group} ABI entries are the source commit's`, (t) => {
+    const source = shownAt(file);
+    if (source === null) {
+      t.skip(`no pox-smart-contract-litvm checkout holding ${SOURCE_COMMIT} at ${SOURCE}`);
+      return;
+    }
+    const parsed = JSON.parse(source.toString('utf8'));
+    const contract = new ethers.Interface(Array.isArray(parsed) ? parsed : parsed.abi);
+    for (const fragment of new ethers.Interface(matchingAbi[group]).fragments) {
+      const found = fragment.type === 'event' ? contract.getEvent(fragment.topicHash) : contract.getFunction(fragment.selector);
+      assert.ok(found, fragment.format('full'));
+      assert.equal(fragment.format('full'), found.format('full'));
+    }
+  });
+}
+
 // ------------------------------------------------------------- helpers
 
 // The reader's list word of a fixture entry (spec/matching.md 3).
@@ -88,7 +118,7 @@ const pageOf = (stamp, entries, read) => ({
   roundStamp: stamp,
   eligible: entries.map(wordOf),
   tips: entries.map((e) => BigInt(e.tipWei)),
-  indexes: entries.map((e) => e.index),
+  places: entries.map((e) => matching.placeOf(e.band, e.index)),
   hOut: read.listHash,
   matchFoundOut: read.matchFound,
   done: read.done,
@@ -104,7 +134,7 @@ const entriesOf = (rankCase) => {
   const base = expected.baseWei ? BigInt(expected.baseWei) : 0n;
   return [...(expected.list || [])]
     .sort((a, b) => (b.band - a.band) || (a.rollIndex - b.rollIndex))
-    .map((e) => matching.decodeEligible(BigInt(e.word), BigInt(e.priceWei) - base, e.rollIndex, setOf(rankCase).bandWidth));
+    .map((e) => matching.decodeEligible(BigInt(e.word), BigInt(e.priceWei) - base, matching.placeOf(e.band, e.rollIndex)));
 };
 
 const STAMP = `0x${'01'.repeat(32)}`;
@@ -127,12 +157,14 @@ for (const c of RANKING.cases) {
     const { beyond } = c.candidates;
     if (beyond) pages.push(pageOf(STAMP, beyond.eligible, { ...beyond, listHash: read.listHash, matchFound: read.matchFound }));
     if (!read.settled) {
-      assert.throws(() => matching.mergeCandidates(pages, params.bandWidth, params.maxSteps), matching.Unsettled);
+      assert.throws(() => matching.mergeCandidates(pages, params.maxSteps), matching.Unsettled);
       pages = pages.map((p) => ({ ...p, settled: true }));
     }
-    const merged = matching.mergeCandidates(pages, params.bandWidth, params.maxSteps);
+    const merged = matching.mergeCandidates(pages, params.maxSteps);
     assert.equal(merged.listHash, read.listHash);
     assert.equal(merged.matchFound, read.matchFound);
+    const answered = read.eligible.concat(beyond ? beyond.eligible : []);
+    assert.deepEqual(merged.entries.map((e) => [e.band, e.index]), answered.map((e) => [e.band, e.index]));
     const bands = new Set(c.roll.bands.flatMap((b) => b.entries.map((e) => `${e.node}|${b.band}`)));
     for (const e of merged.entries) assert.ok(bands.has(`${e.node}|${e.band}`), e.node);
     const schedule = new matching.Schedule(merged.entries, c.request.seed, params.maxSteps);
@@ -147,12 +179,29 @@ test('a page of another stamp restarts the read', () => {
   const { read } = RANKING.cases[0].candidates;
   const first = pageOf(STAMP, read.eligible.slice(0, 2), { ...read, done: false });
   const second = pageOf(`0x${'02'.repeat(32)}`, read.eligible.slice(2), read);
-  assert.throws(() => matching.mergeCandidates([first, second], 1000, 8), matching.StampChanged);
+  assert.throws(() => matching.mergeCandidates([first, second], 8), matching.StampChanged);
 });
 
 test('a page left out is found by the hash', () => {
   const { read } = RANKING.cases[0].candidates;
-  assert.throws(() => matching.mergeCandidates([pageOf(STAMP, read.eligible.slice(1), read)], 1000, 8), /list hash/);
+  assert.throws(() => matching.mergeCandidates([pageOf(STAMP, read.eligible.slice(1), read)], 8), /list hash/);
+});
+
+// An entry written into its band under another bandWidth stands in the band
+// its place names: two scores of band 24 at a bandWidth of 1,000, one of them
+// in band 12, the second matching entry of a read with maxSteps 2 ending the
+// stop band there.
+test('the band is the place\'s, not the score\'s', () => {
+  const [first, second] = RANKING.cases[0].candidates.read.eligible.slice(0, 2).map((e) => ({ ...e }));
+  Object.assign(first, { score: 24500, band: 24, index: 0, match: true });
+  Object.assign(second, { score: 24900, band: 12, index: 3, match: true });
+  const entries = [first, second].map((e) => matching.decodeEligible(wordOf(e), BigInt(e.tipWei), matching.placeOf(e.band, e.index)));
+  const [listHash, matchFound, stopBand] = matching.listHashOf(entries, 2);
+  const merged = matching.mergeCandidates([pageOf(STAMP, [first, second], { listHash, matchFound, done: true, settled: true })], 2);
+  assert.deepEqual(merged.entries.map((e) => [e.band, e.index]), [[24, 0], [12, 3]]);
+  assert.equal(merged.stopBand, 12);
+  assert.equal(stopBand, 12);
+  assert.deepEqual(new matching.Schedule(merged.entries, ethers.ZeroHash, 2).order.map((e) => e.node), [first.node, second.node]);
 });
 
 // ------------------------------------------------------- matching-rank.json
@@ -199,20 +248,22 @@ for (const c of RANK.paging) {
     const pages = [];
     let merged;
     for (const page of c.expected.pages) {
-      for (const e of page.eligible) {
-        assert.equal(matching.decodeEligible(BigInt(e.word), BigInt(e.tipWei), e.index, params.bandWidth).band, e.band);
-      }
+      const places = page.eligible.map((e) => matching.placeOf(e.band, e.index));
+      page.eligible.forEach((e, i) => {
+        const decoded = matching.decodeEligible(BigInt(e.word), BigInt(e.tipWei), places[i]);
+        assert.deepEqual([decoded.band, decoded.index], [e.band, e.index]);
+      });
       pages.push({
         roundStamp: STAMP,
         eligible: page.eligible.map((e) => BigInt(e.word)),
         tips: page.eligible.map((e) => BigInt(e.tipWei)),
-        indexes: page.eligible.map((e) => e.index),
+        places,
         hOut: page.hOut,
         matchFoundOut: page.matchFoundOut,
         done: page.done,
         settled: true
       });
-      merged = matching.mergeCandidates(pages, params.bandWidth, params.maxSteps);
+      merged = matching.mergeCandidates(pages, params.maxSteps);
       assert.equal(merged.done, page.done);
     }
     assert.equal(merged.listHash, c.expected.listHash);

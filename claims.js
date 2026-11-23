@@ -5,9 +5,9 @@
 // members have not sent (3.16, 3.19).
 //
 // EthernityCloudRunner builds a ClaimsPath for a request on a network whose
-// descriptor names PoxMatching and its reader when claimsOn() answers true
-// before the add; on every other network, and while claims are off, it serves
-// the request as it did before (8.4).
+// descriptor names PoxMatching when claimsOn() answers true before the add, on
+// the PoxMatchReader PoxMatching names; on every other network, and while
+// claims are off, it serves the request as it did before (8.4).
 import { ethers } from 'ethers';
 import * as matching from './matching.js';
 import { requestTerms } from './contract/operation/requestTerms.js';
@@ -22,16 +22,18 @@ export const NOTE_AMBIGUOUS_AFTER_SECONDS = 3600;
 const HINT_NODES = 3;
 
 // The settings a request served by claims reads (section 8 items 1, 5, 6, 9,
-// 10, 12 and 16): the V2 terms of options.v2 (runner.v2TermsOf) with their
-// requiredGflops (0: one CU, D38) and maxBidPerCuHourWei, the bid ceiling a
-// raise stays within (none: the quote is reported and nothing is raised), and
-// of `options` minNodeScore (points, 0.50; 0 switches the test off),
+// 10, 12 and 16): the V2 terms of options.v2 (runner.v2TermsOf), whose
+// escrowWei, when given, is the most the add may pull (the escrow itself is
+// the reader's escrowFor at the request's terms), with their requiredGflops
+// (0: one CU, D38) and maxBidPerCuHourWei, the bid ceiling a raise stays
+// within (none: the quote is reported and nothing is raised), and of
+// `options` minNodeScore (points, 0.50; 0 switches the test off),
 // recentFailureSlots, allowMarkedImage, expireUnstarted, noteRefund and
 // noteAmbiguous. Throws, before anything is sent, for a request without V2
 // terms and for a setting out of its range.
 export const claimsSettings = (v2Terms, v2, options = {}) => {
   if (!v2Terms) {
-    throw new Error('This network serves DO requests by claims (PoxMatching\'s claimsOn() is true), so a request is added with V2 terms: pass options.v2 with maxPricePerCuHourWei and escrowWei.');
+    throw new Error('This network serves DO requests by claims (PoxMatching\'s claimsOn() is true), so a request is added with V2 terms: pass options.v2 with maxPricePerCuHourWei; its escrowWei, when given, is the most addDORequestV2 may pull.');
   }
   const whole = (value, name, fallback) => {
     if (value === undefined || value === null) return fallback;
@@ -51,6 +53,11 @@ export const claimsSettings = (v2Terms, v2, options = {}) => {
     noteAmbiguous: options.noteAmbiguous !== false
   };
 };
+
+// requestInfo names no parameter set in force for the request
+// (matching.NO_PARAMETER_SET): it has no schedule, so no claim on it is
+// approved by the rule of 3.10.
+export class NoParameterSet extends Error {}
 
 const utc = (seconds) => new Date(Number(seconds) * 1000).toISOString();
 
@@ -134,6 +141,13 @@ export class ClaimsPath {
     this.template = null;
     this.envelope = matching.ENVELOPE_WHOLE_PASS;
     this.defaultClass = false;
+    // The image's records in the image registry (imageRecords; null when
+    // PoxMatching names no registry) and the dApp's minimum operator score
+    // they hold (matching.dappMinimum).
+    this.records = null;
+    this.dappMinScore = null;
+    // The escrow the add pulls, escrowFor at the request's terms.
+    this.escrowWei = null;
     this.params = null;
     this.round = null;
     this.hints = [];
@@ -154,12 +168,14 @@ export class ClaimsPath {
     return this.runner.resolveTrustedZoneImage();
   }
 
-  // The reads before the add (8.1, 8.12, 8.13, 3.19): the template's record
-  // and the envelope its mark chooses; the image's health, a marked image
-  // refused unless allowMarkedImage is set; the image registry's records, an
-  // image its session name's newest version is not bound to refused with the
-  // dApp's current image named; the class; and the quote at the request's
-  // terms. Each refusal is thrown before anything is sent.
+  // The reads before the add (8.1, 8.6, 8.12, 8.13, 3.19): the template's
+  // record and the envelope its mark chooses; the image's health, a marked
+  // image refused unless allowMarkedImage is set; the image registry's
+  // records, told to the client (the kind, the network flag, the enclave
+  // memory and the dApp's minimum operator score, which the runner applies:
+  // D138), an image its session name's newest version is not bound to refused
+  // with the dApp's current image named; the class; and the quote at the
+  // request's terms. Each refusal is thrown before anything is sent.
   async checkBeforeAdd(imageCid) {
     this.imageCid = imageCid;
     const templateName = this.templateName();
@@ -178,16 +194,25 @@ export class ClaimsPath {
     } else if (health.s7 === 0 && health.f7 === 0) {
       this.notice(`The image ${imageCid} has had no counted order in the last 7 days, so no mark of its health can show.`, ECLog.INFO);
     }
-    const records = await this.chain.imageRecords(imageCid);
-    if (records.currentImage) {
-      throw new Error(`The image ${imageCid} is not the one its session name's newest version is bound to: the dApp's current image is ${records.currentImage}. The request is not sent.`);
+    const found = await this.chain.imageRecords(imageCid);
+    this.records = found.records;
+    this.dappMinScore = matching.dappMinimum(this.records);
+    if (this.records) this.notice(matching.recordsText(imageCid, this.records, found.releaseLanguage), ECLog.INFO);
+    if (found.currentImage) {
+      throw new Error(`The image ${imageCid} is not the one its session name's newest version is bound to: the dApp's current image is ${found.currentImage}. The request is not sent.`);
     }
-    this.defaultClass = Boolean(records.defaultRelease && this.template.marked && !this.runner.isUnsafe()
-      && BigInt(records.session) !== 0n && records.latest === records.session);
+    const defaultRelease = Boolean(this.records && this.records.kind === matching.KIND_DEFAULT_RELEASE);
+    this.defaultClass = Boolean(defaultRelease && this.template.marked && !this.runner.isUnsafe()
+      && BigInt(found.session) !== 0n && found.latest === found.session);
     if (this.template.marked && !this.defaultClass) {
-      this.notice('The image is of the custom class: a code 20 or 62 of this request is paid to the operator, and the developer and the client carry that risk; the minimum operator score is their protection.', ECLog.INFO);
+      const kind = this.records && this.records.kind !== matching.KIND_NONE
+        ? ` (${matching.kindText(this.records, found.releaseLanguage)})` : '';
+      this.notice(`The image is of the custom class${kind}: a code 20 or 62 of this request is paid to the operator, and the developer and the client carry that risk; the minimum operator score is their protection.`, ECLog.INFO);
       if (this.settings.minScore !== null) {
-        this.notice(`The minimum node score is set to ${(this.settings.minScore / 10000).toFixed(4)} for this request, in place of the top tier: a 20 or 62 of it is paid to the operator at the client's risk.`);
+        const instead = this.dappMinScore !== null
+          ? `the dApp's minimum operator score of ${(this.dappMinScore / matching.SCORE_UNITS_PER_POINT).toFixed(4)}`
+          : 'the top tier';
+        this.notice(`The minimum node score is set to ${(this.settings.minScore / 10000).toFixed(4)} for this request, in place of ${instead}: a 20 or 62 of it is paid to the operator at the client's risk.`);
       }
     }
     await this.quoteBeforeAdd(templateName);
@@ -198,6 +223,7 @@ export class ClaimsPath {
     const [needGflops, ceilGflops] = matching.needOf(this.maxGflops());
     const minimum = matching.minimumScore({
       explicit: this.settings.minScore,
+      dappMinimum: this.dappMinScore,
       defaultClass: this.defaultClass,
       minimumOn: this.defaultClass && await this.chain.minimumOn(),
       tier: 0
@@ -218,6 +244,30 @@ export class ClaimsPath {
   // The V2 add's maxGflops: the required GFLOPS and the ceiling of the terms.
   maxGflops() {
     return matching.maxGflopsArg(this.settings.requiredGflops, Number(this.settings.terms.maxGflops));
+  }
+
+  // The escrow the add pulls, the reader's escrowFor at the request's terms and
+  // `metadata1` (its fields 1 and 2, the image and the template, carry the
+  // publishers' fees), told to the client; the wallet's balance against it;
+  // and the wallet's allowance for the PoX, raised to the escrow when below
+  // it. Resolves the escrow, in wei. Throws, before anything is sent, for an
+  // escrow above options.v2.escrowWei and for a wallet below it.
+  async checkEscrow(metadata1) {
+    const { terms } = this.settings;
+    const escrow = await this.chain.escrowFor(requestTerms(this.runner.resources).duration, terms.maxPricePerCuHourWei,
+      this.maxGflops(), terms.relaysPerHour, terms.gasLevel, metadata1);
+    const wei = escrow.escrowWei;
+    if (terms.escrowWei !== null && terms.escrowWei !== undefined && wei > terms.escrowWei) {
+      throw new Error(`The request's escrow at its terms is ${wei} wei, above options.v2.escrowWei of ${terms.escrowWei}: the request is not sent.`);
+    }
+    this.notice(`The request's escrow is ${wei} wei: the work ${escrow.workWei} at ${escrow.escrowGflops} GFLOPS, the fees on it (the publishers' ${escrow.trustedZoneFee} % and ${escrow.secureLockFee} %) and the chain fee ${escrow.chainFeeWei}.`, ECLog.INFO);
+    const balance = await this.runner.balanceWei();
+    if (balance < wei) {
+      throw new Error(`Insufficient wallet balance: the request's escrow is ${wei} wei and the wallet holds ${balance}.`);
+    }
+    await this.runner.allowWei(wei);
+    this.escrowWei = wei;
+    return wei;
   }
 
   // addDORequestV2 with the run's resources and V2 terms.
@@ -242,6 +292,10 @@ export class ClaimsPath {
         const order = await this.tick(doRequestId);
         if (order !== null) return order;
       } catch (e) {
+        if (e instanceof NoParameterSet) {
+          this.notice(e.message);
+          return null;
+        }
         if (e instanceof matching.StampChanged || e instanceof matching.Unsettled) {
           this.round = null;
         } else {
@@ -253,10 +307,24 @@ export class ClaimsPath {
     return null;
   }
 
+  // The parameter set request `doRequestId` takes, the one its requestInfo
+  // `info` names, read once. Throws NoParameterSet when none is in force for
+  // it.
+  async parameters(doRequestId, info) {
+    if (this.params === null) {
+      const index = Number(info.parameterSet);
+      if (index === matching.NO_PARAMETER_SET) {
+        throw new NoParameterSet(`No parameter set of PoxMatching is in force for request ${doRequestId}: it has no schedule, and no claim on it is approved.`);
+      }
+      this.params = await this.chain.parameterSet(index);
+    }
+    return this.params;
+  }
+
   async tick(doRequestId) {
     const info = await this.chain.requestInfo(doRequestId);
     if (!info.settled) return null;
-    if (this.params === null) this.params = await this.chain.requestParameters(doRequestId);
+    await this.parameters(doRequestId, info);
     const stamp = ethers.hexlify(info.roundStamp);
     if (this.round === null || this.round.stamp !== stamp) this.round = await this.readRound(doRequestId, info);
     let rnd = this.round;
@@ -308,7 +376,7 @@ export class ClaimsPath {
     let whole = true;
     if (info.ranked) {
       pages = await this.chain.candidatePages(doRequestId, Number(info.round));
-      read = matching.mergeCandidates(pages, Number(this.params.bandWidth), maxSteps);
+      read = matching.mergeCandidates(pages, maxSteps);
       if (read.stamp !== stamp) throw new matching.StampChanged('the list read answered another round stamp than requestInfo');
       whole = read.matchFound < maxSteps || read.stopBand === 0;
     }
@@ -327,16 +395,18 @@ export class ClaimsPath {
   // the last page of its read (4.6), for the order of rule 3.
   async readBeyond(doRequestId, info, rnd) {
     const pages = rnd.pages.concat(await this.chain.candidatePages(doRequestId, Number(info.round), true, rnd.pages[rnd.pages.length - 1]));
-    const read = matching.mergeCandidates(pages, Number(this.params.bandWidth), Number(this.params.maxSteps));
+    const read = matching.mergeCandidates(pages, Number(this.params.maxSteps));
     if (read.stamp !== rnd.stamp) throw new matching.StampChanged('the read on with beyond answered another round stamp');
     return { ...rnd, schedule: new matching.Schedule(read.entries, info.seed, Number(this.params.maxSteps)), pages, whole: true };
   }
 
-  // The minimum score of the round (3.10 rule 5, D138): the setting, else for
-  // a dApp of the default class D62's default once minimumOn() answers true,
-  // else the top tier of the round.
+  // The minimum score of the round (3.10 rule 5, D138): the setting, else the
+  // dApp's minimum operator score its records hold, else for a dApp of the
+  // default class D62's default once minimumOn() answers true, else the top
+  // tier of the round.
   async minimum(doRequestId) {
     if (this.settings.minScore !== null) return this.settings.minScore;
+    if (this.dappMinScore !== null) return this.dappMinScore;
     if (this.defaultClass) return matching.minimumScore({ defaultClass: true, minimumOn: await this.chain.minimumOn() });
     return matching.minimumScore({ defaultClass: false, tier: await this.chain.tierScore(doRequestId) });
   }
@@ -360,7 +430,8 @@ export class ClaimsPath {
 
   // Every claim on the request at this read, each { block, approvable,
   // dpRequestId }, and whether each mandated node can still claim
-  // (scheduleOf's canClaim).
+  // (canClaimOf). Throws StampChanged when canClaimOf answers another round
+  // stamp.
   async claimsNow(doRequestId, info, rnd) {
     const claims = new Map();
     for (const [node, word, approvable] of await this.chain.claimers(doRequestId, Number(info.claimCount))) {
@@ -369,10 +440,9 @@ export class ClaimsPath {
     }
     const canClaim = new Map();
     if (rnd.schedule.mandated.length) {
-      const schedule = await this.chain.scheduleOf(doRequestId);
-      if (ethers.hexlify(schedule.roundStamp) === rnd.stamp && schedule.complete) {
-        schedule.mandated.forEach((n, i) => canClaim.set(n.toLowerCase(), Boolean(schedule.canClaim[i])));
-      }
+      const answer = await this.chain.canClaimOf(doRequestId, rnd.schedule.mandated);
+      if (ethers.hexlify(answer.roundStamp) !== rnd.stamp) throw new matching.StampChanged('canClaimOf answered another round stamp');
+      rnd.schedule.mandated.forEach((n, i) => canClaim.set(n.toLowerCase(), Boolean(answer.canClaim[i])));
     }
     return { claims, canClaim };
   }
@@ -435,11 +505,17 @@ export class ClaimsPath {
   // the PoX holds orderStartedAt; while it does not, startTimeoutSeconds (900)
   // after the approval, the order is ended with expireUnstarted, made as a
   // call first, and the fault that resubmits the task is returned. With the
-  // setting off nothing is sent.
+  // setting off nothing is sent. The parameter set is the one requestInfo
+  // names for the run's request, read here when no approval read it (a pinned
+  // request).
   async startCheck(orderId) {
     if (await this.chain.orderStartedAt(orderId)) return { started: true, fault: null };
     if (!this.settings.expireUnstarted) return { started: false, fault: null };
     const approved = await this.chain.orderApprovedAt(orderId);
+    if (this.params === null) {
+      const doRequestId = parseInt(this.runner.doRequest, 10);
+      await this.parameters(doRequestId, await this.chain.requestInfo(doRequestId));
+    }
     const timeout = Number(this.params.startTimeoutSeconds);
     if ((await this.chain.chainTime()) <= approved + timeout) return { started: false, fault: null };
     try {
@@ -462,15 +538,18 @@ export class ClaimsPath {
     this.notice(`Order ${orderId} has no result in its time; the PoX admits expireOrder one pricing epoch after its end: settleMatching() sends it then, with noteRefund.`);
   }
 
-  // Section 8 item 16 and 3.19 for an order that closed with a result: the
-  // runner's local list records an end it counts, a code 20, 62, 44, 47, 59 or
-  // 63 is reported by the class the result states, and an end noteAmbiguous
-  // takes is kept for settleMatching(), which sends it an hour after the
-  // result when the members have not.
+  // Section 8 item 16 and 3.19 for an order that closed with a result: a code
+  // 33 is judged by PoxMatching's early33, a 33 before its time being settled
+  // as a 62; the runner's local list records an end it counts; a code 20, 62,
+  // 44, 47, 59 or 63, or a 33 before its time, is reported by the class the
+  // result states; and an end noteAmbiguous takes is kept for
+  // settleMatching(), which sends it an hour after the result when the
+  // members have not.
   async afterResult(orderId, node, code, result) {
     const now = await this.chain.chainTime();
-    this.runner.localList.record(this.imageCid, node, code, now);
-    const report = matching.endReport(code, matching.resultFields(result));
+    const early = Number(code) === matching.CODE_TIMEOUT && await this.chain.early33(orderId);
+    this.runner.localList.record(this.imageCid, node, code, now, early);
+    const report = matching.endReport(code, matching.resultFields(result), early);
     if (report === null) return null;
     this.notice(report.text);
     if (report.ambiguous && this.settings.noteAmbiguous) {

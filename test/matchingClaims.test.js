@@ -1,11 +1,14 @@
 // A request served by claims (claims.ClaimsPath; MATCHING-DESIGN.md section
-// 8): the approval of a claim at the read of each block, the raise within the
-// bid ceiling over the nodes at or above the minimum, the nodes the runner
-// passes over (its local list, a paid class's recent counted failures), the
-// order that does not start (expireUnstarted) and the one that expires
-// (expireOrder, noteRefund), the report of an end by class and the
-// noteAmbiguous sent an hour after the result, and the checks before the add
-// (a pinned node's ban, the image's health and registry records, the quote).
+// 8): the approval of a claim at the read of each block on the parameter set
+// requestInfo names, the raise within the bid ceiling over the nodes at or
+// above the minimum, the nodes the runner passes over (a mandated node
+// canClaimOf says cannot claim, its local list, a paid class's recent counted
+// failures), the order that does not start (expireUnstarted) and the one that
+// expires (expireOrder, noteRefund), the report of an end by class, a 33
+// before its time among them (early33), and the noteAmbiguous sent an hour
+// after the result, and the checks before the add (a pinned node's ban, the
+// image's health, its records in ECImageRegistryV4 and the dApp's minimum
+// operator score, the quote, the escrow escrowFor answers).
 //
 // The chain is a stand-in for MatchingContracts that answers from Example 1 of
 // 3.8 (matching-rank.json `example-1`, bid 1.2 ECLD per CU-hour; its rounds
@@ -14,9 +17,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { ethers } from 'ethers';
 import * as matching from '../matching.js';
 import { ClaimsPath, claimsSettings, hintWords, pinnedBan, settlePending } from '../claims.js';
 import MatchingContracts from '../contract/operation/matchingContract.js';
+import * as matchingAbi from '../contract/abi/matchingAbi.js';
 
 const RANK = JSON.parse(readFileSync(new URL('./fixtures/matching/matching-rank.json', import.meta.url), 'utf8'));
 const CASE = RANK.ranking.find((c) => c.name === 'example-1');
@@ -55,6 +60,15 @@ class FakeChain {
     this.refuse = new Set();
     this.time = NOW;
     this.marked = false;
+    this.parameterIndex = 0;
+    this.parameterReads = [];
+    this.cannotClaim = new Set();
+    this.canClaimReads = [];
+    this.early = false;
+    this.earlyReads = [];
+    this.escrow = { escrowWei: 2n * 10n ** 18n, workWei: 16n * 10n ** 17n, chainFeeWei: 10n ** 16n, escrowGflops: 400, trustedZoneFee: 10, secureLockFee: 5 };
+    this.escrowReads = [];
+    this.listReads = 0;
   }
 
   visible() { return this.claimsList.filter(([, b]) => b <= this.block); }
@@ -67,18 +81,23 @@ class FakeChain {
       roundBlock: this.roundBlock,
       closedStep: Math.max(0, matching.stepAt(this.block + 1, this.roundBlock, PARAMS.stepBlocks, PARAMS.leadBlocks) - 1),
       stepNow: matching.stepAt(this.block, this.roundBlock, PARAMS.stepBlocks, PARAMS.leadBlocks),
-      claimCount: this.visible().length, claimedInRound: this.visible().length > 0
+      claimCount: this.visible().length, claimedInRound: this.visible().length > 0, parameterSet: this.parameterIndex
     };
   }
 
-  async requestParameters() { return { ...PARAMS }; }
+  async parameterSet(index) {
+    this.parameterReads.push(index);
+    return { ...PARAMS };
+  }
 
   async candidatePages() {
-    const entries = LISTED.map((e) => matching.decodeEligible(BigInt(e.word), BigInt(e.priceWei) - BASE, e.rollIndex, 1000));
+    this.listReads += 1;
+    const places = LISTED.map((e) => matching.placeOf(e.band, e.rollIndex));
+    const entries = LISTED.map((e, i) => matching.decodeEligible(BigInt(e.word), BigInt(e.priceWei) - BASE, places[i]));
     const [h, found] = matching.listHashOf(entries, PARAMS.maxSteps);
     return [{
       roundStamp: this.stamp, eligible: LISTED.map((e) => BigInt(e.word)), tips: LISTED.map((e) => BigInt(e.priceWei) - BASE),
-      indexes: LISTED.map((e) => e.rollIndex), hOut: h, matchFoundOut: found, nextBand: 0, nextFrom: 0n, done: true, settled: true
+      places, hOut: h, matchFoundOut: found, nextBand: 0, nextFrom: 0n, done: true, settled: true
     }];
   }
 
@@ -86,7 +105,20 @@ class FakeChain {
     return this.visible().slice(0, count).map(([node, block, approvable]) => [node, claimWord(DP[node] ?? 999n, block), approvable]);
   }
 
-  async scheduleOf() { return { roundStamp: this.stamp, complete: true, mandated: [N1, N5, N2, N3, LABELS.N4], canClaim: [true, true, true, true, true] }; }
+  async canClaimOf(doRequestId, nodes) {
+    this.canClaimReads.push([...nodes]);
+    return { roundStamp: this.stamp, canClaim: nodes.map((n) => !this.cannotClaim.has(n)) };
+  }
+
+  async escrowFor(...args) {
+    this.escrowReads.push(args);
+    return { ...this.escrow };
+  }
+
+  async early33(orderId) {
+    this.earlyReads.push(orderId);
+    return this.early;
+  }
 
   async chainTime() { return this.time; }
 
@@ -149,8 +181,12 @@ class Runner {
     this.localList = new matching.LocalList();
     this.resources = { cpu: 4, memory: 8, storage: 40, bandwidth: 10, duration: 1 };
     this.allowances = [];
+    this.balance = 10n * 10n ** 18n;
+    this.doRequest = '301';
     this.protocolContract = { getOrder: async (id) => orders[id] };
   }
+
+  async balanceWei() { return this.balance; }
 
   claimsRunning() { return this.inFlight; }
 
@@ -259,6 +295,51 @@ test('an approval the call refuses is left for the next read', async () => {
   assert.deepEqual(chain.sent, []);
 });
 
+test('the parameter set is the one requestInfo names', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { claims: [[N1, 1002, true]] });
+  chain.parameterIndex = 3;
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), 77);
+  assert.deepEqual(chain.parameterReads, [3]);
+});
+
+test('a request no parameter set is in force for is given up at once', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { claims: [[N1, 1002, true]] });
+  chain.parameterIndex = matching.NO_PARAMETER_SET;
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), null);
+  assert.equal(chain.block, 1001);
+  assert.deepEqual([chain.sent, chain.parameterReads], [[], []]);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('No parameter set of PoxMatching is in force for request 301')));
+});
+
+test('a mandated node that cannot claim is passed over at once', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { claims: [[N5, 1001, true]] });
+  chain.cannotClaim.add(N1);
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), 77);
+  assert.deepEqual(chain.sent, [['placeOrder', 301, DP[N5]]]);
+  assert.equal(chain.block, 1001);
+  assert.deepEqual(chain.canClaimReads[0], [N1, N5, N2, N3, LABELS.N4]);
+});
+
+test('a canClaimOf read of another stamp reads the round again', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { claims: [[N1, 1002, true]] });
+  const answer = chain.canClaimOf.bind(chain);
+  let first = true;
+  chain.canClaimOf = async (doRequestId, nodes) => {
+    const read = await answer(doRequestId, nodes);
+    if (first) {
+      first = false;
+      return { ...read, roundStamp: STAMP_1 };
+    }
+    return read;
+  };
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), 77);
+  assert.deepEqual([chain.block, chain.canClaimReads.length, chain.listReads], [1002, 2, 2]);
+});
+
 // ------------------------------------------------------------- the raise
 
 const raises = (chain) => chain.sent.filter((s) => s[0] === 'increaseBid');
@@ -365,6 +446,17 @@ test('expireUnstarted follows its setting', async () => {
   assert.deepEqual(chain.sent, []);
 });
 
+test('a pinned order\'s start check reads the parameter set requestInfo names', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { approvedAt: NOW - 901 });
+  chain.parameterIndex = 2;
+  const check = await pathOf(runner, chain).startCheck(77);
+  assert.equal(check.started, false);
+  assert.match(check.fault, /did not start within 900 s/);
+  assert.deepEqual(chain.parameterReads, [2]);
+  assert.deepEqual(chain.sent, [['expireUnstarted', 77]]);
+});
+
 test('an expired order is noted for a refund', async () => {
   const runner = new Runner();
   const chain = new FakeChain(runner);
@@ -433,6 +525,39 @@ test('an end the local list counts is recorded', async () => {
   assert.equal(runner.localList.blocked(IMAGE, N1, NOW + matching.LOCAL_LIST_SECONDS), false);
   await path.afterResult(79, N2, 0, resultWith(0, ['0', '0', '0']));
   assert.equal(runner.localList.blocked(IMAGE, N2, NOW), false);
+  assert.deepEqual(path.chain.earlyReads, []);
+});
+
+test('a 33 before its time is settled as a 62, counted and noted', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner);
+  chain.early = true;
+  const path = pathOf(runner, chain);
+  path.hints = [1n, 2n, 3n];
+  const report = await path.afterResult(77, N1, 33, resultWith(33, ['0', '0', '0']));
+  assert.deepEqual(chain.earlyReads, [77]);
+  assert.equal(report.name, 'EXECUTION_TIMEOUT, before its time');
+  assert.equal(report.atFault, 'developer and client');
+  assert.match(report.text, /task code 33 \(EXECUTION_TIMEOUT, before its time\)/);
+  assert.equal(runner.matchingPending[0].kind, 'note');
+  assert.equal(runner.localList.blocked(IMAGE, N1, NOW), false);
+  await path.afterResult(78, N1, 33, resultWith(33, ['0', '0', '0']));
+  assert.equal(runner.localList.blocked(IMAGE, N1, NOW), true);
+  const deflt = await path.afterResult(79, N2, 33, resultWith(33, ['0', '0', '1']));
+  assert.equal(deflt.atFault, 'operator');
+  assert.match(deflt.text, /a 33 before its time the validators do not charge/);
+  assert.ok(deflt.ambiguous);
+});
+
+test('a 33 at its time is a paid timeout', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner);
+  const path = pathOf(runner, chain);
+  assert.equal(await path.afterResult(77, N1, 33, resultWith(33, ['0', '0', '0'])), null);
+  await path.afterResult(78, N1, 33, resultWith(33, ['0', '0', '0']));
+  assert.deepEqual(chain.earlyReads, [77, 78]);
+  assert.deepEqual(runner.matchingPending, []);
+  assert.equal(runner.localList.blocked(IMAGE, N1, NOW), false);
 });
 
 test('the report of each code', () => {
@@ -448,10 +573,13 @@ test('the report of each code', () => {
   assert.match(matching.endReport(20, null).settlement, /states no class/);
   assert.equal(matching.endReport(0, custom), null);
   assert.equal(matching.endReport(37, custom), null);
+  assert.equal(matching.endReport(33, custom), null);
+  assert.ok(matching.endReport(33, custom, true).ambiguous);
+  assert.ok(!matching.endReport(33, null, true).ambiguous);
 });
 
 test('hints name three matching nodes of the round', () => {
-  const entries = LISTED.map((e) => matching.decodeEligible(BigInt(e.word), 0n, e.rollIndex, 1000));
+  const entries = LISTED.map((e) => matching.decodeEligible(BigInt(e.word), 0n, matching.placeOf(e.band, e.rollIndex)));
   const hints = hintWords(entries);
   assert.equal(hints.length, 3);
   hints.forEach((hint, i) => {
@@ -465,11 +593,27 @@ test('hints name three matching nodes of the round', () => {
 
 // ------------------------------------------------------------- before the add
 
+const ZERO32 = `0x${'00'.repeat(32)}`;
+
+// imageRecords' answer for an image whose records are those given; a minimum
+// score of null is unset.
+const recordsOf = ({
+  kind = matching.KIND_NONE, release = 0, networkOn = false, memory = 0, minScore = null, session = ZERO32,
+  latest = ZERO32, currentImage = null, language = null
+} = {}) => ({
+  registry: '0x1',
+  records: { kind, release, networkOn, enclaveMemoryGiB: memory, minScoreSet: minScore !== null, minScore: minScore ?? 0 },
+  releaseLanguage: language,
+  session,
+  latest,
+  currentImage
+});
+
 class Images extends FakeChain {
-  constructor(runner, { health = { s7: 0, f7: 0, nodes: 0, owners: 0, marked: false }, records = null, templateWord = 0n, quote = null } = {}) {
-    super(runner);
+  constructor(runner, { health = { s7: 0, f7: 0, nodes: 0, owners: 0, marked: false }, records = null, templateWord = 0n, quote = null, ...rest } = {}) {
+    super(runner, rest);
     this.healthAnswer = health;
-    this.records = records || { registry: null, defaultRelease: false, session: `0x${'00'.repeat(32)}`, latest: `0x${'00'.repeat(32)}`, currentImage: null };
+    this.records = records || { registry: null, records: null, releaseLanguage: null, session: ZERO32, latest: ZERO32, currentImage: null };
     this.templateWord = templateWord;
     this.quoteFor = quote || { counted: 5, minBidWei: 7n * 10n ** 17n, baseNowWei: 6n * 10n ** 17n };
     this.quotesFor = [];
@@ -503,15 +647,16 @@ test('an image with no counted order is told', async () => {
 
 test('a superseded image is refused naming the current one', async () => {
   const runner = new Runner();
-  const records = { registry: '0x1', defaultRelease: true, session: `0x${'01'.repeat(32)}`, latest: `0x${'02'.repeat(32)}`, currentImage: 'QmCurrent' };
+  const records = recordsOf({ kind: matching.KIND_DEFAULT_RELEASE, session: `0x${'01'.repeat(32)}`, latest: `0x${'02'.repeat(32)}`, currentImage: 'QmCurrent', language: 1 });
   await assert.rejects(() => pathOf(runner, new Images(runner, { records })).checkBeforeAdd(IMAGE), /QmCurrent/);
 });
 
+const MARKED = (1n << 40n) | (1n << 48n);
+
 test('the class is default only on a marked template with the newest session', async () => {
-  const marked = (1n << 40n) | (1n << 48n);
-  const records = { registry: '0x1', defaultRelease: true, session: `0x${'01'.repeat(32)}`, latest: `0x${'01'.repeat(32)}`, currentImage: null };
+  const records = recordsOf({ kind: matching.KIND_DEFAULT_RELEASE, session: `0x${'01'.repeat(32)}`, latest: `0x${'01'.repeat(32)}`, language: 1 });
   let runner = new Runner();
-  let path = pathOf(runner, new Images(runner, { records, templateWord: marked }));
+  let path = pathOf(runner, new Images(runner, { records, templateWord: MARKED }));
   await path.checkBeforeAdd(IMAGE);
   assert.ok(path.defaultClass);
   assert.equal(path.envelope, matching.ENVELOPE_CHUNKED);
@@ -520,11 +665,89 @@ test('the class is default only on a marked template with the newest session', a
   await path.checkBeforeAdd(IMAGE);
   assert.ok(!path.defaultClass);
   assert.equal(path.envelope, matching.ENVELOPE_WHOLE_PASS);
+  for (const kind of [matching.KIND_NONE, matching.KIND_NATIVE_PYTHON, matching.KIND_CUSTOM]) {
+    runner = new Runner();
+    path = pathOf(runner, new Images(runner, { records: { ...records, records: { ...records.records, kind } }, templateWord: MARKED }), {}, { minNodeScore: 0.2 });
+    await path.checkBeforeAdd(IMAGE);
+    assert.ok(!path.defaultClass);
+    assert.ok(runner.matchingNotices.some((n) => n.includes('paid to the operator at the client\'s risk')));
+  }
+});
+
+test('the image\'s records are told before the add', async () => {
+  let runner = new Runner();
+  await pathOf(runner, new Images(runner, { records: recordsOf({ kind: matching.KIND_NATIVE_PYTHON, networkOn: true, memory: 4 }), templateWord: MARKED })).checkBeforeAdd(IMAGE);
+  assert.equal(runner.matchingNotices.find((n) => n.startsWith('The image registry records')),
+    `The image registry records the image ${IMAGE} as native Python: its network is on, its enclave memory 4 GiB, and its minimum operator score not set.`);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('custom class (native Python)')));
   runner = new Runner();
-  path = pathOf(runner, new Images(runner, { records: { ...records, defaultRelease: false }, templateWord: marked }), {}, { minNodeScore: 0.2 });
+  await pathOf(runner, new Images(runner, { records: recordsOf({ kind: matching.KIND_DEFAULT_RELEASE, release: 3, memory: 2, minScore: 45000, language: 2 }) })).checkBeforeAdd(IMAGE);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('as default release 3 (Python on WebAssembly): its network is off, its enclave memory 2 GiB, and its minimum operator score 4.5000.')));
+  runner = new Runner();
+  await pathOf(runner, new Images(runner, { records: recordsOf() })).checkBeforeAdd(IMAGE);
+  assert.ok(runner.matchingNotices.includes(`The image registry holds no records of the image ${IMAGE}.`));
+});
+
+test('the dApp\'s minimum operator score is the minimum applied', async () => {
+  const runner = new Runner();
+  const chain = new Images(runner, { records: recordsOf({ kind: matching.KIND_CUSTOM, memory: 2, minScore: 30000 }), templateWord: MARKED, claims: [[N1, 1001, true], [N5, 1001, true]], scores: { [N1]: 20000 } });
+  const path = pathOf(runner, chain);
   await path.checkBeforeAdd(IMAGE);
-  assert.ok(!path.defaultClass);
-  assert.ok(runner.matchingNotices.some((n) => n.includes('paid to the operator at the client\'s risk')));
+  assert.equal(path.dappMinScore, 30000);
+  assert.equal(chain.quotesFor[0][2], 30000);
+  assert.equal(await path.awaitApproval(301, 600), 77);
+  assert.deepEqual(chain.sent, [['placeOrder', 301, DP[N5]]]);
+});
+
+test('a dApp minimum of 0 switches the test off', async () => {
+  const runner = new Runner();
+  const chain = new Images(runner, { records: recordsOf({ kind: matching.KIND_CUSTOM, memory: 2, minScore: 0 }), templateWord: MARKED, claims: [[N1, 1001, true], [N5, 1001, true]], scores: { [N1]: 20000 }, tier: 24000 });
+  const path = pathOf(runner, chain);
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(await path.awaitApproval(301, 600), 77);
+  assert.deepEqual(chain.sent, [['placeOrder', 301, DP[N1]]]);
+});
+
+test('the client\'s minimum comes before the dApp\'s and is told', async () => {
+  const runner = new Runner();
+  const chain = new Images(runner, { records: recordsOf({ kind: matching.KIND_CUSTOM, memory: 2, minScore: 30000 }), templateWord: MARKED, claims: [[N1, 1001, true], [N5, 1001, true]], scores: { [N1]: 20000 } });
+  const path = pathOf(runner, chain, {}, { minNodeScore: 0.2 });
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(chain.quotesFor[0][2], 2000);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('set to 0.2000 for this request, in place of the dApp\'s minimum operator score of 3.0000')));
+  assert.equal(await path.awaitApproval(301, 600), 77);
+  assert.deepEqual(chain.sent, [['placeOrder', 301, DP[N1]]]);
+});
+
+test('the escrow is escrowFor at the request\'s terms', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner);
+  const path = pathOf(runner, chain);
+  assert.equal(await path.checkEscrow(`v3:${IMAGE}:${TEMPLATE}`), 2n * 10n ** 18n);
+  assert.deepEqual(chain.escrowReads, [[1, 65n * 10n ** 16n, (250n << 16n) | 400n, 0n, 10n ** 18n, `v3:${IMAGE}:${TEMPLATE}`]]);
+  assert.deepEqual(runner.allowances, [2n * 10n ** 18n]);
+  assert.equal(path.escrowWei, 2n * 10n ** 18n);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('The request\'s escrow is 2000000000000000000 wei: the work 1600000000000000000 at 400 GFLOPS')));
+});
+
+test('escrowWei bounds the escrow and may be left out', async () => {
+  let runner = new Runner();
+  const chain = new FakeChain(runner);
+  const bounded = new ClaimsPath(runner, chain, claimsSettings({ ...V2, escrowWei: 2n * 10n ** 18n - 1n }, { requiredGflops: 250 }, {}));
+  await assert.rejects(() => bounded.checkEscrow(`v3:${IMAGE}:${TEMPLATE}`), /above options\.v2\.escrowWei/);
+  assert.deepEqual(runner.allowances, []);
+  runner = new Runner();
+  const open = new ClaimsPath(runner, new FakeChain(runner), claimsSettings({ ...V2, escrowWei: null }, { requiredGflops: 250 }, {}));
+  assert.equal(await open.checkEscrow(`v3:${IMAGE}:${TEMPLATE}`), 2n * 10n ** 18n);
+  assert.deepEqual(runner.allowances, [2n * 10n ** 18n]);
+});
+
+test('a wallet below the escrow is refused before the approval', async () => {
+  const runner = new Runner();
+  runner.balance = 2n * 10n ** 18n - 1n;
+  const path = new ClaimsPath(runner, new FakeChain(runner), claimsSettings({ ...V2, escrowWei: null }, { requiredGflops: 250 }, {}));
+  await assert.rejects(() => path.checkEscrow(`v3:${IMAGE}:${TEMPLATE}`), /Insufficient wallet balance/);
+  assert.deepEqual(runner.allowances, []);
 });
 
 test('the quote before the add takes the request\'s terms', async () => {
@@ -572,4 +795,96 @@ test('a send is made as a call first', async () => {
   });
   await assert.rejects(() => contracts.send({ increaseBid: refused }, 'increaseBid', [1, 2]), /reverted/);
   assert.ok(!calls.some((c) => c[0] === 'sent'));
+});
+
+// ------------------------------------------------------------- the reads
+
+const POX = `0x${'0a'.repeat(20)}`;
+const MATCHING = `0x${'01'.repeat(20)}`;
+const READER = `0x${'02'.repeat(20)}`;
+const REGISTRY = `0x${'03'.repeat(20)}`;
+
+// A provider answering eth_call from `deployed`: per address, the ABI and the
+// answers of its views (a value, an array of the outputs, or a function of the
+// call's arguments); each call is kept in `calls` as [address, name, ...args].
+const providerOf = (deployed) => {
+  const calls = [];
+  const provider = {
+    calls,
+    async call(tx) {
+      const at = deployed[String(tx.to).toLowerCase()];
+      const iface = new ethers.Interface(at.abi);
+      const parsed = iface.parseTransaction({ data: tx.data });
+      calls.push([String(tx.to).toLowerCase(), parsed.name, ...parsed.args]);
+      const answer = at.answers[parsed.name];
+      const value = typeof answer === 'function' ? answer(...parsed.args) : answer;
+      return iface.encodeFunctionResult(parsed.fragment, parsed.fragment.outputs.length === 1 ? [value] : value);
+    }
+  };
+  provider.provider = provider;
+  return provider;
+};
+
+const contractsOn = (deployed) => {
+  const provider = providerOf(deployed);
+  return { provider, contracts: new MatchingContracts(POX, MATCHING, provider, provider, null) };
+};
+
+test('the reader is the one PoxMatching names', async () => {
+  let { contracts } = contractsOn({ [MATCHING]: { abi: matchingAbi.matching, answers: { reader: READER } } });
+  assert.equal(contracts.reader, null);
+  assert.equal((await contracts.bindReader()).toLowerCase(), READER);
+  assert.equal(String(contracts.reader.target).toLowerCase(), READER);
+  ({ contracts } = contractsOn({ [MATCHING]: { abi: matchingAbi.matching, answers: { reader: ethers.ZeroAddress } } }));
+  await assert.rejects(() => contracts.bindReader(), /names no PoxMatchReader/);
+  assert.equal(contracts.reader, null);
+});
+
+test('requestInfo answers the parameter set and the reads answer by name', async () => {
+  const info = Array.from({ length: 21 }, (_, i) => i);
+  info[0] = true; info[1] = true; info[2] = false; info[3] = true; info[4] = false; info[6] = STAMP_0; info[7] = STAMP_1; info[19] = true;
+  const { provider, contracts } = contractsOn({
+    [MATCHING]: { abi: matchingAbi.matching, answers: { reader: READER, early33: true, parameterSet: Array.from({ length: 30 }, (_, i) => (i === 1 ? true : i)) } },
+    [READER]: { abi: matchingAbi.reader, answers: { requestInfo: info, canClaimOf: [STAMP_0, [true, false]], escrowFor: [9n, 8n, 1n, 400, 10, 5] } }
+  });
+  await contracts.bindReader();
+  const read = await contracts.requestInfo(301);
+  assert.equal(Number(read.parameterSet), 20);
+  assert.equal(read.claimedInRound, true);
+  const set = await contracts.parameterSet(2);
+  assert.equal(set.bandWidth, 15);
+  assert.ok(provider.calls.some((c) => c[1] === 'parameterSet' && c[2] === 2n));
+  assert.deepEqual(await contracts.canClaimOf(301, [N1, N5]), { roundStamp: STAMP_0, canClaim: [true, false] });
+  const asked = provider.calls.find((c) => c[1] === 'canClaimOf');
+  assert.deepEqual([...asked[3]].map((a) => a.toLowerCase()), [N1, N5]);
+  assert.deepEqual(await contracts.escrowFor(1, 2n, 3n, 4n, 5n, 'v3:a:b'), {
+    escrowWei: 9n, workWei: 8n, chainFeeWei: 1n, escrowGflops: 400, trustedZoneFee: 10, secureLockFee: 5
+  });
+  assert.equal(await contracts.early33(77), true);
+  assert.ok(provider.calls.some((c) => c[1] === 'early33' && c[2] === 77n));
+});
+
+test('the image\'s records are read through V4\'s views', async () => {
+  let held = [1, 3, true, 4, true, 45000, `0x${'01'.repeat(32)}`, `0x${'02'.repeat(32)}`];
+  const { provider, contracts } = contractsOn({
+    [MATCHING]: { abi: matchingAbi.matching, answers: { imageRegistry: REGISTRY } },
+    [REGISTRY]: {
+      abi: matchingAbi.imageRegistry,
+      answers: {
+        imageRecords: () => held,
+        defaultRelease: () => [2, 'QmTrustedzone', ZERO32, ZERO32, ZERO32, ZERO32, ZERO32, ZERO32],
+        sessionRegistry: ethers.ZeroAddress
+      }
+    }
+  });
+  let found = await contracts.imageRecords(IMAGE);
+  assert.deepEqual(found.records, { kind: 1, release: 3, networkOn: true, enclaveMemoryGiB: 4, minScoreSet: true, minScore: 45000 });
+  assert.equal(found.releaseLanguage, 2);
+  assert.ok(provider.calls.some((c) => c[1] === 'defaultRelease' && c[2] === 3n));
+  assert.ok(provider.calls.some((c) => c[1] === 'imageRecords' && c[2] === IMAGE));
+  held = [3, 0, false, 2, false, 0, ZERO32, ZERO32];
+  found = await contracts.imageRecords(IMAGE);
+  assert.deepEqual(found.records, { kind: 3, release: 0, networkOn: false, enclaveMemoryGiB: 2, minScoreSet: false, minScore: 0 });
+  assert.equal(found.releaseLanguage, null);
+  assert.equal(matching.dappMinimum(found.records), null);
 });

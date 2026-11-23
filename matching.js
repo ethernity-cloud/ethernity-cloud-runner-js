@@ -13,14 +13,14 @@
 //   mandated sequence (Schedule).
 // - The runner's approval rule on closed steps (3.10; spec/matching.md 13).
 // - The raise within the client's bid ceiling (3.10 rule 4, 3.15, D92).
-// - The minimum score (D62, D71, D88), the recent-failure test (D61) and the
-//   runner's local list (3.19, D120).
+// - The minimum score (D62, D71, D88, D138), the recent-failure test (D61)
+//   and the runner's local list (3.19, D120).
 // - The three result fields after v5 and the report of an end by class
 //   (3.19; spec/matching.md 17; section 8 items 15 and 16).
 // - The template's record and the envelope its mark chooses (3.19; 8.13).
+// - An image's records in ECImageRegistryV4 (8.12; D126, D138, D150).
 import { ethers } from 'ethers';
 
-export const TOP_BAND = 49;
 export const SCORE_MAX = 50000;
 // The GFLOPS a request that states none requires (D38): one CU.
 export const DEFAULT_NEED_GFLOPS = 100;
@@ -41,10 +41,15 @@ export const DEFAULT_RECENT_FAILURE_SLOTS = 14;
 // The runner's local list (3.19, D120): no claim of a node is approved for a
 // dApp for LOCAL_LIST_SECONDS after LOCAL_LIST_ENDS of the runner's orders of
 // that dApp on that node ended, within LOCAL_LIST_SECONDS, in one of
-// LOCAL_LIST_CODES.
+// LOCAL_LIST_CODES or in a code 33 before its time.
 export const LOCAL_LIST_SECONDS = 7 * 86400;
 export const LOCAL_LIST_ENDS = 2;
 export const LOCAL_LIST_CODES = [20, 59, 62, 63];
+// Code 33, EXECUTION_TIMEOUT: before its time (PoxMatching's early33) it is
+// settled as a 62 (3.19).
+export const CODE_TIMEOUT = 33;
+// The parameter set requestInfo names for a request none is in force for.
+export const NO_PARAMETER_SET = 256;
 // The window of an image's health (3.19): the days d - 6 to d.
 export const HEALTH_WINDOW_DAYS = 7;
 const DAY_SECONDS = 86400;
@@ -123,25 +128,27 @@ export const stepAt = (block, roundBlock, stepBlocks, leadBlocks) => {
 
 // ------------------------------------------------------------- the words
 
-// The band a heartbeat writes a score into: min(49, score / bandWidth) (4.4).
-export const bandOf = (score, bandWidth) => Math.min(TOP_BAND, Math.floor(Number(score) / Number(bandWidth)));
+// A `candidates` place: band << 32 | the entry's index in its band
+// (spec/matching.md section 8).
+export const placeOf = (band, index) => (BigInt(band) << 32n) | BigInt(index);
 
 // An eligible entry of a list read from a `candidates` word, its tip and its
-// index: node << 96 | score << 80 | fit << 73 | match << 72 | listedOrdinal <<
-// 48 | dpRequestId; the band is the one its score was written into.
-export const decodeEligible = (word, tip, index, bandWidth) => {
+// place: the word is node << 96 | score << 80 | fit << 73 | match << 72 |
+// listedOrdinal << 48 | dpRequestId, the place band << 32 | index, the band
+// being the roll array the entry stands in.
+export const decodeEligible = (word, tip, place) => {
   const w = BigInt(word);
-  const score = Number((w >> 80n) & MASK16);
+  const p = BigInt(place);
   return {
     node: ethers.toBeHex(w >> 96n, 20),
-    score,
+    score: Number((w >> 80n) & MASK16),
     fit: ((w >> 73n) & 1n) === 1n,
     match: ((w >> 72n) & 1n) === 1n,
     listedOrdinal: Number((w >> 48n) & MASK24),
     dpRequestId: w & MASK48,
     tip: BigInt(tip),
-    band: bandOf(score, bandWidth),
-    index: Number(index)
+    band: Number((p >> 32n) & 255n),
+    index: Number(p & MASK32)
   };
 };
 
@@ -242,14 +249,14 @@ export const listHashOf = (entries, maxSteps) => {
 };
 
 // One list read from its `candidates` pages in the order they were read, each
-// an object of the view's answers (roundStamp, eligible, tips, indexes, hOut,
+// an object of the view's answers (roundStamp, eligible, tips, places, hOut,
 // matchFoundOut, done, settled). Throws StampChanged when two pages answer
 // different stamps, Unsettled for a page not settled, and an Error when the
 // list hash or the matching count computed from the entries differs from the
 // one the last page carried (a page left out or answered for another read).
 // The entries are those of every page, in roll order, each in the band its
-// score was written into.
-export const mergeCandidates = (pages, bandWidth, maxSteps) => {
+// place names.
+export const mergeCandidates = (pages, maxSteps) => {
   let stamp = null;
   const entries = [];
   let last = null;
@@ -258,7 +265,7 @@ export const mergeCandidates = (pages, bandWidth, maxSteps) => {
     if (stamp !== null && pageStamp !== stamp) throw new StampChanged('the pages of the list read answered two round stamps');
     stamp = pageStamp;
     if (!page.settled) throw new Unsettled('a page of the list read is not settled for the round');
-    page.eligible.forEach((word, i) => entries.push(decodeEligible(word, page.tips[i], page.indexes[i], bandWidth)));
+    page.eligible.forEach((word, i) => entries.push(decodeEligible(word, page.tips[i], page.places[i])));
     last = page;
   }
   if (last === null) throw new Error('a list read needs one page at least');
@@ -483,17 +490,18 @@ export const minimumScore = ({ explicit, dappMinimum, defaultClass, minimumOn, t
 // The runner's local list (3.19, D120): from its own orders, the nodes whose
 // claims it approves for no request of a dApp for LOCAL_LIST_SECONDS after
 // LOCAL_LIST_ENDS of its orders of that dApp on that node ended, in either
-// class, in code 20, 62, 59 or 63, all within LOCAL_LIST_SECONDS. Held in
-// memory for the runner's life.
+// class, in code 20, 62, a 33 before its time, 59 or 63, all within
+// LOCAL_LIST_SECONDS. Held in memory for the runner's life.
 export class LocalList {
   constructor() {
     this.ends = new Map();
   }
 
-  // Records an order of `imageCid` on `node` that ended at `at` with `code`;
-  // an end the list does not count is not kept.
-  record(imageCid, node, code, at) {
-    if (!LOCAL_LIST_CODES.includes(Number(code))) return;
+  // Records an order of `imageCid` on `node` that ended at `at` with `code`,
+  // `early33` stating whether a code 33 was a timeout before its time
+  // (PoxMatching's early33); an end the list does not count is not kept.
+  record(imageCid, node, code, at, early33 = false) {
+    if (!LOCAL_LIST_CODES.includes(Number(code)) && !(Number(code) === CODE_TIMEOUT && early33)) return;
     const key = `${imageCid}|${addressText(node)}`;
     if (!this.ends.has(key)) this.ends.set(key, []);
     this.ends.get(key).push(Number(at));
@@ -551,27 +559,33 @@ export const END_NAMES = {
   62: 'SECURELOCK_SILENT',
   63: 'PAYLOAD_LOST'
 };
+export const EARLY_TIMEOUT_NAME = 'EXECUTION_TIMEOUT, before its time';
 // The ends PoxMatching's noteAmbiguous takes (3.19): 47, 59 and 63 in every
-// class, a default-class 62, and a custom class's 20 and 62.
+// class, a default-class 62, and a custom class's 20 and 62; a 33 before its
+// time as a 62.
 const AMBIGUOUS_ANY_CLASS = [47, 59, 63];
 const AMBIGUOUS_CUSTOM_CLASS = [20, 62];
 
-// The report of an order that closed with code 20, 62, 44, 47, 59 or 63
-// (section 8 item 16; 3.19), null for any other code: { code, name, slClass,
-// atFault, settlement, ambiguous, text }. The class is the result's field 17;
-// a result that states none is of a trustedzone before the release, whose 20
-// and 62 are paid as a valid result.
-export const endReport = (code, fields) => {
+// The report of an order that closed with code 20, 62, 44, 47, 59 or 63, or
+// with a 33 before its time (`early33`, PoxMatching's early33), which is
+// settled as a 62 (section 8 item 16; 3.19); null for any other code:
+// { code, name, slClass, atFault, settlement, ambiguous, text }. The class is
+// the result's field 17; a result that states none is of a trustedzone before
+// the release, whose 20 and 62 are paid as a valid result.
+export const endReport = (code, fields, early33 = false) => {
   const c = Number(code);
-  if (!(c in END_NAMES)) return null;
-  const name = END_NAMES[c];
+  const early = c === CODE_TIMEOUT && Boolean(early33);
+  const settled = early ? 62 : c;
+  if (!(settled in END_NAMES)) return null;
+  const name = early ? EARLY_TIMEOUT_NAME : END_NAMES[c];
+  const silent = early ? '33 before its time' : '62';
   const slClass = fields ? fields.slClass : null;
   let atFault;
   let settlement;
-  if ((c === 20 || c === 62) && slClass === DEFAULT_CLASS) {
+  if ((settled === 20 || settled === 62) && slClass === DEFAULT_CLASS) {
     atFault = 'operator';
-    settlement = 'the whole escrow is refunded and the node is charged; a 62 the validators do not charge for want of their probes is refunded with the node\'s chain costs paid';
-  } else if (c === 20 || c === 62) {
+    settlement = `the whole escrow is refunded and the node is charged; a ${silent} the validators do not charge for want of their probes is refunded with the node's chain costs paid`;
+  } else if (settled === 20 || settled === 62) {
     atFault = slClass === CUSTOM_CLASS ? 'developer and client' : 'not stated';
     settlement = slClass === CUSTOM_CLASS
       ? 'the order is paid to the operator in full, at the developer\'s and the client\'s risk'
@@ -586,8 +600,46 @@ export const endReport = (code, fields) => {
     atFault = c === 59 ? 'the outside service, the network or the operator' : 'the backend or the operator';
     settlement = `the work up to ${fields ? fields.ranUntil : 0n} (ranUntil) is paid and the work after it is refunded`;
   }
-  const ambiguous = AMBIGUOUS_ANY_CLASS.includes(c) || (AMBIGUOUS_CUSTOM_CLASS.includes(c) && slClass === CUSTOM_CLASS)
-    || (c === 62 && slClass === DEFAULT_CLASS);
+  const ambiguous = AMBIGUOUS_ANY_CLASS.includes(settled)
+    || (AMBIGUOUS_CUSTOM_CLASS.includes(settled) && slClass === CUSTOM_CLASS)
+    || (settled === 62 && slClass === DEFAULT_CLASS);
   const text = `The order failed with no result, task code ${c} (${name}); at fault: ${atFault}; ${settlement}.`;
   return { code: c, name, slClass, atFault, settlement, ambiguous: ambiguous && fields !== null, text };
+};
+
+// ------------------------------------------------------------- image records
+
+// The kinds of an image's records in ECImageRegistryV4
+// (IECImageRegistryV4.ImageRecords.kind).
+export const KIND_NONE = 0;
+export const KIND_DEFAULT_RELEASE = 1;
+export const KIND_NATIVE_PYTHON = 2;
+export const KIND_CUSTOM = 3;
+// A default release's language (IECImageRegistryV4.DefaultRelease.language).
+export const RELEASE_LANGUAGES = { 1: 'JavaScript', 2: 'Python on WebAssembly' };
+
+// The dApp's minimum operator score an image's records hold (D138): the score
+// when it is set, 0 included, which switches the test off; null when it is
+// unset or no records are held. `records` is { kind, release, networkOn,
+// enclaveMemoryGiB, minScoreSet, minScore } as imageRecords answers them.
+export const dappMinimum = (records) => (records && records.minScoreSet ? Number(records.minScore) : null);
+
+// The kind of an image's records in words: a default release with its index
+// and language, native Python, a custom securelock.
+export const kindText = (records, language) => {
+  if (records.kind === KIND_DEFAULT_RELEASE) {
+    return `default release ${records.release} (${RELEASE_LANGUAGES[language] || `language ${language}`})`;
+  }
+  if (records.kind === KIND_NATIVE_PYTHON) return 'native Python';
+  if (records.kind === KIND_CUSTOM) return 'a custom securelock';
+  return `kind ${records.kind}`;
+};
+
+// What the image registry shows of an image before an add (8.12): its kind,
+// whether its network is on, its enclave memory and its minimum operator
+// score.
+export const recordsText = (imageCid, records, language) => {
+  if (records.kind === KIND_NONE) return `The image registry holds no records of the image ${imageCid}.`;
+  const minimum = records.minScoreSet ? (records.minScore / SCORE_UNITS_PER_POINT).toFixed(4) : 'not set';
+  return `The image registry records the image ${imageCid} as ${kindText(records, language)}: its network is ${records.networkOn ? 'on' : 'off'}, its enclave memory ${records.enclaveMemoryGiB} GiB, and its minimum operator score ${minimum}.`;
 };
