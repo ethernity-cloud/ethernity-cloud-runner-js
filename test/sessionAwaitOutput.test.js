@@ -49,7 +49,11 @@ const sessionWith = async () => {
     _getMetadataCountForDPRequest: async () => rows.length,
     _getMetadataValueForDPRequest: async (dpReq, i) => rows[i]
   };
-  const runner = { protocolContract: { getContract: () => contract }, enclavePublicKey: pem, dispatchECEvent: () => {} };
+  // A network whose pricing names no PoxMatching: the plain form of an
+  // etny-sw row verifies.
+  const runner = {
+    protocolContract: { getContract: () => contract }, enclavePublicKey: pem, dispatchECEvent: () => {}, namesPoxMatching: async () => false
+  };
   const session = new EthernityCloudSession(runner, ORDER);
   session.dpReq = 9;
   session.doReq = 7;

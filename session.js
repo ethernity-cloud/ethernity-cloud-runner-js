@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import * as ipfsClient from './ipfs.js';
-import { decryptWithPrivateKey, sha256, verifyCertificateSignature } from './crypto.js';
+import { decryptWithPrivateKey, sha256, statementBytes, verifyCertificateSignature } from './crypto.js';
 import { delay, waitForReceipt, withGasHeadroom } from './utils.js';
 
 /**
@@ -154,6 +154,10 @@ export class EthernityCloudSession {
     // the signer every output row is checked against. null until that row has
     // been read and verified.
     this.attestedWallet = null;
+    // Whether the network's pricing names a PoxMatching, where an etny-sw row
+    // verifies only in the statement form (_statementOnly); null until the
+    // first etny-sw row reads it from the runner.
+    this.matchingNetwork = null;
     // Row index -> when its payload was first found not readable; the row is
     // retried until PAYLOAD_RETRY_MS after that.
     this.payloadWaits = {};
@@ -211,16 +215,30 @@ export class EthernityCloudSession {
     return this.attestedWallet;
   }
 
+  /** Whether an etny-sw row verifies only in the statement form: on a network
+      whose pricing names a PoxMatching (runner.namesPoxMatching), read once
+      per handle. */
+  async _statementOnly() {
+    if (this.matchingNetwork === null) this.matchingNetwork = Boolean(await this.runner.namesPoxMatching());
+    return this.matchingNetwork;
+  }
+
   /** Verify an 'etny-sw' row, 'v1:<orderId>:<taskWallet>:<sigDerHex>', against
       the trustedzone's certificate (the one the challenge was sealed with) and
-      keep its wallet. A row that does not verify is ignored: a node cannot
-      name the signer of this session's outputs. */
-  _acceptWalletAttestation(value) {
+      keep its wallet. The signature is over the statement
+      etny-sw|<orderId>|<taskWallet> in the statement form
+      (crypto.statementBytes); unless `statementOnly` (a network whose pricing
+      names a PoxMatching) also over its UTF-8 bytes, the plain form of the
+      trustedzones built before the statement form (spec/matching.md 3.7,
+      reserved-prefixes.json cutRule; OD10 B). A row that does not verify is
+      ignored: a node cannot name the signer of this session's outputs. */
+  _acceptWalletAttestation(value, statementOnly) {
     const parts = value.split(':');
     if (parts.length !== 4 || parts[0] !== SESSION_WIRE_VERSION || Number(parts[1]) !== this.orderId) return false;
     const [, , wallet, sig] = parts;
     const message = `${SESSION_WALLET_KEY}|${this.orderId}|${wallet}`;
-    if (!verifyCertificateSignature(this.runner.enclavePublicKey, message, sig)) {
+    const forms = statementOnly ? [statementBytes(message)] : [statementBytes(message), message];
+    if (!forms.some((form) => verifyCertificateSignature(this.runner.enclavePublicKey, form, sig))) {
       this.runner.dispatchECEvent(
         `Session: the task wallet attestation of ${wallet} does not verify against the trustedzone's certificate -- IGNORING`, 1);
       return false;
@@ -358,7 +376,14 @@ export class EthernityCloudSession {
         [key, value] = await this._contract()._getMetadataValueForDPRequest(this.dpReq, i);
       } catch (e) { break; }
       if (key === SESSION_WALLET_KEY) {
-        this._acceptWalletAttestation(String(value || ''));
+        let statementOnly;
+        try {
+          statementOnly = await this._statementOnly();
+        } catch (e) {
+          this.runner.dispatchECEvent(`Session: the network's PoxMatching read failed (${e.message}); the etny-sw row is read again at the next poll`, 2);
+          break;
+        }
+        this._acceptWalletAttestation(String(value || ''), statementOnly);
         this.rowsSeen = i + 1;
         continue;
       }

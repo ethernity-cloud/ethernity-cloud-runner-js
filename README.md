@@ -116,6 +116,8 @@ A securelock published without a CAS (`<project>-unsafe`) runs on an `-unsafe` n
 
 `session.close(wait = true, timeoutMs = 900000)` writes the session's close row. With `wait` true it then waits until the order has closed and returns the order's result, the session summary. The answers to the session's inputs are output rows and arrive before the close; the order closes after the trustedzone has found those rows on chain and the node has sent the result, which takes at least one more block. An application that does not read the summary calls `session.close(false)`, which returns once the close row is mined.
 
+Every output row of a session is checked against the task wallet the trustedzone attests in the session's `etny-sw` row, whose signature is verified against the trustedzone's certificate in the Image Registry. That signature is over its statement `etny-sw|<order>|<wallet>` in the statement form (`0xFF || "ecld-stmt-1" || 0x00 || statement`, `spec/matching.md` 3.7); on a network whose pricing names no PoxMatching the plain form a trustedzone built before it signs verifies too, and on a network whose pricing names one it does not.
+
 The runner accepts a result only when the transaction the enclave signed is `_addResultToOrder` for this order, addressed to this network's protocol contract and signed for this chain, and its signer is the wallet derived from the task's challenge. Task codes 37, 39 and 40 (`OPERATOR_FAULT_CODES`) are node-side faults the validator refunds; the runner resubmits such a task as a new request.
 ### `___etny_result___` function
 The `___etny_result___` function is a special function used in Ethernity Cloud Runner tasks. When executing a task, this

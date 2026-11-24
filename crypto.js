@@ -99,17 +99,33 @@ export const encryptWithCertificate = async (message, certificate) => {
   return encrypt(pubKey, message);
 };
 
-// Whether `signatureHex` (ECDSA, SHA-256, DER) over the string `message` was
-// made with the key of the certificate `certificate` carries: the signatures a
-// trustedzone makes with its certificate key, its session's task wallet
-// attestation among them.
+// The statement form of a trustedzone's own statements (spec/matching.md 3.7;
+// spec/reserved-prefixes.json statementForm, SF19): the identity key signs
+// 0xFF || "ecld-stmt-1" || 0x00 || UTF-8(statement). The byte 0xFF occurs in
+// no UTF-8 encoding, so no client text's bytes are a statement's.
+export const STATEMENT_PREFIX = Uint8Array.from([0xff, ...new TextEncoder().encode('ecld-stmt-1'), 0x00]);
+
+// The bytes a trustedzone signs for `statement` in the statement form.
+export const statementBytes = (statement) => {
+  const text = new TextEncoder().encode(statement);
+  const bytes = new Uint8Array(STATEMENT_PREFIX.length + text.length);
+  bytes.set(STATEMENT_PREFIX);
+  bytes.set(text, STATEMENT_PREFIX.length);
+  return bytes;
+};
+
+// Whether `signatureHex` (ECDSA, SHA-256, DER) over `message` (a string, as
+// its UTF-8 bytes, or a Uint8Array of bytes) was made with the key of the
+// certificate `certificate` carries: the signatures a trustedzone makes with
+// its certificate key, its session's task wallet attestation among them.
 export const verifyCertificateSignature = (certificate, message, signatureHex) => {
   try {
     const c = new jsrsasign.X509();
     c.readCertPEM(certificate);
     const signature = new jsrsasign.KJUR.crypto.Signature({ alg: 'SHA256withECDSA' });
     signature.init(c.getPublicKey());
-    signature.updateString(message);
+    const bytes = message instanceof Uint8Array ? message : new TextEncoder().encode(message);
+    signature.updateHex(Buffer.from(bytes).toString('hex'));
     return signature.verify(signatureHex.startsWith('0x') ? signatureHex.slice(2) : signatureHex);
   } catch (e) {
     return false;
