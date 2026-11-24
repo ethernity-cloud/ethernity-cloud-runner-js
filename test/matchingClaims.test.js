@@ -23,7 +23,7 @@ import { ClaimsPath, claimsSettings, hintWords, pinnedBan, settlePending } from 
 import MatchingContracts from '../contract/operation/matchingContract.js';
 import * as matchingAbi from '../contract/abi/matchingAbi.js';
 
-const RANK = JSON.parse(readFileSync(new URL('./fixtures/matching/matching-rank.json', import.meta.url), 'utf8'));
+const RANK = JSON.parse(readFileSync(new URL('./fixtures/matching-rank.json', import.meta.url), 'utf8'));
 const CASE = RANK.ranking.find((c) => c.name === 'example-1');
 const LABELS = Object.fromEntries(Object.entries(RANK.labels).map(([node, label]) => [label, node]));
 const [N1, N2, , , N5] = ['N1', 'N2', 'N3', 'N4', 'N5'].map((l) => LABELS[l]);

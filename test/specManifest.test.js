@@ -1,26 +1,22 @@
 // test/fixtures holds byte-identical copies of pox-smart-contract-litvm's
-// spec/result-v5.json and spec/MANIFEST.sha256 (the SHA-256 of every spec
-// fixture in the sha256sum text format, LF lines). Each copy must hash to its
-// manifest line and, where a litvm checkout is reachable
-// (POX_SMART_CONTRACT_LITVM, else the sibling ../pox-smart-contract-litvm),
-// the copies and the manifest must equal the source bytes.
+// spec/ files at specCopies.SOURCE_COMMIT and one MANIFEST.sha256 holding
+// that commit's line of each copy, in name order (the sha256sum text format,
+// LF lines), so that `sha256sum -c MANIFEST.sha256` there checks every copy.
+// Each copy must hash to its line, and, where a checkout is found
+// (specCopies.checkout), each copy and each line must equal the source
+// commit's, read with `git show`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const FIXTURES = fileURLToPath(new URL('./fixtures/', import.meta.url));
-const MANIFEST = 'MANIFEST.sha256';
-const COPIES = ['result-v5.json'];
-const LITVM_ENV = 'POX_SMART_CONTRACT_LITVM';
-const LITVM_DEFAULT = path.join(FIXTURES, '..', '..', '..', 'pox-smart-contract-litvm');
+import { COPIES, MANIFEST, SOURCE_COMMIT, SPEC, checkout, shownAt } from './specCopies.js';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 const manifestEntries = () => {
-  const text = readFileSync(path.join(FIXTURES, MANIFEST), 'latin1');
+  const text = readFileSync(path.join(SPEC, MANIFEST), 'latin1');
   assert.ok(!text.includes('\r'), 'manifest holds a CR');
   assert.ok(text.endsWith('\n'), 'manifest does not end with LF');
   const entries = {};
@@ -33,31 +29,49 @@ const manifestEntries = () => {
   return entries;
 };
 
-test('the manifest is LF-terminated sha256sum text naming every copy', () => {
-  const entries = manifestEntries();
-  const names = Object.keys(entries);
-  assert.deepEqual(names, [...names].sort(), 'manifest names are not in bytewise order');
-  for (const name of COPIES) {
-    assert.ok(entries[name], `${name} is not in the manifest`);
-  }
+test('the manifest names every copy the directory holds, in name order', () => {
+  const names = Object.keys(manifestEntries());
+  assert.deepEqual(names, [...names].sort());
+  assert.deepEqual(names, COPIES);
+  assert.deepEqual(readdirSync(SPEC).filter((n) => n !== MANIFEST).sort(), COPIES);
 });
 
-test('every fixture copy hashes to its manifest line', () => {
-  const entries = manifestEntries();
-  for (const name of COPIES) {
-    assert.equal(sha256(readFileSync(path.join(FIXTURES, name))), entries[name], `${name} does not hash to the manifest`);
-  }
+const sourceOrSkip = (t, file) => {
+  const found = shownAt(file);
+  if (found === null) t.skip(`no pox-smart-contract-litvm checkout holding ${SOURCE_COMMIT} (found: ${checkout()})`);
+  return found;
+};
+
+for (const name of COPIES) {
+  test(`${name} hashes to its manifest line`, () => {
+    assert.equal(sha256(readFileSync(path.join(SPEC, name))), manifestEntries()[name]);
+  });
+
+  test(`${name} is the source commit's`, (t) => {
+    const source = sourceOrSkip(t, `spec/${name}`);
+    if (source === null) return;
+    assert.ok(readFileSync(path.join(SPEC, name)).equals(source));
+  });
+}
+
+test('the manifest lines are the source commit\'s', (t) => {
+  const source = sourceOrSkip(t, `spec/${MANIFEST}`);
+  if (source === null) return;
+  const lines = Object.fromEntries(source.toString('ascii').split('\n').filter(Boolean).map((l) => l.split('  ').reverse()));
+  assert.deepEqual(Object.fromEntries(COPIES.map((n) => [n, lines[n]])), manifestEntries());
 });
 
-test('the copies equal the litvm spec bytes when a checkout is reachable', (t) => {
-  const spec = path.join(path.resolve(process.env[LITVM_ENV] || LITVM_DEFAULT), 'spec');
-  if (!existsSync(path.join(spec, MANIFEST))) {
-    t.skip(`no pox-smart-contract-litvm checkout at ${spec} (set ${LITVM_ENV})`);
-    return;
-  }
-  for (const name of [MANIFEST, ...COPIES]) {
-    const ours = readFileSync(path.join(FIXTURES, name));
-    const theirs = readFileSync(path.join(spec, name));
-    assert.ok(ours.equals(theirs), `test/fixtures/${name} differs from ${path.join(spec, name)}`);
-  }
+test('the checkout is found by its variable before any parent', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'litvm-'));
+  assert.equal(checkout(dir, { POX_SMART_CONTRACT_LITVM: dir }), null);
+  mkdirSync(path.join(dir, '.git'));
+  assert.equal(checkout(path.join(dir, 'repo'), { POX_SMART_CONTRACT_LITVM: dir }), path.resolve(dir));
+});
+
+test('without the variable the checkout beside a directory above the repository is found', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'litvm-'));
+  const repo = path.join(dir, 'ec-runner-js', 'packages', 'ethernity-cloud-runner-js');
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(path.join(dir, 'pox-smart-contract-litvm', '.git'), { recursive: true });
+  assert.equal(checkout(repo, {}), path.join(dir, 'pox-smart-contract-litvm'));
 });

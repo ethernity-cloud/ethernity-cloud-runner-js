@@ -1,8 +1,8 @@
 // matching.js (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 // sections 3 to 9, 13 and 17) on the shared fixtures of
-// pox-smart-contract-litvm spec/ at 52e36e0, held byte for byte in
-// test/fixtures/matching/ with their MANIFEST lines, and the runner's ABI
-// entries (contract/abi/matchingAbi.js) against that commit's.
+// pox-smart-contract-litvm spec/ at specCopies.SOURCE_COMMIT, held byte for
+// byte in test/fixtures/ (specManifest.test.js checks the copies), and the
+// runner's ABI entries (contract/abi/matchingAbi.js) against that commit's.
 //
 // ranking.json holds, per ranking case, the reader's `candidates` answers;
 // the runner's merge of those pages, its list hash, its matching count, the
@@ -15,71 +15,17 @@
 // and those whose fields are not.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import * as matching from '../matching.js';
 import * as matchingAbi from '../contract/abi/matchingAbi.js';
 import EthernityCloudRunner from '../runner.js';
 import protocolContractPolygon from '../contract/abi/polygonProtocolAbi.js';
+import { SOURCE_COMMIT, checkout, load, shownAt } from './specCopies.js';
 
-const SPEC = fileURLToPath(new URL('./fixtures/matching/', import.meta.url));
-const SOURCE = path.resolve(SPEC, '..', '..', '..', '..', 'pox-smart-contract-litvm');
-const SOURCE_COMMIT = '52e36e0';
-const COPIES = ['matching-rank.json', 'matching.md', 'ranking.json', 'result-fields.json'];
-const load = (name) => JSON.parse(readFileSync(path.join(SPEC, name), 'utf8'));
 const RANKING = load('ranking.json');
 const RANK = load('matching-rank.json');
 const FIELDS = load('result-fields.json');
 const RANK_CASES = new Map(RANK.ranking.map((c) => [c.name, c]));
-
-const manifest = () => {
-  const entries = {};
-  for (const line of readFileSync(path.join(SPEC, 'MANIFEST.sha256'), 'ascii').split('\n')) {
-    if (!line) continue;
-    const [digest, name] = line.split('  ');
-    entries[name] = digest;
-  }
-  return entries;
-};
-
-const shownAt = (file, commit = SOURCE_COMMIT) => {
-  if (!existsSync(path.join(SOURCE, '.git'))) return null;
-  try {
-    return execFileSync('git', ['-C', SOURCE, 'show', `${commit}:${file}`], { maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (e) {
-    return null;
-  }
-};
-const shown = (name) => shownAt(`spec/${name}`);
-
-for (const name of COPIES) {
-  test(`${name} hashes to its manifest line`, () => {
-    assert.equal(createHash('sha256').update(readFileSync(path.join(SPEC, name))).digest('hex'), manifest()[name]);
-  });
-
-  test(`${name} is the source commit's`, (t) => {
-    const source = shown(name);
-    if (source === null) {
-      t.skip(`no pox-smart-contract-litvm checkout holding ${SOURCE_COMMIT} at ${SOURCE}`);
-      return;
-    }
-    assert.ok(readFileSync(path.join(SPEC, name)).equals(source));
-  });
-}
-
-test('the manifest lines are the source commit\'s', (t) => {
-  const source = shown('MANIFEST.sha256');
-  if (source === null) {
-    t.skip(`no pox-smart-contract-litvm checkout holding ${SOURCE_COMMIT} at ${SOURCE}`);
-    return;
-  }
-  const lines = Object.fromEntries(source.toString('ascii').split('\n').filter(Boolean).map((l) => l.split('  ').reverse()));
-  assert.deepEqual(Object.fromEntries(COPIES.map((n) => [n, lines[n]])), manifest());
-});
 
 // Where each group of the runner's ABI entries comes from, in the source
 // commit unless another is named; an artifact holds its ABI under "abi".
@@ -115,7 +61,7 @@ for (const [group, where] of Object.entries(ABI_SOURCES)) {
     const [commit, file] = Array.isArray(where) ? where : [SOURCE_COMMIT, where];
     const source = shownAt(file, commit);
     if (source === null) {
-      t.skip(`no pox-smart-contract-litvm checkout holding ${commit} at ${SOURCE}`);
+      t.skip(`no pox-smart-contract-litvm checkout holding ${commit} (found: ${checkout()})`);
       return;
     }
     const parsed = JSON.parse(source.toString('utf8'));
