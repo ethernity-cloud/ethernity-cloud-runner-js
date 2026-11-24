@@ -69,6 +69,11 @@ class FakeChain {
     this.escrow = { escrowWei: 2n * 10n ** 18n, workWei: 16n * 10n ** 17n, chainFeeWei: 10n ** 16n, escrowGflops: 400, trustedZoneFee: 10, secureLockFee: 5 };
     this.escrowReads = [];
     this.listReads = 0;
+    this.claimsOnSet = true;
+    this.createdAt = NOW - 60;
+    this.status = matching.REQUEST_AVAILABLE;
+    this.epcNeed = 0;
+    this.epcReads = [];
   }
 
   visible() { return this.claimsList.filter(([, b]) => b <= this.block); }
@@ -77,7 +82,8 @@ class FakeChain {
     this.block += 1;
     if (this.block > this.lastBlock) this.runner.inFlight = false;
     return {
-      settled: true, ranked: true, round: this.round, roundStamp: this.stamp, seed: CASE.expected.seed,
+      settled: true, claims: this.claimsOnSet, createdAt: this.createdAt,
+      ranked: true, round: this.round, roundStamp: this.stamp, seed: CASE.expected.seed,
       roundBlock: this.roundBlock,
       closedStep: Math.max(0, matching.stepAt(this.block + 1, this.roundBlock, PARAMS.stepBlocks, PARAMS.leadBlocks) - 1),
       stepNow: matching.stepAt(this.block, this.roundBlock, PARAMS.stepBlocks, PARAMS.leadBlocks),
@@ -88,6 +94,14 @@ class FakeChain {
   async parameterSet(index) {
     this.parameterReads.push(index);
     return { ...PARAMS };
+  }
+
+  async requestStatus() { return this.status; }
+
+  async imageEpcUnits(imageCid) {
+    this.epcReads.push(imageCid);
+    if (this.epcNeed instanceof Error) throw this.epcNeed;
+    return this.epcNeed;
   }
 
   async candidatePages() {
@@ -190,6 +204,15 @@ class Runner {
 
   claimsRunning() { return this.inFlight; }
 
+  claimsReadMs() { return this.claimsPollMs; }
+
+  // runner.receiptOf: the mined receipt, a status other than 1 thrown.
+  async receiptOf(tx) {
+    const receipt = await tx.wait();
+    if (receipt.status !== 1) throw new Error(`transaction ${tx.hash} reverted`);
+    return receipt;
+  }
+
   matchingNotice(text) { this.matchingNotices.push(text); }
 
   logAppend() {}
@@ -206,7 +229,7 @@ const V2 = {
 };
 
 const pathOf = (runner, chain, v2 = {}, options = {}) => {
-  const path = new ClaimsPath(runner, chain, claimsSettings(V2, { requiredGflops: 250, ...v2 }, options));
+  const path = new ClaimsPath(runner, chain, claimsSettings({ ...V2, requiredGflops: 250, ...v2 }, options, runner.resources));
   path.imageCid = IMAGE;
   return path;
 };
@@ -769,7 +792,7 @@ test('a pinned node\'s ban is told with its end', async () => {
 
 test('a request without V2 terms is refused before anything is sent', () => {
   assert.throws(() => claimsSettings(null, {}, {}), /V2 terms/);
-  assert.throws(() => claimsSettings(V2, { maxBidPerCuHourWei: -1 }, {}), /whole number/);
+  assert.throws(() => claimsSettings({ ...V2, maxBidPerCuHourWei: -1 }, {}, {}), /maxBidPerCuHourWei must not be negative/);
   const settings = claimsSettings(V2, {}, {});
   assert.equal(settings.minScore, null);
   assert.equal(settings.recentFailureSlots, 14);
@@ -887,4 +910,217 @@ test('the image\'s records are read through V4\'s views', async () => {
   assert.deepEqual(found.records, { kind: 3, release: 0, networkOn: false, enclaveMemoryGiB: 2, minScoreSet: false, minScore: 0 });
   assert.equal(found.releaseLanguage, null);
   assert.equal(matching.dappMinimum(found.records), null);
+});
+
+test('the EPC need is read from the registry PoxMatching names', async () => {
+  const { provider, contracts } = contractsOn({
+    [MATCHING]: { abi: matchingAbi.matching, answers: { imageRegistry: REGISTRY } },
+    [REGISTRY]: { abi: matchingAbi.imageRegistry, answers: { imageEpcUnits: 7 } }
+  });
+  assert.equal(await contracts.imageEpcUnits(IMAGE), 7);
+  assert.ok(provider.calls.some((c) => c[1] === 'imageEpcUnits' && c[2] === IMAGE));
+  const none = contractsOn({ [MATCHING]: { abi: matchingAbi.matching, answers: { imageRegistry: ethers.ZeroAddress } } });
+  assert.equal(await none.contracts.imageEpcUnits(IMAGE), 0);
+});
+
+// ------------------------------------------------------------- the securelock's own session
+
+const SESSIONS = `0x${'04'.repeat(20)}`;
+const SESSION = `0x${'01'.repeat(32)}`;
+const LATEST = `0x${'09'.repeat(32)}`;
+const REVERT = () => Object.assign(new Error('execution reverted'), { code: 'CALL_EXCEPTION', info: { error: { code: 3, message: 'execution reverted' } } });
+
+for (const [boundName, own, kept] of [['sl-session', 'sl-session', true], ['tz-session', 'sl-session', false], ['sl-session', REVERT, false]]) {
+  test(`the session sessionOfImage names counts only when it is the securelock's own: bound to ${boundName}, getImageSession ${typeof own === 'function' ? 'refused' : own}`, async () => {
+    const { contracts } = contractsOn({
+      [MATCHING]: { abi: matchingAbi.matching, answers: { imageRegistry: REGISTRY } },
+      [REGISTRY]: {
+        abi: matchingAbi.imageRegistry,
+        answers: {
+          imageRecords: [1, 3, true, 4, true, 45000, ZERO32, ZERO32],
+          defaultRelease: () => [1, 'QmTrustedzone', ZERO32, ZERO32, ZERO32, ZERO32, ZERO32, ZERO32],
+          sessionRegistry: SESSIONS,
+          getImageSession: typeof own === 'function' ? () => { throw own(); } : own
+        }
+      },
+      [SESSIONS]: {
+        abi: matchingAbi.sessionRegistry,
+        answers: {
+          sessionOfImage: SESSION,
+          record: (id) => [ZERO32, ethers.ZeroAddress, id === SESSION ? boundName : 'sl-session', 1, '', 'QmCurrent', 1, 0, true],
+          latest: LATEST
+        }
+      }
+    });
+    const found = await contracts.imageRecords(IMAGE);
+    if (kept) {
+      assert.deepEqual([found.session, found.latest, found.currentImage], [SESSION, LATEST, 'QmCurrent']);
+    } else {
+      assert.deepEqual([found.session, found.latest, found.currentImage], [ZERO32, ZERO32, null]);
+    }
+  });
+}
+
+// ------------------------------------------------------------- EPC and memory
+
+test('the claims path states the EPC minimum in the quote, the escrow and the add', async () => {
+  const runner = new Runner();
+  const chain = new Images(runner);
+  chain.epcNeed = 3;
+  const path = pathOf(runner, chain, { epcMiB: 100 });
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(path.epcUnits, 3);
+  assert.deepEqual(chain.epcReads, [IMAGE]);
+  assert.equal(chain.quotesFor[0][0].epcUnits, 3);
+  await path.checkEscrow(`v3:${IMAGE}:${TEMPLATE}`);
+  assert.equal(chain.escrowReads[0][2], (3n << 32n) | (250n << 16n) | 400n);
+  const added = [];
+  chain.addDORequestV2 = async (...args) => { added.push(args); return { hash: '0xadd' }; };
+  await path.addRequest(['a', 'b', 'c', '']);
+  assert.equal(added[0][2], (3n << 32n) | (250n << 16n) | 400n);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('minimum EPC of 3 units of 64 MiB')));
+});
+
+test('the client\'s EPC above the image\'s, and one unit by default', async () => {
+  let runner = new Runner();
+  let chain = new Images(runner);
+  chain.epcNeed = 3;
+  let path = pathOf(runner, chain, { epcMiB: 1000 });
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(path.epcUnits, 16);
+  runner = new Runner();
+  chain = new Images(runner);
+  path = pathOf(runner, chain);
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(path.epcUnits, 1);
+  assert.equal(path.maxGflops() >> 32n, 1n);
+});
+
+test('a registry that does not answer the EPC need refuses before anything is sent', async () => {
+  const runner = new Runner();
+  const chain = new Images(runner);
+  chain.epcNeed = Object.assign(new Error('request timeout'), { code: 'TIMEOUT' });
+  await assert.rejects(() => pathOf(runner, chain).checkBeforeAdd(IMAGE), /did not answer the EPC need/);
+  assert.deepEqual(chain.sent, []);
+  assert.deepEqual(runner.allowances, []);
+  assert.deepEqual(chain.quotesFor, []);
+});
+
+test('the memory need is the image\'s enclave memory when it is larger', async () => {
+  let runner = new Runner();
+  let chain = new Images(runner, { records: recordsOf({ kind: matching.KIND_CUSTOM, memory: 16 }) });
+  let path = pathOf(runner, chain);
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(path.memoryGb, 16);
+  assert.equal(chain.quotesFor[0][0].memGB, 16);
+  const added = [];
+  chain.addDORequestV2 = async (...args) => { added.push(args); return { hash: '0xadd' }; };
+  await path.addRequest(['a', 'b', 'c', '']);
+  assert.equal(added[0][0].memory, 16);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('records an enclave memory of 16 GiB, above the request\'s memory of 8 GB')));
+  runner = new Runner();
+  chain = new Images(runner, { records: recordsOf({ kind: matching.KIND_CUSTOM, memory: 4 }) });
+  path = pathOf(runner, chain);
+  await path.checkBeforeAdd(IMAGE);
+  assert.equal(path.memoryGb, 8);
+  assert.equal(chain.quotesFor[0][0].memGB, 8);
+  assert.ok(!runner.matchingNotices.some((n) => n.includes('records an enclave memory')));
+});
+
+// ------------------------------------------------------------- requests that take no claims
+
+const QUOTES = new Map(RANK.quotes.map((c) => [c.name, c]));
+const quoteOf = (c) => ({
+  counted: c.expected.counted, canClaimNow: c.expected.canClaimNow, minBidWei: BigInt(c.expected.minBidWei),
+  baseNowWei: BigInt(c.expected.baseNowWei), bidWei: BigInt(c.expected.bidWei), addedEscrowWei: 10n ** 17n
+});
+
+for (const name of ['quote-claims-off', 'quote-cancelled-request']) {
+  test(`a request that takes no claims is never raised: ${name}`, async () => {
+    const c = QUOTES.get(name);
+    assert.equal(c.expected.takesClaims, false);
+    assert.equal(c.expected.canClaimNow, 0);
+    const runner = new Runner();
+    const chain = new FakeChain(runner, { lastBlock: 1008, quote: quoteOf(c) });
+    if (name === 'quote-claims-off') chain.claimsOnSet = false;
+    else chain.status = 2;
+    const path = pathOf(runner, chain, { maxBidPerCuHourWei: 10n ** 19n });
+    assert.equal(await path.awaitApproval(301, 600), null);
+    assert.deepEqual(chain.sent, []);
+    assert.deepEqual(runner.allowances, []);
+    assert.deepEqual(chain.quoteMinimums, []);
+    assert.equal(chain.block, 1001);
+    assert.equal(path.claimsOff, name === 'quote-claims-off');
+  });
+}
+
+test('the same quote with claims taken is raised', async () => {
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { lastBlock: 1008, quote: quoteOf(QUOTES.get('quote-cancelled-request')) });
+  await pathOf(runner, chain, { maxBidPerCuHourWei: 10n ** 19n }).awaitApproval(301, 600);
+  assert.ok(chain.sent.some((s) => s[0] === 'increaseBid'));
+});
+
+test('an open request\'s claimable nodes hold the raise', async () => {
+  const c = QUOTES.get('quote-open-request');
+  assert.equal(c.expected.takesClaims, true);
+  assert.equal(c.expected.canClaimNow, 5);
+  const runner = new Runner();
+  const chain = new FakeChain(runner, { lastBlock: 1008, quote: quoteOf(c) });
+  await pathOf(runner, chain, { maxBidPerCuHourWei: 10n ** 19n }).awaitApproval(301, 600);
+  assert.ok(!chain.sent.some((s) => s[0] === 'increaseBid'));
+});
+
+test('past its age the wait ends for the cancel', async () => {
+  let runner = new Runner();
+  let chain = new FakeChain(runner, { lastBlock: 1008 });
+  chain.createdAt = NOW - PARAMS.maxRequestAgeSeconds - 1;
+  const path = pathOf(runner, chain, { maxBidPerCuHourWei: 10n ** 19n });
+  assert.equal(await path.awaitApproval(301, 600), null);
+  assert.deepEqual(chain.sent, []);
+  assert.equal(chain.block, 1001);
+  assert.equal(path.claimsOff, false);
+  assert.ok(runner.matchingNotices.some((n) => n.includes('past maxRequestAgeSeconds')));
+  runner = new Runner();
+  chain = new FakeChain(runner, { claims: [[N1, 1002, true]] });
+  chain.createdAt = NOW - PARAMS.maxRequestAgeSeconds;
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), 77);
+});
+
+test('takesClaims', () => {
+  assert.ok(matching.takesClaims(true, 0, 100, 50, 150));
+  assert.ok(!matching.takesClaims(true, 0, 100, 50, 151));
+  assert.ok(!matching.takesClaims(false, 0, 100, 50, 120));
+  assert.ok(!matching.takesClaims(true, 1, 100, 50, 120));
+  assert.ok(!matching.takesClaims(true, 2, 100, 50, 120));
+});
+
+// ------------------------------------------------------------- receipts
+
+// A send whose receipt has `status`.
+const minedAs = (status) => ({ hash: '0xr', wait: async () => ({ status, logs: [] }) });
+
+test('a receipt of status 0 is no success: the approval, noteRefund and noteAmbiguous', async () => {
+  let runner = new Runner();
+  let chain = new FakeChain(runner, { lastBlock: 1004, claims: [[N1, 1002, true]] });
+  chain.placeOrder = async (...args) => { chain.sent.push(['placeOrder', ...args]); return minedAs(0); };
+  assert.equal(await pathOf(runner, chain).awaitApproval(301, 600), null);
+  assert.ok(chain.sent.length >= 1);
+  runner = new Runner();
+  chain = new FakeChain(runner);
+  chain.noteRefund = async (orderId) => { chain.sent.push(['noteRefund', orderId]); return minedAs(0); };
+  await pathOf(runner, chain).expired(77);
+  assert.deepEqual(chain.sent, [['expireOrder', 77], ['noteRefund', 77]]);
+  assert.ok(!runner.matchingNotices.some((n) => n.includes('noteRefund recorded')));
+  assert.ok(runner.matchingNotices.some((n) => n.includes('noteRefund 0xr of order 77 did not succeed')));
+  runner = new Runner();
+  chain = new FakeChain(runner);
+  chain.time = NOW + 7200;
+  chain.noteAmbiguous = async (orderId, hints) => { chain.sent.push(['noteAmbiguous', orderId, hints]); return minedAs(0); };
+  runner.matchingPending = [{ kind: 'note', order: 77, chain, after: NOW, hints: [1n, 2n, 3n] }];
+  await settlePending(runner);
+  assert.deepEqual(chain.sent, [['noteAmbiguous', 77, [1n, 2n, 3n]]]);
+  assert.deepEqual(runner.matchingPending, []);
+  assert.ok(!runner.matchingNotices.some((n) => n.includes('noteAmbiguous of order 77 sent')));
+  assert.ok(runner.matchingNotices.some((n) => n.includes('noteAmbiguous 0xr of order 77 did not succeed')));
 });

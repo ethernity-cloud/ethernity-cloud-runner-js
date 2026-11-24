@@ -273,17 +273,20 @@ test('bloxberg mainnet\'s PoX, the token\'s own proxy, has no storage to ask: it
 });
 
 // The contracts of the chain below by address: a name, and the interface
-// their functions are named with.
+// their functions are named with; the PoX's with the generation views the
+// runner reads before each request (matchingAbi.pox).
 const CONTRACTS = {
   [TOKEN]: ['tETNY', new ethers.Interface(etnyAbi.abi)],
-  [POX]: ['PoX', new ethers.Interface(protocolAbi.abi)],
+  [POX]: ['PoX', new ethers.Interface([...protocolAbi.abi, 'function VERSION() view returns (string)',
+    'function pricingAddress() view returns (address)'])],
   [STORAGE]: ['storage', ALLOWED_CALLERS]
 };
 
 // A browser wallet over a chain where WALLET holds 751 tETNY and no allowance
-// for the PoX, and the PoX's storage lists the PoX or not (`listed`): the
-// order count of a PoX it does not list is refused as the bloxberg RPC
-// answers (NOT_ALLOWED). The wallet answers eth_blockNumber and
+// for the PoX, the PoX answers VERSION() "1.2" with a pricing that names no
+// PoxMatching (pricingAddress() zero), and the PoX's storage lists the PoX or
+// not (`listed`): the order count of a PoX it does not list is refused as the
+// bloxberg RPC answers (NOT_ALLOWED). The wallet answers eth_blockNumber and
 // eth_estimateGas and rejects every other request, eth_sendTransaction among
 // them, with a user's rejection (userRejected, code 4001). `requests` lists
 // the requests in order, a call or a transaction with its contract and
@@ -298,6 +301,8 @@ const chainWallet = (listed) => {
       return coder.encode(['uint256'], [162n]);
     },
     'PoX.ethStorageAddress': () => coder.encode(['address'], [STORAGE]),
+    'PoX.VERSION': () => coder.encode(['string'], ['1.2']),
+    'PoX.pricingAddress': () => coder.encode(['address'], [ethers.ZeroAddress]),
     'storage.allowedCallers': () => coder.encode(['bool'], [listed])
   };
   const wallet = browserWallet((method, tx) => {
@@ -323,7 +328,7 @@ const runnerOver = (wallet) => {
   return { runner, provider };
 };
 
-test('a run and a session on a PoX its storage does not list, naming a node or none, end with the out-of-service message after the balance read: the wallet is asked for no read of the node\'s requests, no allowance read and no approval', async () => {
+test('a run and a session on a PoX its storage does not list, naming a node or none, end with the out-of-service message before the request\'s path is chosen: the wallet is asked for no read of the node\'s requests, no balance or allowance read and no approval', async () => {
   // Each start with no node named, the fourth argument's default, and with NODE named.
   for (const [start, node] of [['run'], ['runSession'], ['run', NODE], ['runSession', NODE]]) {
     const label = node ? `${start} naming ${node}` : start;
@@ -342,14 +347,14 @@ test('a run and a session on a PoX its storage does not list, naming a node or n
       provider.destroy();
     }
     assert.deepEqual(wallet.requests, [
-      'eth_call tETNY.balanceOf', 'eth_call PoX._getOrdersCount', 'eth_call PoX.ethStorageAddress', 'eth_call storage.allowedCallers'
+      'eth_call PoX._getOrdersCount', 'eth_call PoX.ethStorageAddress', 'eth_call storage.allowedCallers'
     ], label);
-    assert.deepEqual(runner.events, ['Checking wallet balance....', CHECKING, OUT_OF_SERVICE], label);
+    assert.deepEqual(runner.events, [CHECKING, OUT_OF_SERVICE], label);
     assert.equal(runner.status, ECStatus.ERROR);
   }
 });
 
-test('on a PoX its storage lists, a run and a session that name no node go on to the node check and the allowance step, where the wallet is asked for the approval', async () => {
+test('on a PoX its storage lists, a run and a session that name no node go on to the node check, the generation read, the balance and the allowance step, where the wallet is asked for the approval', async () => {
   for (const start of ['run', 'runSession']) {
     const wallet = chainWallet(true);
     const { runner, provider } = runnerOver(wallet);
@@ -361,13 +366,14 @@ test('on a PoX its storage lists, a run and a session that name no node go on to
       provider.destroy();
     }
     assert.deepEqual(wallet.requests.filter((request) => request.startsWith('eth_call')), [
-      'eth_call tETNY.balanceOf', 'eth_call PoX._getOrdersCount', 'eth_call tETNY.allowance'
+      'eth_call PoX._getOrdersCount', 'eth_call PoX.VERSION', 'eth_call PoX.pricingAddress', 'eth_call tETNY.balanceOf',
+      'eth_call tETNY.allowance'
     ], start);
     assert.equal(wallet.requests.at(-1), 'eth_sendTransaction tETNY.approve', start);
     assert.deepEqual(runner.events.slice(0, 6), [
-      'Checking wallet balance....',
       CHECKING,
       'Verifying node address...',
+      'Checking wallet balance....',
       'Checking allowance on the current wallet...',
       `Allowance for ${POX}: 0.0 tokens, 3 required`,
       'Approving allowance for 3 tokens'

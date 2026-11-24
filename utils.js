@@ -82,6 +82,23 @@ export const retryRead = async (read, { attempts = READ_ATTEMPTS, delayMs = READ
 export const providerMessage = (error) =>
   error?.info?.error?.data?.message ?? error?.info?.error?.message ?? error?.shortMessage ?? error?.message ?? String(error);
 
+// Whether a contract read failed because the contract answered it with a
+// revert, or with no output of the function's type (an address without code,
+// a contract without the function), rather than because the RPC did not
+// answer it. ethers 6 throws every JSON-RPC error of an eth_call as a
+// CALL_EXCEPTION with the node's error in info.error: a revert is one whose
+// node error says so (geth's and Hardhat's "execution reverted", the bloxberg
+// node's data "Reverted 0x..."), or one decoded from revert data with no node
+// error; a rate limit or a wallet's "Failed to fetch" is not. An answer that
+// does not decode as the function's outputs is BAD_DATA.
+export const callRefused = (error) => {
+  if (error?.code === 'BAD_DATA') return true;
+  if (error?.code !== 'CALL_EXCEPTION') return false;
+  const node = error.info?.error;
+  if (!node) return true;
+  return (typeof node.data === 'string' && node.data.startsWith('Reverted')) || /revert/i.test(String(node.message || ''));
+};
+
 // The widest block range one eth_getLogs call spans. The LiteForge testnet's
 // Zeeve RPC (https://rpc.testnet.liteforge.zeeve.net/) refuses a wider one
 // with "eth_getLogs range exceeds 3000 blocks; split the range".

@@ -15,6 +15,7 @@ import EtnyContract from '../contract/operation/etnyContract.js';
 import EcldContract from '../contract/operation/ecldContract.js';
 import { checkAndSetAllowance } from '../contract/operation/tokenAllowance.js';
 import { REQUEST_DEFAULTS, requestEscrow, requestTerms } from '../contract/operation/requestTerms.js';
+import { NO_GENERATION } from '../contract/operation/matchingContract.js';
 
 const WALLET = '0x71d005d502bd2EEBD2368f35EA33e66cD7A63CB7';
 const SIGNER = { getAddress: async () => WALLET };
@@ -94,6 +95,20 @@ const stepOf = (network, token, runner) => ({
   events: runner.events.map((e) => e.split(network.pox).join('POX'))
 });
 
+// `runner` with a request added with V2 terms (TERMS) and not served by
+// claims, on a "2.0" PoX whose pricing names no PoxMatching: one instance, so
+// its resources are TERMED's with validators 1.
+const termedOn = (runner) => {
+  runner.resources = { ...TERMED, validators: 1 };
+  runner.selectRequestTerms(TERMS);
+  runner.generation = { version: '2.0', matchingAddress: ethers.ZeroAddress };
+  runner.termed = runner.termedRequest();
+  return runner;
+};
+// What a request added with V2 terms on a "2.0" PoX tells the client before
+// its approval: the minimum EPC of one unit.
+const EPC_NOTICE = 'The request states a minimum EPC of 1 units of 64 MiB: the image records 0 and the client gives 0.';
+
 // The walk of a request whose escrow is `tokens`, from an allowance of 0.
 const approvalOf = (tokens, wei) => ({
   calls: [['allowance', WALLET, 'POX'], ['approve', 'POX', wei], ['wait', '0xapprove']],
@@ -134,12 +149,13 @@ test('a V2 request on the bloxberg testnet and on Amoy approves its exact escrow
   const walks = [];
   for (const network of [BLOXBERG_TESTNET, AMOY]) {
     const token = fakeToken(0n);
-    const runner = await runnerOn(network, token);
-    runner.selectRequestTerms(TERMS);
+    const runner = termedOn(await runnerOn(network, token));
     await runner.checkAllowance();
     walks.push(stepOf(network, token, runner));
   }
-  assert.deepEqual(walks[0], approvalOf(ESCROW_TOKENS, TERMS.escrowWei));
+  const expected = approvalOf(ESCROW_TOKENS, TERMS.escrowWei);
+  expected.events.splice(1, 0, EPC_NOTICE);
+  assert.deepEqual(walks[0], expected);
   assert.deepEqual(walks[1], walks[0]);
   assert.equal(ethers.parseEther(ESCROW_TOKENS), TERMS.escrowWei);
 });
@@ -168,13 +184,11 @@ test('an allowance that covers the escrow is read and left alone on both; one we
     }
     // The exact escrow covers a V2 request; one wei under it does not.
     token = fakeToken(TERMS.escrowWei);
-    runner = await runnerOn(network, token);
-    runner.selectRequestTerms(TERMS);
+    runner = termedOn(await runnerOn(network, token));
     await runner.checkAllowance();
     assert.deepEqual(token.calls.map((c) => c[0]), ['allowance'], network.pox);
     token = fakeToken(TERMS.escrowWei - 1n);
-    runner = await runnerOn(network, token);
-    runner.selectRequestTerms(TERMS);
+    runner = termedOn(await runnerOn(network, token));
     await runner.checkAllowance();
     assert.deepEqual(token.calls.map((c) => c[0]), ['allowance', 'approve', 'wait'], network.pox);
     assert.equal(token.calls[1][2], TERMS.escrowWei);
@@ -209,8 +223,13 @@ test('bloxberg mainnet makes no allowance call and reports nothing of it', async
   await runner.checkAllowance();
   assert.deepEqual(token.calls, []);
   assert.deepEqual(runner.events, []);
-  // V2 terms are refused there before any allowance step.
-  assert.throws(() => runner.selectRequestTerms(TERMS), /takes no V2 request/);
+  // V2 terms with an escrow are refused there when the path is chosen: the
+  // PoX is the token's own proxy, whose generation is read as none.
+  runner.resources = { ...TERMED, validators: 1 };
+  runner.selectRequestTerms(TERMS);
+  assert.equal(await runner.readPoxGeneration(), NO_GENERATION);
+  runner.generation = NO_GENERATION;
+  assert.throws(() => runner.termedRequest(), /answers VERSION\(\) null and takes no addDORequestV2/);
   assert.deepEqual(token.calls, []);
 });
 

@@ -352,15 +352,22 @@ export const ECNetworkName1Dictionary = {
 //                    descriptor without it has no default storage and is refused
 //                    before any transaction until initializeStorage() is called
 //                    (runner.initializeDefaultStorage).
-//   matchingAddress, matchPageEntries: the PoxMatching of a PoX 2.0 deployment
-//                    that carries it, and the roll entries one paged read of
-//                    the reader asks for (spec/matching.md section 2: 650 on
-//                    bloxberg, 800 on Polygon and Amoy, 1,450 on LitVM); the
-//                    PoxMatchReader is the one PoxMatching's reader() names. A
-//                    request on such a network is served by claims while
-//                    PoxMatching's claimsOn() answers true
-//                    (runner.prepareRequest). No descriptor names one: no
-//                    PoxMatching is deployed.
+//   blockSeconds:    the seconds between two blocks of the chain, the interval
+//                    a request served by claims and a receipt it waits for
+//                    are read at (runner.claimsReadMs); the Python runner's
+//                    BLOCK_TIME.
+//   matchPageEntries: the roll entries one paged read of the reader asks for
+//                    (spec/matching.md section 2: 650 on bloxberg, 800 on
+//                    Polygon and Amoy, 1,450 on LitVM). A network's
+//                    PoxMatching is the one its PoX's pricing names, read from
+//                    the chain before each request (pricingAddress(), then the
+//                    pricing's matching(); matchingContract.readGeneration),
+//                    and the form of its V2 add is the one the PoX's VERSION()
+//                    names; a descriptor names neither. The PoxMatchReader is
+//                    the one PoxMatching's reader() names. A request on a
+//                    network whose pricing names a PoxMatching is served by
+//                    claims while PoxMatching's claimsOn() answers true
+//                    (runner.prepareRequest).
 // ---------------------------------------------------------------------------
 export const ECNetworkConfig = {
   [ECAddress.BLOXBERG.TESTNET_ADDRESS]: {
@@ -374,7 +381,8 @@ export const ECNetworkConfig = {
     isMainnet: false,
     networkName: 'bloxberg',
     networkKey: 'BLOXBERG',
-    agentNetwork: 'bloxberg_testnet'
+    agentNetwork: 'bloxberg_testnet',
+    blockSeconds: 5
   },
   [ECAddress.BLOXBERG.MAINNET_ADDRESS]: {
     family: 'bloxberg',
@@ -386,7 +394,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'bloxberg',
-    networkKey: 'BLOXBERG'
+    networkKey: 'BLOXBERG',
+    blockSeconds: 5
   },
   [ECAddress.POLYGON.MAINNET_ADDRESS]: {
     family: 'ecld',
@@ -398,7 +407,8 @@ export const ECNetworkConfig = {
     },
     isMainnet: true,
     networkName: 'matic',
-    networkKey: 'POLYGON'
+    networkKey: 'POLYGON',
+    blockSeconds: 2
   },
   [ECAddress.POLYGON.TESTNET_ADDRESS]: {
     family: 'ecld',
@@ -411,7 +421,8 @@ export const ECNetworkConfig = {
     isMainnet: false,
     networkName: 'amoy',
     networkKey: 'POLYGON',
-    agentNetwork: 'polygon_amoy'
+    agentNetwork: 'polygon_amoy',
+    blockSeconds: 2
   }
 };
 
@@ -430,7 +441,8 @@ export const ECEcldTestnetConfig = {
     },
     isMainnet: false,
     networkName: 'iotex',
-    networkKey: 'IOTEX'
+    networkKey: 'IOTEX',
+    blockSeconds: 5
   },
   11155111: {
     family: 'ecld',
@@ -443,7 +455,8 @@ export const ECEcldTestnetConfig = {
     isMainnet: false,
     networkName: 'sepolia',
     networkKey: 'SEPOLIA',
-    agentNetwork: 'ethereum_sepolia'
+    agentNetwork: 'ethereum_sepolia',
+    blockSeconds: 30
   },
   4441: {
     family: 'ecld',
@@ -456,7 +469,8 @@ export const ECEcldTestnetConfig = {
     isMainnet: false,
     networkName: 'litvm',
     networkKey: 'LITVM',
-    agentNetwork: 'litvm_liteforge'
+    agentNetwork: 'litvm_liteforge',
+    blockSeconds: 1
   }
 };
 

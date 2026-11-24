@@ -96,33 +96,6 @@ class PolygonProtocolContract {
     ]);
   }
 
-  // A DO request with V2 terms (PoX 2.0 addDORequestV2): the resources as
-  // addDORequest sends them, one instance, and `terms` (runner.v2TermsOf):
-  // maxPricePerCuHourWei, maxGflops, relaysPerHour and gasLevel. The
-  // implementation pulls the escrow from the wallet's allowance in this call.
-  async addDORequestV2(imageMetadata, payloadMetadata, inputMetadata, nodeAddress, resources, terms) {
-    console.log('adding new DO Request (V2 terms)');
-    const {
-      cpu, memory, storage, bandwidth, duration
-    } = requestTerms(resources);
-    return withGasHeadroom(this.protocolContract.addDORequestV2, [
-      cpu,
-      memory,
-      storage,
-      bandwidth,
-      duration,
-      1,
-      terms.maxPricePerCuHourWei,
-      terms.maxGflops,
-      terms.relaysPerHour,
-      terms.gasLevel,
-      imageMetadata,
-      payloadMetadata,
-      inputMetadata,
-      nodeAddress
-    ]);
-  }
-
   async getOrder(orderId) {
     return this.protocolContract._getOrder(orderId);
   }

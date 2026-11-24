@@ -31,6 +31,8 @@ const runnerWith = () => {
       return { hash: '0xtx' };
     },
   };
+  runner.checkWalletBalance = async () => {};
+  runner.checkAllowance = async () => {};
   runner.getV3ImageMetadata = async () => 'image';
   runner.getV3CodeMetadata = async () => 'code';
   runner.getV3InputMedata = async () => 'input';

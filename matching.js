@@ -17,8 +17,11 @@
 //   and the runner's local list (3.19, D120).
 // - The three result fields after v5 and the report of an end by class
 //   (3.19; spec/matching.md 17; section 8 items 15 and 16).
+// - The stored result's grammar (spec/matching.md 17, "The stored result").
 // - The template's record and the envelope its mark chooses (3.19; 8.13).
-// - An image's records in ECImageRegistryV4 (8.12; D126, D138, D150).
+// - An image's records in ECImageRegistryV4 (8.12; D126, D138, D150) and the
+//   request's memory and EPC minimum they set (D150, D200).
+// - The bounds of a V2 request's terms (spec/matching.md section 4).
 import { ethers } from 'ethers';
 
 export const SCORE_MAX = 50000;
@@ -58,6 +61,24 @@ export const CUSTOM_CLASS = 0;
 export const DEFAULT_CLASS = 1;
 const RESULT_FIELDS_MIN = 18;
 const RESULT_FIELD_BOUNDS = [[15, UINT64_MAX], [16, UINT64_MAX], [17, 1n]];
+// The bounds the PoX 2.0 sets on a V2 request's terms (spec/matching.md
+// section 4; Ethernity20Extension.sol _addTermedDORequest and
+// _insertDORequest, Ethernity20Extension2.sol increaseBid, PoxPricing's
+// chainFeeWei): a bid of 1 to MAX_PRICE_WEI wei per CU-hour at the add and at
+// a raise ("price invalid"); a gasLevel of MIN_GAS_LEVEL ("gasLevel below
+// average") to MAX_GAS_LEVEL ("gasLevel invalid"); the required GFLOPS at most
+// a stated ceiling ("maxGflops invalid"); one instance ("instance invalid");
+// each of the four metadata strings at most MAX_METADATA_BYTES bytes
+// ("metadata1 too long", "metadata too long").
+export const MAX_PRICE_WEI = (1n << 128n) - 1n;
+export const MIN_GAS_LEVEL = 10n ** 18n;
+export const MAX_GAS_LEVEL = (1n << 128n) - 1n;
+export const MAX_METADATA_BYTES = 2048;
+// An EPC figure's unit (spec/matching.md section 16, item 33): 64 MiB; a
+// figure is 0 to UINT16_MAX units.
+export const EPC_UNIT_MIB = 64;
+// The status the storage holds for a DO request (Models.RequestStatus).
+export const REQUEST_AVAILABLE = 0;
 
 export const ZERO_HASH = ethers.ZeroHash;
 
@@ -83,17 +104,60 @@ export const templateKey = (name) => ethers.keccak256(ethers.toUtf8Bytes(name));
 // keccak256 of the securelock image, field 1 of metadata1.
 export const imageKey = (imageCid) => ethers.dataSlice(ethers.keccak256(ethers.toUtf8Bytes(imageCid)), 0, 31);
 
-// The V2 add's maxGflops argument of a PoX with matching: the required GFLOPS
-// in bits 16 to 31 and the ceiling in bits 0 to 15 (spec/matching.md
-// section 3); 0 states none of either. One CU is 100 GFLOPS.
-export const maxGflopsArg = (requiredGflops, ceilingGflops) => {
-  for (const [name, value] of [['required', requiredGflops], ['ceiling', ceilingGflops]]) {
+// The V2 add's maxGflops argument (spec/matching.md section 3): the minimum
+// EPC in units of 64 MiB in bits 32 to 47, the required GFLOPS in bits 16 to
+// 31 and the ceiling in bits 0 to 15; 0 states none of each. One CU is 100
+// GFLOPS. Throws a RangeError for a value outside 0 to 65,535 and for a
+// required GFLOPS above a stated ceiling, which the PoX refuses ("maxGflops
+// invalid").
+export const maxGflopsArg = (requiredGflops, ceilingGflops, epcUnits = 0) => {
+  for (const [name, value] of [['required GFLOPS', requiredGflops], ['GFLOPS ceiling', ceilingGflops],
+    ['minimum EPC in units of 64 MiB', epcUnits]]) {
     const n = Number(value);
     if (!Number.isInteger(n) || n < 0 || n > UINT16_MAX) {
-      throw new RangeError(`the ${name} GFLOPS of a request must be 0 to ${UINT16_MAX}, not ${value}`);
+      throw new RangeError(`the ${name} of a request must be 0 to ${UINT16_MAX}, not ${value}`);
     }
   }
-  return (BigInt(requiredGflops) << 16n) | BigInt(ceilingGflops);
+  if (Number(ceilingGflops) !== 0 && Number(requiredGflops) > Number(ceilingGflops)) {
+    throw new RangeError(`the required GFLOPS of a request, ${requiredGflops}, is above its GFLOPS ceiling of ${ceilingGflops}: the PoX refuses such a request (maxGflops invalid).`);
+  }
+  return (BigInt(epcUnits) << 32n) | (BigInt(requiredGflops) << 16n) | BigInt(ceilingGflops);
+};
+
+// The minimum EPC, in units of 64 MiB, of a maxGflops argument: its bits 32
+// to 47.
+export const epcOf = (maxGflops) => Number((BigInt(maxGflops) >> 32n) & MASK16);
+
+// An EPC figure in MiB in units of 64 MiB, rounded up (D191, D200; OD23): 0
+// for 0. Throws a RangeError for a figure above 65,535 units.
+export const epcUnitsOfMib = (mib) => {
+  const units = (BigInt(mib) + BigInt(EPC_UNIT_MIB) - 1n) / BigInt(EPC_UNIT_MIB);
+  if (units > BigInt(UINT16_MAX)) {
+    throw new RangeError(`an EPC figure is at most ${UINT16_MAX * EPC_UNIT_MIB} MiB (${UINT16_MAX} units of ${EPC_UNIT_MIB} MiB), not ${mib}`);
+  }
+  return Number(units);
+};
+
+// The minimum EPC a runner states on a request it adds (spec/matching.md
+// section 16, item 41; D200): the largest of one unit, the image's recorded
+// need (imageEpcUnits) and the client's figure, in units of 64 MiB.
+export const minimumEpc = (imageUnits, clientUnits) => Math.max(1, Number(imageUnits), Number(clientUnits));
+
+// The memory a request needs (8.12; D150): the larger of the client's memory
+// and the enclave memory the image's records hold, in GB; the client's alone
+// without records.
+export const memoryNeed = (clientGb, records) =>
+  (records ? Math.max(Number(clientGb), Number(records.enclaveMemoryGiB)) : Number(clientGb));
+
+// Throws a RangeError when one of a V2 add's four metadata strings is longer
+// than MAX_METADATA_BYTES bytes of UTF-8, which the PoX refuses.
+export const checkMetadata = (metadata) => {
+  metadata.forEach((text, i) => {
+    const size = new TextEncoder().encode(String(text)).length;
+    if (size > MAX_METADATA_BYTES) {
+      throw new RangeError(`metadata${i + 1} of the request is ${size} bytes, above the ${MAX_METADATA_BYTES} bytes the PoX takes: the request is not sent.`);
+    }
+  });
 };
 
 // [need, ceiling] of a maxGflops argument (4.2, D38): a request that states no
@@ -106,14 +170,40 @@ export const needOf = (maxGflops) => {
   return [need, ceiling];
 };
 
+// The text of a score in points: decimal digits with an optional sign, point
+// and exponent, as scoreUnits and runner-py's score_units read it.
+const DECIMAL_TEXT = /^([+-]?)(?:([0-9]+)\.?([0-9]*)|\.([0-9]+))(?:[eE]([+-]?[0-9]+))?$/;
+
 // A score given as points (0.50, 1, 4.9) in units of 0.0001, the unit
-// nodeStanding answers in; 0 to 5.00.
+// nodeStanding answers in; 0 to 5.00. The points are read as the decimal text
+// of the value (String() of a number, the shortest text that reads back as
+// it; a string as it stands, trimmed) and rounded half up to a whole unit,
+// computed on the digits, as runner-py reads them.
 export const scoreUnits = (score) => {
-  const units = Math.round(Number(score) * SCORE_UNITS_PER_POINT);
-  if (!Number.isFinite(units) || units < 0 || units > SCORE_MAX) {
-    throw new RangeError(`a minimum node score is 0 to 5.00, not ${score}`);
+  const refuse = () => new RangeError(`a minimum node score is 0 to 5.00, not ${String(score)}`);
+  if (typeof score !== 'number' && typeof score !== 'string') throw refuse();
+  const m = DECIMAL_TEXT.exec(String(score).trim());
+  if (!m) throw refuse();
+  const [, sign, whole, fraction, onlyFraction, exponent] = m;
+  const fractionDigits = onlyFraction !== undefined ? onlyFraction : fraction;
+  const digits = BigInt(`${whole || '0'}${fractionDigits}`);
+  // units = digits x 10^k, k = 4 + exponent - the fraction's digits.
+  const k = 4 + Number(exponent || 0) - fractionDigits.length;
+  let units;
+  if (digits === 0n) {
+    units = 0n;
+  } else if (k > 32) {
+    throw refuse();
+  } else if (k >= 0) {
+    units = digits * 10n ** BigInt(k);
+  } else if (-k > String(digits).length + 1) {
+    units = 0n;
+  } else {
+    const scale = 10n ** BigInt(-k);
+    units = digits / scale + (2n * (digits % scale) >= scale ? 1n : 0n);
   }
-  return units;
+  if ((sign === '-' && units !== 0n) || units > BigInt(SCORE_MAX)) throw refuse();
+  return Number(units);
 };
 
 // ------------------------------------------------------------- the clock
@@ -432,7 +522,19 @@ export const RAISE = 'raise';
 export const WAIT = 'wait';
 export const REPORT = 'report';
 
-// Whether to raise the bid (3.10 rule 4, 3.15, D92, D23) when the approval
+// Whether a request served by claims takes claims now (spec/matching.md
+// section 9, takesClaims; section 16, item 23): its parameter set has claims
+// on (requestInfo's `claims`), the storage holds it AVAILABLE, and it is at
+// most maxRequestAgeSeconds old at `now`. A request the runner added on the
+// claims path is neither pinned nor reserved, and the approval that fills it
+// books it, so AVAILABLE is also unfilled. The quote of a request that takes
+// no claims answers canClaimNow 0 because no node can claim it, not because
+// its bid is too low: such a request is never raised.
+export const takesClaims = (claims, status, createdAt, maxRequestAgeSeconds, now) =>
+  Boolean(claims) && Number(status) === REQUEST_AVAILABLE && Number(now) <= Number(createdAt) + Number(maxRequestAgeSeconds);
+
+// Whether to raise the bid (3.10 rule 4, 3.15, D92, D23) of a request that
+// takes claims (takesClaims) when the approval
 // rule found no standing claim: { action, bidWei, reason }, `action` being
 // RAISE with the bid to send, WAIT while a claim the runner would approve can
 // still come or the contract does not admit the raise yet, or REPORT when a
@@ -447,7 +549,8 @@ export const REPORT = 'report';
 // raise. The contract admits a raise while nobody claimed in the round and,
 // once a claim was mined in it, from step maxSteps + 1; a request is raised
 // at most maxRounds - 1 times. The bid sent is max(minBidWei, bid + 1), sent
-// only within the client's ceiling; with no ceiling the quote is reported.
+// only within the client's ceiling, which the settings hold at most the PoX's
+// bound MAX_PRICE_WEI; with no ceiling the quote is reported.
 export const decideRaise = ({
   quote, claimersCounted, approvableCounted, claimedInRound, stepNow, maxSteps, round, maxRounds, ceilingWei
 }) => {
@@ -548,6 +651,148 @@ export const resultFields = (result) => {
     values.push(value);
   }
   return { landedAt: values[0], ranUntil: values[1], slClass: Number(values[2]) };
+};
+
+// ------------------------------------------------------------- stored result
+
+// What the stored result's grammar reads for an order (spec/matching.md 17,
+// "The stored result"; result-fields.json `stored`): { status, orderId,
+// code, signer }, the order it calls for, its signer (lower case) and,
+// `decoded`, the task code, each null where the string carries no
+// transaction or no code.
+export const STORED_DECODED = 'decoded';
+export const STORED_NOT_V3 = 'notV3';
+export const STORED_NO_TRANSACTION = 'noTransaction';
+export const STORED_OTHER_ORDER = 'otherOrder';
+export const STORED_NO_CODE = 'noCode';
+// The most bytes of transaction the stored result's hex run holds.
+export const MAX_STORED_TRANSACTION_BYTES = 4096;
+// Half the order of secp256k1: the highest s of a signature that is read.
+const SECP256K1_HALF_ORDER = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+// The selector of _addResultToOrder(uint256,string).
+const ADD_RESULT_SELECTOR = '0x14e9f384';
+
+const bigOf = (bytes) => (bytes.length === 0 ? 0n : BigInt(ethers.hexlify(bytes)));
+
+// [isList, offset, length] of the RLP item of `b` at `at` in canonical form,
+// null otherwise: the short form below 56 bytes, the long form with no
+// leading zero byte from 56 on, and a single byte below 0x80 written as
+// itself, never as a one-byte string.
+const rlpItem = (b, at) => {
+  if (at >= b.length) return null;
+  const c = b[at];
+  if (c < 0x80) return [false, at, 1];
+  const isList = c >= 0xc0;
+  const short = isList ? c - 0xc0 : c - 0x80;
+  let off;
+  let length;
+  if (short <= 55) {
+    off = at + 1;
+    length = short;
+    if (!isList && length === 1 && (off >= b.length || b[off] < 0x80)) return null;
+  } else {
+    const n = short - 55;
+    if (at + 1 + n > b.length || b[at + 1] === 0) return null;
+    const wide = bigOf(b.subarray(at + 1, at + 1 + n));
+    if (wide < 56n || wide > BigInt(b.length)) return null;
+    length = Number(wide);
+    off = at + 1 + n;
+  }
+  if (off + length > b.length) return null;
+  return [isList, off, length];
+};
+
+// The header of an RLP list whose payload is `length` bytes.
+const rlpListHeader = (length) => {
+  if (length <= 55) return Uint8Array.of(0xc0 + length);
+  const size = ethers.getBytes(ethers.toBeHex(length));
+  return ethers.getBytes(ethers.concat([Uint8Array.of(0xf7 + size.length), size]));
+};
+
+// What the grammar of spec/matching.md 17 reads from the stored result
+// `stored`, its UTF-8 bytes as they stand (nothing trimmed or folded), for
+// order `orderId`:
+//
+//     stored = "v3:" "0x" 1*( hexdig hexdig ) [ ":" rest ]
+//
+// with lower-case hex digits, an even count of them and at most 4,096 bytes.
+// A string that does not begin "v3:" is notV3; one outside the grammar, or
+// whose run is not one canonical RLP list of the nine items of a legacy
+// transaction (to empty or 20 bytes; v, r, s of at most 8, 32 and 32 bytes; v
+// 27, 28 or 35 and above; s at most half the curve's order) signed over items
+// 0 to 5 (with the chain id, 0 and 0 for EIP-155) and calling exactly
+// _addResultToOrder(orderId < 2^64, a valid UTF-8 string), is noTransaction.
+// Otherwise the transaction's signer and order are read: otherOrder for
+// another order, noCode when field 1 of its result string is not a run of
+// ASCII digits, and decoded with that task code (at most 2^64 - 1).
+export const readStored = (stored, orderId) => {
+  const s = new TextEncoder().encode(String(stored));
+  if (s.length < 3 || s[0] !== 0x76 || s[1] !== 0x33 || s[2] !== 0x3a) {
+    return { status: STORED_NOT_V3, orderId: null, code: null, signer: null };
+  }
+  const none = { status: STORED_NO_TRANSACTION, orderId: null, code: null, signer: null };
+  if (s.length < 5 || s[3] !== 0x30 || s[4] !== 0x78) return none;
+  let end = s.indexOf(0x3a, 5);
+  if (end < 0) end = s.length;
+  const run = s.subarray(5, end);
+  if (run.length % 2 !== 0 || run.length / 2 > MAX_STORED_TRANSACTION_BYTES) return none;
+  for (const c of run) if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))) return none;
+  const raw = ethers.getBytes(`0x${new TextDecoder().decode(run)}`);
+  const top = rlpItem(raw, 0);
+  if (!top || !top[0] || top[1] + top[2] !== raw.length) return none;
+  const items = [];
+  for (let at = top[1]; at < raw.length;) {
+    const item = rlpItem(raw, at);
+    if (items.length === 9 || !item || item[0]) return none;
+    items.push(item);
+    at = item[1] + item[2];
+  }
+  if (items.length !== 9) return none;
+  const itemBytes = (i) => raw.subarray(items[i][1], items[i][1] + items[i][2]);
+  if ((items[3][2] !== 0 && items[3][2] !== 20) || items[6][2] > 8 || items[7][2] > 32 || items[8][2] > 32) return none;
+  const v = bigOf(itemBytes(6));
+  const sigS = bigOf(itemBytes(8));
+  let recid;
+  let suffix = new Uint8Array(0);
+  if (v >= 35n) {
+    recid = Number((v - 35n) % 2n);
+    suffix = ethers.getBytes(ethers.concat([ethers.encodeRlp(ethers.toBeArray((v - 35n) / 2n)), Uint8Array.of(0x80, 0x80)]));
+  } else if (v === 27n || v === 28n) {
+    recid = Number(v - 27n);
+  } else {
+    return none;
+  }
+  if (sigS > SECP256K1_HALF_ORDER) return none;
+  const body = ethers.getBytes(ethers.concat([raw.subarray(top[1], items[5][1] + items[5][2]), suffix]));
+  const digest = ethers.keccak256(ethers.concat([rlpListHeader(body.length), body]));
+  let signer;
+  try {
+    signer = ethers.recoverAddress(digest, {
+      r: ethers.toBeHex(bigOf(itemBytes(7)), 32), s: ethers.toBeHex(sigS, 32), v: 27 + recid
+    }).toLowerCase();
+  } catch (e) {
+    return none;
+  }
+  const data = itemBytes(5);
+  if (data.length < 100 || ethers.hexlify(data.subarray(0, 4)) !== ADD_RESULT_SELECTOR) return none;
+  const called = bigOf(data.subarray(4, 36));
+  const length = bigOf(data.subarray(68, 100));
+  if (called > UINT64_MAX || bigOf(data.subarray(36, 68)) !== 0x40n || length > BigInt(data.length)) return none;
+  const size = Number(length);
+  if (data.length !== 100 + Math.ceil(size / 32) * 32 || data.subarray(100 + size).some((x) => x !== 0)) return none;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data.subarray(100, 100 + size));
+  } catch (e) {
+    return none;
+  }
+  if (called !== BigInt(orderId)) return { status: STORED_OTHER_ORDER, orderId: Number(called), code: null, signer };
+  const fields = text.split(':');
+  if (fields.length < 2 || !/^[0-9]+$/.test(fields[1])) {
+    return { status: STORED_NO_CODE, orderId: Number(called), code: null, signer };
+  }
+  const code = BigInt(fields[1]);
+  return { status: STORED_DECODED, orderId: Number(called), code: Number(code > UINT64_MAX ? UINT64_MAX : code), signer };
 };
 
 // The ends section 8 item 16 reports by class, with their names (3.19; SLH 7).

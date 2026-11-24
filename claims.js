@@ -5,12 +5,14 @@
 // members have not sent (3.16, 3.19).
 //
 // EthernityCloudRunner builds a ClaimsPath for a request on a network whose
-// descriptor names PoxMatching when claimsOn() answers true before the add, on
-// the PoxMatchReader PoxMatching names; on every other network, and while
-// claims are off, it serves the request as it did before (8.4).
+// PoX's pricing names a PoxMatching when claimsOn() answers true before the
+// add, on the PoxMatchReader PoxMatching names; on every other network, and
+// while claims are off, it serves the request without claims (8.4), with V2
+// terms (TermedRequest) when options.v2 gives them with an escrowWei.
 import { ethers } from 'ethers';
 import * as matching from './matching.js';
 import { requestTerms } from './contract/operation/requestTerms.js';
+import { sendV2Add } from './contract/operation/matchingContract.js';
 import { delay } from './utils.js';
 import { ECLog } from './enums.js';
 
@@ -21,30 +23,87 @@ export const NOTE_AMBIGUOUS_AFTER_SECONDS = 3600;
 // as its hints, the proof that three nodes could serve the request (3.19).
 const HINT_NODES = 3;
 
-// The settings a request served by claims reads (section 8 items 1, 5, 6, 9,
-// 10, 12 and 16): the V2 terms of options.v2 (runner.v2TermsOf), whose
-// escrowWei, when given, is the most the add may pull (the escrow itself is
-// the reader's escrowFor at the request's terms), with their requiredGflops
-// (0: one CU, D38) and maxBidPerCuHourWei, the bid ceiling a raise stays
-// within (none: the quote is reported and nothing is raised), and of
-// `options` minNodeScore (points, 0.50; 0 switches the test off),
-// recentFailureSlots, allowMarkedImage, expireUnstarted, noteRefund and
-// noteAmbiguous. Throws, before anything is sent, for a request without V2
-// terms and for a setting out of its range.
-export const claimsSettings = (v2Terms, v2, options = {}) => {
-  if (!v2Terms) {
-    throw new Error('This network serves DO requests by claims (PoxMatching\'s claimsOn() is true), so a request is added with V2 terms: pass options.v2 with maxPricePerCuHourWei; its escrowWei, when given, is the most addDORequestV2 may pull.');
+// The V2 terms of options.v2 of run() and runSession(), as bigints:
+// maxPricePerCuHourWei (the most paid per CU-hour, token weis; required),
+// maxGflops (the largest node paid for, in GFLOPS, one CU being 100 GFLOPS; 0
+// for any node), relaysPerHour and gasLevel of the chain fee, and escrowWei,
+// the escrow addDORequestV2 pulls, on the claims path the most it may pull
+// (null when left out). A field left out takes its default (OD26: maxGflops
+// 0, relaysPerHour 0, gasLevel 1e18). Each field is a bigint, a string of
+// decimal digits (surrounding whitespace allowed) or a safe integer; the empty
+// string, a boolean and a hex string are refused. Null when `v2` is not
+// given.
+export const V2_TERM_FIELDS = ['maxPricePerCuHourWei', 'maxGflops', 'relaysPerHour', 'gasLevel', 'escrowWei'];
+const V2_TERM_DEFAULTS = { maxGflops: 0n, relaysPerHour: 0n, gasLevel: 10n ** 18n, escrowWei: null };
+
+const integerOf = (value, name) => {
+  let parsed;
+  if (typeof value === 'bigint') {
+    parsed = value;
+  } else if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    parsed = BigInt(value.trim());
+  } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    parsed = BigInt(value);
+  } else {
+    throw new TypeError(`${name} must be an integer (a bigint, a decimal string or a safe integer)`);
   }
-  const whole = (value, name, fallback) => {
-    if (value === undefined || value === null) return fallback;
-    const parsed = typeof value === 'bigint' ? value : (/^\d+$/.test(String(value).trim()) ? BigInt(String(value).trim()) : null);
-    if (parsed === null) throw new TypeError(`${name} must be a whole number of 0 or more`);
-    return parsed;
-  };
+  if (parsed < 0n) throw new TypeError(`${name} must not be negative`);
+  return parsed;
+};
+
+export const v2TermsOf = (v2) => {
+  if (v2 === undefined || v2 === null) return null;
+  if (typeof v2 !== 'object') throw new TypeError('options.v2 must be an object with the V2 terms');
+  const terms = {};
+  for (const field of V2_TERM_FIELDS) {
+    const value = v2[field];
+    terms[field] = (value === undefined || value === null) && field !== 'maxPricePerCuHourWei'
+      ? V2_TERM_DEFAULTS[field]
+      : integerOf(value, `options.v2.${field}`);
+  }
+  if (terms.maxPricePerCuHourWei === 0n) throw new TypeError('options.v2.maxPricePerCuHourWei must be above 0');
+  if (terms.escrowWei === 0n) throw new TypeError('options.v2.escrowWei must be above 0');
+  return terms;
+};
+
+const within = (name, value, low, high) => {
+  if (value !== null && (value < low || value > high)) {
+    throw new RangeError(`${name} must be ${low} to ${high}, not ${value}: the PoX refuses a request outside that bound`);
+  }
+  return value;
+};
+
+// The settings a request with V2 terms reads (section 8 items 1, 5, 6, 9,
+// 10, 12 and 16): the V2 terms of options.v2 (v2TermsOf), with its
+// requiredGflops (0: one CU, D38), epcMiB (the client's EPC figure in MiB,
+// rounded up to units of 64 MiB; OD23) and maxBidPerCuHourWei, the bid
+// ceiling a raise stays within (none: the quote is reported and nothing is
+// raised); and of `options`, for the claims path, minNodeScore (points, 0.50;
+// 0 switches the test off), recentFailureSlots, allowMarkedImage,
+// expireUnstarted, noteRefund and noteAmbiguous. Each bound the PoX sets on
+// the terms (matching.MAX_PRICE_WEI, MIN_GAS_LEVEL, MAX_GAS_LEVEL,
+// maxGflopsArg) is tested, and a V2 add takes one instance (`resources`'
+// validators, 0 read as 1). Null when options.v2 is not given; throws, before
+// anything is sent, for a setting out of its range or out of the PoX's bound.
+export const v2Settings = (v2, options = {}, resources = {}) => {
+  const terms = v2TermsOf(v2);
+  if (terms === null) return null;
+  const validators = (resources && resources.validators) || 1;
+  if (Number(validators) !== 1) {
+    throw new RangeError(`A request with V2 terms takes one instance; resources.validators is ${validators}. Give validators 1, or leave options.v2 out for a legacy request.`);
+  }
+  const whole = (value, name, fallback) => (value === undefined || value === null ? fallback : integerOf(value, name));
+  within('options.v2.maxPricePerCuHourWei', terms.maxPricePerCuHourWei, 1n, matching.MAX_PRICE_WEI);
+  within('options.v2.gasLevel', terms.gasLevel, matching.MIN_GAS_LEVEL, matching.MAX_GAS_LEVEL);
+  const requiredGflops = Number(whole(v2.requiredGflops, 'options.v2.requiredGflops', 0n));
+  const epcUnits = matching.epcUnitsOfMib(whole(v2.epcMiB, 'options.v2.epcMiB', 0n));
+  matching.maxGflopsArg(requiredGflops, Number(terms.maxGflops), epcUnits);
   return {
-    terms: v2Terms,
-    requiredGflops: Number(whole(v2 && v2.requiredGflops, 'options.v2.requiredGflops', 0n)),
-    maxBidWei: whole(v2 && v2.maxBidPerCuHourWei, 'options.v2.maxBidPerCuHourWei', null),
+    terms,
+    requiredGflops,
+    epcUnits,
+    maxBidWei: within('options.v2.maxBidPerCuHourWei', whole(v2.maxBidPerCuHourWei, 'options.v2.maxBidPerCuHourWei', null),
+      1n, matching.MAX_PRICE_WEI),
     minScore: options.minNodeScore === undefined || options.minNodeScore === null ? null : matching.scoreUnits(options.minNodeScore),
     recentFailureSlots: Number(whole(options.recentFailureSlots, 'options.recentFailureSlots', BigInt(matching.DEFAULT_RECENT_FAILURE_SLOTS))),
     allowMarkedImage: Boolean(options.allowMarkedImage),
@@ -54,10 +113,30 @@ export const claimsSettings = (v2Terms, v2, options = {}) => {
   };
 };
 
+// The settings of a request served by claims (v2Settings). Throws, before
+// anything is sent, for a request without V2 terms and as v2Settings does.
+export const claimsSettings = (v2, options = {}, resources = {}) => {
+  const settings = v2Settings(v2, options, resources);
+  if (!settings) {
+    throw new Error('This network serves DO requests by claims (PoxMatching\'s claimsOn() is true), so a request is added with V2 terms: pass options.v2 with maxPricePerCuHourWei; its escrowWei, when given, is the most addDORequestV2 may pull.');
+  }
+  return settings;
+};
+
 // requestInfo names no parameter set in force for the request
 // (matching.NO_PARAMETER_SET): it has no schedule, so no claim on it is
 // approved by the rule of 3.10.
 export class NoParameterSet extends Error {}
+
+// The parameter set the request takes has claims off (requestInfo's
+// `claims`): no claim on it is made or approved, and it is served as a
+// request without claims (8.4).
+export class ClaimsOff extends Error {}
+
+// The request takes no claims now (matching.takesClaims): the storage no
+// longer holds it AVAILABLE, or it is past maxRequestAgeSeconds. No claim on
+// it is approved and its bid is not raised.
+export class NoClaimsNow extends Error {}
 
 const utc = (seconds) => new Date(Number(seconds) * 1000).toISOString();
 
@@ -82,21 +161,29 @@ export const hintWords = (entries) => {
 };
 
 // expireOrder of `orderId`, made as a call first, then noteRefund when
-// `noteRefund`; false when the PoX does not admit the expiry yet.
+// `noteRefund`; false when the PoX does not admit the expiry yet. Each send
+// is waited for with the runner's receipt poll (runner.receiptOf), and one
+// whose receipt is not of status 1 has not succeeded.
 export const expireOrder = async (chain, runner, orderId, noteRefund) => {
   try {
-    const tx = await chain.expireOrder(orderId);
-    await tx.wait();
+    await runner.receiptOf(await chain.expireOrder(orderId));
   } catch (e) {
     return false;
   }
   runner.matchingNotice(`Order ${orderId} had no result in its time and was expired: its escrow is returned.`);
   if (noteRefund) {
+    let tx;
     try {
-      await (await chain.noteRefund(orderId)).wait();
-      runner.matchingNotice(`noteRefund recorded order ${orderId}'s expiry against its node.`, ECLog.INFO);
+      tx = await chain.noteRefund(orderId);
     } catch (e) {
       runner.matchingNotice(`noteRefund of order ${orderId} is refused: ${e.shortMessage || e.message}`, ECLog.INFO);
+      return true;
+    }
+    try {
+      await runner.receiptOf(tx);
+      runner.matchingNotice(`noteRefund recorded order ${orderId}'s expiry against its node.`, ECLog.INFO);
+    } catch (e) {
+      runner.matchingNotice(`noteRefund ${tx.hash} of order ${orderId} did not succeed: ${e.shortMessage || e.message}`, ECLog.INFO);
     }
   }
   return true;
@@ -120,7 +207,13 @@ export const settlePending = async (runner) => {
         continue;
       }
       if (await chain.orderMarked(item.order)) continue;
-      await (await chain.noteAmbiguous(item.order, item.hints)).wait();
+      const tx = await chain.noteAmbiguous(item.order, item.hints);
+      try {
+        await runner.receiptOf(tx);
+      } catch (e) {
+        runner.matchingNotice(`noteAmbiguous ${tx.hash} of order ${item.order} did not succeed: ${e.shortMessage || e.message}`, ECLog.INFO);
+        continue;
+      }
       runner.matchingNotice(`noteAmbiguous of order ${item.order} sent: the members had not sent it within an hour of the result.`, ECLog.INFO);
     } catch (e) {
       runner.logAppend(`pending ${item.kind} of order ${item.order}: ${e.shortMessage || e.message}`, ECLog.INFO);
@@ -146,11 +239,18 @@ export class ClaimsPath {
     // they hold (matching.dappMinimum).
     this.records = null;
     this.dappMinScore = null;
+    // The request's memory need, the larger of the client's memory and the
+    // image's enclave memory (matching.memoryNeed), and its minimum EPC in
+    // units of 64 MiB (matching.minimumEpc), set before the add.
+    this.memoryGb = null;
+    this.epcUnits = null;
     // The escrow the add pulls, escrowFor at the request's terms.
     this.escrowWei = null;
     this.params = null;
     this.round = null;
     this.hints = [];
+    // True once awaitApproval found the request's set with claims off.
+    this.claimsOff = false;
     this.told = new Set();
   }
 
@@ -174,8 +274,12 @@ export class ClaimsPath {
   // records, told to the client (the kind, the network flag, the enclave
   // memory and the dApp's minimum operator score, which the runner applies:
   // D138), an image its session name's newest version is not bound to refused
-  // with the dApp's current image named; the class; and the quote at the
-  // request's terms. Each refusal is thrown before anything is sent.
+  // with the dApp's current image named; the request's memory need (the
+  // image's enclave memory when it is above the client's memory) and its
+  // minimum EPC (the image's recorded need, the client's epcMiB and one unit),
+  // each told to the client; the class; and the quote at the request's terms.
+  // Each refusal is thrown before anything is sent, a registry that does not
+  // answer the EPC need's read among them.
   async checkBeforeAdd(imageCid) {
     this.imageCid = imageCid;
     const templateName = this.templateName();
@@ -201,6 +305,19 @@ export class ClaimsPath {
     if (found.currentImage) {
       throw new Error(`The image ${imageCid} is not the one its session name's newest version is bound to: the dApp's current image is ${found.currentImage}. The request is not sent.`);
     }
+    const clientMemory = requestTerms(this.runner.resources).memory;
+    this.memoryGb = matching.memoryNeed(clientMemory, this.records);
+    if (this.memoryGb > clientMemory) {
+      this.notice(`The image ${imageCid} records an enclave memory of ${this.memoryGb} GiB, above the request's memory of ${clientMemory} GB: the request needs ${this.memoryGb} GB.`, ECLog.INFO);
+    }
+    let imageUnits;
+    try {
+      imageUnits = await this.chain.imageEpcUnits(imageCid);
+    } catch (e) {
+      throw new Error(`The image registry did not answer the EPC need of the image ${imageCid} (imageEpcUnits: ${e.shortMessage || e.message}): the request is not sent.`, { cause: e });
+    }
+    this.epcUnits = matching.minimumEpc(imageUnits, this.settings.epcUnits);
+    this.notice(`The request states a minimum EPC of ${this.epcUnits} units of ${matching.EPC_UNIT_MIB} MiB (${this.epcUnits * matching.EPC_UNIT_MIB} MiB): the image records ${imageUnits} and the client gives ${this.settings.epcUnits}.`, ECLog.INFO);
     const defaultRelease = Boolean(this.records && this.records.kind === matching.KIND_DEFAULT_RELEASE);
     this.defaultClass = Boolean(defaultRelease && this.template.marked && !this.runner.isUnsafe()
       && BigInt(found.session) !== 0n && found.latest === found.session);
@@ -219,8 +336,9 @@ export class ClaimsPath {
   }
 
   async quoteBeforeAdd(templateName) {
-    const terms = requestTerms(this.runner.resources);
-    const [needGflops, ceilGflops] = matching.needOf(this.maxGflops());
+    const terms = this.requestTerms();
+    const word = this.maxGflops();
+    const [needGflops, ceilGflops] = matching.needOf(word);
     const minimum = matching.minimumScore({
       explicit: this.settings.minScore,
       dappMinimum: this.dappMinScore,
@@ -230,7 +348,7 @@ export class ClaimsPath {
     });
     const quote = await this.chain.bidQuoteFor({
       cpu: terms.cpu, memGB: terms.memory, storageGB: terms.storage, bandwidth: terms.bandwidth,
-      hours: terms.duration, needGflops, ceilGflops
+      hours: terms.duration, needGflops, ceilGflops, epcUnits: matching.epcOf(word)
     }, templateName, minimum);
     if (quote.counted === 0 || quote.minBidWei === matching.UINT256_MAX) {
       this.notice('No listed node covers the request\'s resources and template: nobody can claim it at any bid.');
@@ -241,9 +359,18 @@ export class ClaimsPath {
       bid >= quote.minBidWei ? ECLog.INFO : ECLog.WARNING);
   }
 
-  // The V2 add's maxGflops: the required GFLOPS and the ceiling of the terms.
+  // The resources the request is added with (requestTerms), its memory the
+  // memory need set before the add.
+  requestTerms() {
+    const terms = requestTerms(this.runner.resources);
+    if (this.memoryGb !== null) terms.memory = this.memoryGb;
+    return terms;
+  }
+
+  // The V2 add's maxGflops: the minimum EPC set before the add, the required
+  // GFLOPS and the ceiling of the terms.
   maxGflops() {
-    return matching.maxGflopsArg(this.settings.requiredGflops, Number(this.settings.terms.maxGflops));
+    return matching.maxGflopsArg(this.settings.requiredGflops, Number(this.settings.terms.maxGflops), this.epcUnits || 0);
   }
 
   // The escrow the add pulls, the reader's escrowFor at the request's terms and
@@ -254,7 +381,7 @@ export class ClaimsPath {
   // escrow above options.v2.escrowWei and for a wallet below it.
   async checkEscrow(metadata1) {
     const { terms } = this.settings;
-    const escrow = await this.chain.escrowFor(requestTerms(this.runner.resources).duration, terms.maxPricePerCuHourWei,
+    const escrow = await this.chain.escrowFor(this.requestTerms().duration, terms.maxPricePerCuHourWei,
       this.maxGflops(), terms.relaysPerHour, terms.gasLevel, metadata1);
     const wei = escrow.escrowWei;
     if (terms.escrowWei !== null && terms.escrowWei !== undefined && wei > terms.escrowWei) {
@@ -270,11 +397,12 @@ export class ClaimsPath {
     return wei;
   }
 
-  // addDORequestV2 with the run's resources and V2 terms.
+  // addDORequestV2 with the run's resources, the memory need, the minimum EPC
+  // and the V2 terms.
   addRequest(metadata) {
     const { terms } = this.settings;
-    return this.chain.addDORequestV2(requestTerms(this.runner.resources), terms.maxPricePerCuHourWei,
-      this.maxGflops(), terms.relaysPerHour, terms.gasLevel, metadata);
+    return this.chain.addDORequestV2(this.requestTerms(), terms.maxPricePerCuHourWei, this.maxGflops(),
+      terms.relaysPerHour, terms.gasLevel, metadata);
   }
 
   // ------------------------------------------------------- the approval
@@ -283,7 +411,11 @@ export class ClaimsPath {
   // raising the bid by 3.15 when no claim the runner would approve can come;
   // resolves the order the approval placed, or null when `waitSeconds` pass
   // without one. Only a settled read is acted on; a new round or stamp reads
-  // the round again.
+  // the round again. The wait ends with null at once when no parameter set is
+  // in force for the request, when it takes no claims now (NoClaimsNow: no
+  // longer AVAILABLE, or past maxRequestAgeSeconds), and when its set has
+  // claims off, which also sets claimsOff: the request is then served without
+  // claims.
   async awaitApproval(doRequestId, waitSeconds) {
     const deadline = Date.now() + waitSeconds * 1000;
     while (this.runner.claimsRunning()) {
@@ -292,7 +424,12 @@ export class ClaimsPath {
         const order = await this.tick(doRequestId);
         if (order !== null) return order;
       } catch (e) {
-        if (e instanceof NoParameterSet) {
+        if (e instanceof NoParameterSet || e instanceof NoClaimsNow) {
+          this.notice(e.message);
+          return null;
+        }
+        if (e instanceof ClaimsOff) {
+          this.claimsOff = true;
           this.notice(e.message);
           return null;
         }
@@ -302,7 +439,7 @@ export class ClaimsPath {
           this.runner.logAppend(`request ${doRequestId}: a read of the claims failed (${e.message}); read again at the next block`, ECLog.WARNING);
         }
       }
-      await delay(this.runner.claimsPollMs);
+      await delay(this.runner.claimsReadMs());
     }
     return null;
   }
@@ -324,7 +461,19 @@ export class ClaimsPath {
   async tick(doRequestId) {
     const info = await this.chain.requestInfo(doRequestId);
     if (!info.settled) return null;
-    await this.parameters(doRequestId, info);
+    const params = await this.parameters(doRequestId, info);
+    if (!info.claims) {
+      throw new ClaimsOff(`The parameter set request ${doRequestId} takes has claims off: no claim on it is approved, and it is served without claims (a node places its order and the runner approves it).`);
+    }
+    const now = await this.chain.chainTime();
+    const status = await this.chain.requestStatus(doRequestId);
+    if (!matching.takesClaims(info.claims, status, info.createdAt, params.maxRequestAgeSeconds, now)) {
+      const age = Number(info.createdAt) + Number(params.maxRequestAgeSeconds);
+      const why = status === matching.REQUEST_AVAILABLE
+        ? `it is past maxRequestAgeSeconds since ${utc(age)}`
+        : `the storage holds it with status ${status}, not AVAILABLE`;
+      throw new NoClaimsNow(`Request ${doRequestId} takes no claims now (${why}): no claim on it is approved and its bid is not raised.`);
+    }
     const stamp = ethers.hexlify(info.roundStamp);
     if (this.round === null || this.round.stamp !== stamp) this.round = await this.readRound(doRequestId, info);
     let rnd = this.round;
@@ -456,11 +605,18 @@ export class ClaimsPath {
   // first: an approval the call refuses (the claim stopped being approvable
   // since the read) is left for the next read.
   async approve(doRequestId, decision, claim) {
-    let receipt;
+    let tx;
     try {
-      receipt = await (await this.chain.placeOrder(doRequestId, claim.dpRequestId)).wait();
+      tx = await this.chain.placeOrder(doRequestId, claim.dpRequestId);
     } catch (e) {
       this.runner.logAppend(`the approval of ${decision.approve}'s claim is refused now (${e.shortMessage || e.message}); read again`, ECLog.INFO);
+      return null;
+    }
+    let receipt;
+    try {
+      receipt = await this.runner.receiptOf(tx);
+    } catch (e) {
+      this.runner.logAppend(`the approval ${tx.hash} of ${decision.approve}'s claim did not succeed (${e.shortMessage || e.message}); read again`, ECLog.WARNING);
       return null;
     }
     const order = this.chain.placedOrder(receipt);
@@ -494,7 +650,7 @@ export class ClaimsPath {
       return;
     }
     await this.runner.allowWei(quote.addedEscrowWei);
-    await (await this.chain.increaseBid(doRequestId, decision.bidWei)).wait();
+    await this.runner.receiptOf(await this.chain.increaseBid(doRequestId, decision.bidWei));
     this.notice(`Request ${doRequestId}: ${decision.reason}; the escrow grows by ${quote.addedEscrowWei} wei.`, ECLog.INFO);
     this.round = null;
   }
@@ -519,7 +675,7 @@ export class ClaimsPath {
     const timeout = Number(this.params.startTimeoutSeconds);
     if ((await this.chain.chainTime()) <= approved + timeout) return { started: false, fault: null };
     try {
-      await (await this.chain.expireUnstarted(orderId)).wait();
+      await this.runner.receiptOf(await this.chain.expireUnstarted(orderId));
     } catch (e) {
       this.runner.logAppend(`expireUnstarted of order ${orderId} is refused now (${e.shortMessage || e.message})`, ECLog.INFO);
       return { started: false, fault: null };
@@ -559,5 +715,65 @@ export class ClaimsPath {
       });
     }
     return report;
+  }
+}
+
+// A request added with V2 terms while it is not served by claims (8.4; OD26):
+// on a PoX whose VERSION() takes addDORequestV2 (V2_ADD_ABI), with the escrow
+// options.v2.escrowWei states, the wallet's balance checked against it and the
+// PoX approved for it, in wei, and the add in the PoX's form. On a "2.0" PoX
+// the add states the minimum EPC (matching.minimumEpc of the image's recorded
+// need, read from the image registry the network's PoxMatching names when the
+// PoX's pricing names one, and the client's epcMiB); the "1.2" form carries
+// none. No minimum operator score is read or applied (D196). `chain` is the
+// network's MatchingContracts, null when the pricing names no PoxMatching.
+export class TermedRequest {
+  constructor(runner, version, chain, settings) {
+    this.runner = runner;
+    this.version = version;
+    this.chain = chain;
+    this.settings = settings;
+    this.epcUnits = 0;
+  }
+
+  // Throws, before anything is sent, for a wallet whose balance is below the
+  // request's escrow.
+  async checkBalance() {
+    const { escrowWei } = this.settings.terms;
+    const balance = await this.runner.balanceWei();
+    if (balance < escrowWei) {
+      throw new Error(`Insufficient wallet balance: the request's escrow is ${escrowWei} wei and the wallet holds ${balance}.`);
+    }
+  }
+
+  // The minimum EPC of the request's image on a "2.0" PoX, told to the
+  // client, and the wallet's allowance for the PoX, raised to exactly the
+  // escrow when below it. Throws, before anything is sent, when a named image
+  // registry does not answer the EPC need's read, and when the approval does
+  // not succeed.
+  async checkEscrow(imageCid) {
+    if (this.version === '2.0') {
+      let imageUnits = 0;
+      try {
+        if (this.chain) imageUnits = await this.chain.imageEpcUnits(imageCid);
+      } catch (e) {
+        throw new Error(`The image registry did not answer the EPC need of the image ${imageCid} (imageEpcUnits: ${e.shortMessage || e.message}): the request is not sent.`, { cause: e });
+      }
+      this.epcUnits = matching.minimumEpc(imageUnits, this.settings.epcUnits);
+      this.runner.matchingNotice(`The request states a minimum EPC of ${this.epcUnits} units of ${matching.EPC_UNIT_MIB} MiB: the image records ${imageUnits} and the client gives ${this.settings.epcUnits}.`, ECLog.INFO);
+    } else if (this.settings.epcUnits) {
+      this.runner.matchingNotice(`The PoX answers VERSION() ${this.version}, whose addDORequestV2 states no minimum EPC: options.v2.epcMiB is not sent.`);
+    }
+    await this.runner.allowWei(this.settings.terms.escrowWei);
+  }
+
+  // addDORequestV2 in the PoX's form with the run's resources and V2 terms.
+  addRequest(metadata) {
+    const { terms, requiredGflops } = this.settings;
+    const runner = this.runner;
+    return sendV2Add(runner.networkConfig.protocolAddress, runner.protocolContract.getSigner(), this.version,
+      requestTerms(runner.resources), terms.maxPricePerCuHourWei,
+      matching.maxGflopsArg(requiredGflops, Number(terms.maxGflops), this.epcUnits), terms.relaysPerHour, terms.gasLevel,
+      metadata);
   }
 }

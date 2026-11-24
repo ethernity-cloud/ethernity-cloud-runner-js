@@ -1,6 +1,6 @@
 // matching.js (MATCHING-DESIGN.md 3.10, 3.15, 4.4 to 4.6; spec/matching.md
 // sections 3 to 9, 13 and 17) on the shared fixtures of
-// pox-smart-contract-litvm spec/ at 7611a81, held byte for byte in
+// pox-smart-contract-litvm spec/ at 52e36e0, held byte for byte in
 // test/fixtures/matching/ with their MANIFEST lines, and the runner's ABI
 // entries (contract/abi/matchingAbi.js) against that commit's.
 //
@@ -28,7 +28,7 @@ import protocolContractPolygon from '../contract/abi/polygonProtocolAbi.js';
 
 const SPEC = fileURLToPath(new URL('./fixtures/matching/', import.meta.url));
 const SOURCE = path.resolve(SPEC, '..', '..', '..', '..', 'pox-smart-contract-litvm');
-const SOURCE_COMMIT = '7611a81';
+const SOURCE_COMMIT = '52e36e0';
 const COPIES = ['matching-rank.json', 'matching.md', 'ranking.json', 'result-fields.json'];
 const load = (name) => JSON.parse(readFileSync(path.join(SPEC, name), 'utf8'));
 const RANKING = load('ranking.json');
@@ -46,10 +46,10 @@ const manifest = () => {
   return entries;
 };
 
-const shownAt = (file) => {
+const shownAt = (file, commit = SOURCE_COMMIT) => {
   if (!existsSync(path.join(SOURCE, '.git'))) return null;
   try {
-    return execFileSync('git', ['-C', SOURCE, 'show', `${SOURCE_COMMIT}:${file}`], { maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
+    return execFileSync('git', ['-C', SOURCE, 'show', `${commit}:${file}`], { maxBuffer: 1 << 24, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) {
     return null;
   }
@@ -81,21 +81,41 @@ test('the manifest lines are the source commit\'s', (t) => {
   assert.deepEqual(Object.fromEntries(COPIES.map((n) => [n, lines[n]])), manifest());
 });
 
-// Where each group of the runner's ABI entries comes from in the source
-// commit; an artifact holds its ABI under "abi".
+// Where each group of the runner's ABI entries comes from, in the source
+// commit unless another is named; an artifact holds its ABI under "abi".
+// pox12 is the V2 add of a PoX that answers VERSION() "1.2", the entry of
+// 7611a81, before the minimum EPC took bits 32 to 47 of maxGflops.
 const ABI_SOURCES = {
   pox: 'abi/EthernityImplementationV2_2_0.json',
+  pox12: ['7611a81', 'abi/EthernityImplementationV2_2_0.json'],
+  pricing: 'abi/IPoxPricing.json',
   matching: 'abi/IPoxMatching.json',
   reader: 'abi/IPoxMatchReader.json',
   imageRegistry: 'abi/IECImageRegistryV4.json',
   sessionRegistry: 'artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json'
 };
+// The selectors of the entries whose arguments the EPC commit changed, now
+// and in the 1.2 form (MATCHING-SYNC-PLAN.md 3.9; spec/abi-selectors.json at
+// the spec round's commit).
+const SELECTORS = [
+  ['pox', 'addDORequestV2', '0x9f74fcce'],
+  ['pox12', 'addDORequestV2', '0x9fdaa26e'],
+  ['reader', 'bidQuoteFor', '0xd1d5decb'],
+  ['reader', 'escrowFor', '0xdc4e3133']
+];
 
-for (const [group, file] of Object.entries(ABI_SOURCES)) {
+for (const [group, name, selector] of SELECTORS) {
+  test(`the selector of ${group}.${name}`, () => {
+    assert.equal(new ethers.Interface(matchingAbi[group]).getFunction(name).selector, selector);
+  });
+}
+
+for (const [group, where] of Object.entries(ABI_SOURCES)) {
   test(`the ${group} ABI entries are the source commit's`, (t) => {
-    const source = shownAt(file);
+    const [commit, file] = Array.isArray(where) ? where : [SOURCE_COMMIT, where];
+    const source = shownAt(file, commit);
     if (source === null) {
-      t.skip(`no pox-smart-contract-litvm checkout holding ${SOURCE_COMMIT} at ${SOURCE}`);
+      t.skip(`no pox-smart-contract-litvm checkout holding ${commit} at ${SOURCE}`);
       return;
     }
     const parsed = JSON.parse(source.toString('utf8'));
@@ -392,6 +412,36 @@ for (const v of FIELDS.refused) {
     assert.equal(matching.resultFields(v.result), null);
   });
 }
+
+for (const v of FIELDS.stored) {
+  test(`the stored result's grammar: ${v.name}`, () => {
+    const read = matching.readStored(v.stored, FIELDS.transaction.orderId);
+    assert.equal(read.status, v.expected.status);
+    if (v.expected.transaction) {
+      assert.deepEqual([read.orderId, read.signer], [v.expected.orderId, v.expected.signer]);
+    } else {
+      assert.deepEqual(read, { status: v.expected.status, orderId: null, code: null, signer: null });
+    }
+    assert.equal(read.code, v.expected.status === matching.STORED_DECODED ? v.expected.code : null);
+  });
+}
+
+test('the grammar\'s vectors cover every status', () => {
+  assert.deepEqual(new Set(FIELDS.stored.map((v) => v.expected.status)), new Set([
+    matching.STORED_DECODED, matching.STORED_NOT_V3, matching.STORED_NO_TRANSACTION, matching.STORED_OTHER_ORDER,
+    matching.STORED_NO_CODE
+  ]));
+  assert.equal(FIELDS.stored.length, 53);
+});
+
+test('the stored form of each result is decoded for its order and is another order\'s for any other', () => {
+  for (const v of [...FIELDS.accepted, ...FIELDS.refused]) {
+    const read = matching.readStored(v.stored, FIELDS.transaction.orderId);
+    assert.deepEqual([read.status, read.code], [matching.STORED_DECODED, v.expected.code], v.name);
+    const other = matching.readStored(v.stored, FIELDS.transaction.orderId + 1);
+    assert.deepEqual([other.status, other.orderId], [matching.STORED_OTHER_ORDER, FIELDS.transaction.orderId], v.name);
+  }
+});
 
 test('every stored result carries its result string through the runner\'s parse', () => {
   const runner = new EthernityCloudRunner('LOCAL');
