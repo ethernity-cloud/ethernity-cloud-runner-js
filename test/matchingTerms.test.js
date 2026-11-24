@@ -87,7 +87,7 @@ test('a resource of 0 takes its default', () => {
 });
 
 for (const [score, units] of [[0.5, 5000], ['0.5', 5000], [0.00005, 1], [0.00004, 0], [0.12345, 1235], ['0.12345', 1235],
-  [1.00005, 10001], [5, 50000], ['4.99995', 50000], [1e-7, 0], ['2.5e-1', 2500]]) {
+  [1.00005, 10001], [5, 50000], ['4.99995', 50000], [1e-7, 0], ['2.5e-1', 2500], [0.00015, 2]]) {
   test(`the score is rounded half up on its decimal text: ${score}`, () => {
     assert.equal(matching.scoreUnits(score), units);
   });
