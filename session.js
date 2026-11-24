@@ -40,6 +40,80 @@ export const SEND_CUTOFF_SECONDS = 600;
 
 export class SessionError extends Error {}
 
+// The grammar of a session's etny-si rows (spec/matching.md section 20,
+// SF20), which both trustedzones and the validators' members read:
+//   input-row = "v1" ":" seq ":" orderId ":" cid ":" sha256   (five fields)
+//   close-row = "v1" ":" "close" ":" orderId [ ":" depth ]
+// seq and orderId plain decimal ("0", or a digit 1-9 and digits) of at most
+// 2^64 - 1, depth one to nine digits, cid and sha256 any text but ":"; a row
+// is read as its bytes stand.
+export const UINT64_MAX = (1n << 64n) - 1n;
+const PLAIN_DECIMAL = /^(0|[1-9][0-9]*)$/;
+const DEPTH = /^[0-9]{1,9}$/;
+
+const plainOf = (text) => {
+  if (!PLAIN_DECIMAL.test(text)) return null;
+  const value = BigInt(text);
+  return value <= UINT64_MAX ? value : null;
+};
+
+// An etny-si row of order `orderId` read by the grammar of section 20:
+// { kind: 'input', seq } (a bigint), { kind: 'close', depth } (null when the
+// row states none), or null for a row outside the grammar or naming another
+// order.
+export const sessionRow = (value, orderId) => {
+  const parts = String(value).split(':');
+  const order = BigInt(orderId);
+  if (parts.length < 3 || parts[0] !== SESSION_WIRE_VERSION) return null;
+  if (parts[1] === 'close') {
+    if (parts.length > 4 || plainOf(parts[2]) !== order) return null;
+    if (parts.length === 3) return { kind: 'close', depth: null };
+    return DEPTH.test(parts[3]) ? { kind: 'close', depth: Number(parts[3]) } : null;
+  }
+  if (parts.length !== 5) return null;
+  const seq = plainOf(parts[1]);
+  if (seq === null || plainOf(parts[2]) !== order) return null;
+  return { kind: 'input', seq };
+};
+
+// The seq an input row of order `orderId` takes after the etny-si rows
+// `values`, in the request's order: the next one the enclave expects (from
+// 0), every row outside the grammar, of another order, a gap or a duplicate
+// skipped, as the trustedzones and the members read them.
+export const nextInputSeq = (values, orderId) => {
+  let expected = 0n;
+  for (const value of values) {
+    const row = sessionRow(value, orderId);
+    if (row !== null && row.kind === 'input' && row.seq === expected) expected += 1n;
+  }
+  return Number(expected);
+};
+
+const wholeOf = (name, number) => {
+  const value = typeof number === 'bigint' ? number : (Number.isSafeInteger(number) ? BigInt(number) : null);
+  if (value === null || value < 0n || value > UINT64_MAX) {
+    throw new SessionError(`an etny-si row's ${name} is a whole number of 0 to 2^64 - 1, not ${String(number)}`);
+  }
+  return value;
+};
+
+// The etny-si input row `v1:<seq>:<orderId>:<cid>:<digest>`. Throws a
+// SessionError for a value the grammar of section 20 refuses: a seq or an
+// order id that is not a whole number of 0 to 2^64 - 1, a cid or a digest
+// holding ":".
+export const inputRow = (seq, orderId, cid, digest) => {
+  const s = wholeOf('seq', seq);
+  const o = wholeOf('order id', orderId);
+  for (const [name, text] of [['cid', cid], ['digest', digest]]) {
+    if (String(text).includes(':')) throw new SessionError(`an etny-si row's ${name} holds no ':', not ${JSON.stringify(text)}`);
+  }
+  return `${SESSION_WIRE_VERSION}:${s}:${o}:${cid}:${digest}`;
+};
+
+// The etny-si close row `v1:close:<orderId>`, which states no depth. Throws a
+// SessionError for an order id that is not a whole number of 0 to 2^64 - 1.
+export const closeRow = (orderId) => `${SESSION_WIRE_VERSION}:close:${wholeOf('order id', orderId)}`;
+
 // The session status byte of a v5 result (field 11), the fixture's
 // constants.sessionStatusCodes: 0f (15) is an order without a session or a
 // status outside this table.
@@ -109,7 +183,8 @@ export class EthernityCloudSession {
   }
 
   /** Resume seq from chain state so a reattached session continues exactly
-      where the previous process stopped. */
+      where the previous process stopped: the seq the enclave expects after
+      the request's etny-si rows read so far (nextInputSeq). */
   async _countMyInputs() {
     let count;
     try {
@@ -117,20 +192,15 @@ export class EthernityCloudSession {
     } catch (e) {
       return 0;
     }
-    let seq = 0;
+    const values = [];
     for (let i = 0; i < count; i++) {
       let key; let value;
       try {
         [key, value] = await this._contract()._getMetadataValueForRequest(this.doReq, i);
       } catch (e) { break; }
-      if (key !== SESSION_INPUT_KEY) continue;
-      const parts = String(value || '').split(':');
-      if (parts.length === 5 && parts[0] === SESSION_WIRE_VERSION &&
-          Number(parts[2]) === this.orderId && Number.isFinite(Number(parts[1]))) {
-        seq = Math.max(seq, Number(parts[1]) + 1);
-      }
+      if (key === SESSION_INPUT_KEY) values.push(String(value || ''));
     }
-    return seq;
+    return nextInputSeq(values, this.orderId);
   }
 
   /** The task wallet the output rows are signed with: attested by the
@@ -254,7 +324,7 @@ export class EthernityCloudSession {
     // owner's signature; an input is complete only once its row is on chain,
     // so a client that stops before that leaves no row without bytes.
     const lodged = await this._lodgeInput(cid);
-    const value = `${SESSION_WIRE_VERSION}:${this.inputSeq}:${this.orderId}:${cid}:${digest}`;
+    const value = inputRow(this.inputSeq, this.orderId, cid, digest);
     const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
     await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
     if (!lodged) await ipfsClient.flushPending(this.doReq, [cid]);
@@ -435,7 +505,7 @@ export class EthernityCloudSession {
       final task result (the session summary). */
   async close(wait = true, timeoutMs = 900000) {
     if (!this.closed) {
-      const value = `${SESSION_WIRE_VERSION}:close:${this.orderId}`;
+      const value = closeRow(this.orderId);
       const tx = await withGasHeadroom(this._contract()._addMetadataToRequest, [this.doReq, SESSION_INPUT_KEY, value]);
       await waitForReceipt(this.runner.protocolContract.getProvider(), tx.hash);
       this.closed = true;
