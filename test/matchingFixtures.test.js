@@ -20,6 +20,7 @@ import * as matching from '../matching.js';
 import * as matchingAbi from '../contract/abi/matchingAbi.js';
 import EthernityCloudRunner from '../runner.js';
 import protocolContractPolygon from '../contract/abi/polygonProtocolAbi.js';
+import { V2_ADD_ABI } from '../contract/operation/matchingContract.js';
 import { SOURCE_COMMIT, checkout, load, shownAt } from './specCopies.js';
 
 const RANKING = load('ranking.json');
@@ -40,21 +41,53 @@ const ABI_SOURCES = {
   imageRegistry: 'abi/IECImageRegistryV4.json',
   sessionRegistry: 'artifacts/PoxMatchingState.sol/IMatchingSessionRegistry.json'
 };
-// The selectors of the entries whose arguments the EPC commit changed, now
-// and in the 1.2 form (MATCHING-SYNC-PLAN.md 3.9; spec/abi-selectors.json at
-// the spec round's commit).
-const SELECTORS = [
-  ['pox', 'addDORequestV2', '0x9f74fcce'],
-  ['pox12', 'addDORequestV2', '0x9fdaa26e'],
-  ['reader', 'bidQuoteFor', '0xd1d5decb'],
-  ['reader', 'escrowFor', '0xdc4e3133']
-];
+// The file of abi-selectors.json's `entries` each group's rows are in. The
+// session registry (ethernity-cas's SessionRegistry, read through
+// IMatchingSessionRegistry) is not among the ABIs abi-selectors.json lists;
+// pox12 is the `before` form of its `changed` addDORequestV2.
+const SELECTOR_FILES = {
+  pox: 'EthernityImplementationV2_2_0.json',
+  pricing: 'IPoxPricing.json',
+  matching: 'IPoxMatching.json',
+  reader: 'IPoxMatchReader.json',
+  imageRegistry: 'ECImageRegistryV4.json'
+};
+const SELECTORS = load('abi-selectors.json');
+const CHANGED = Object.fromEntries(SELECTORS.changed.map((c) => [c.name, c]));
+// An event's topic0, a function's or an error's selector (abi-selectors.json
+// `rule`), with its canonical signature.
+const rowOf = (fragment) => [fragment.format('sighash'), fragment.type === 'event' ? fragment.topicHash : fragment.selector];
+const fragmentOf = (group, name) => new ethers.Interface(matchingAbi[group]).getFunction(name);
 
-for (const [group, name, selector] of SELECTORS) {
-  test(`the selector of ${group}.${name}`, () => {
-    assert.equal(new ethers.Interface(matchingAbi[group]).getFunction(name).selector, selector);
+for (const [group, file] of Object.entries(SELECTOR_FILES)) {
+  test(`each ${group} ABI entry is its row of abi-selectors.json`, () => {
+    const rows = new Map(SELECTORS.entries.map((r) => [`${r.abi}|${r.kind}|${r.signature}`, r.selector || r.topic0]));
+    for (const fragment of new ethers.Interface(matchingAbi[group]).fragments) {
+      const [signature, selector] = rowOf(fragment);
+      const key = `${file}|${fragment.type}|${signature}`;
+      assert.ok(rows.has(key), key);
+      assert.equal(selector, rows.get(key), key);
+    }
   });
 }
+
+test('the 1.2 add is the before form of the changed add, the 2.0 add its now form', () => {
+  const changed = CHANGED.addDORequestV2;
+  assert.deepEqual(rowOf(fragmentOf('pox12', 'addDORequestV2')), [changed.before, changed.beforeValue]);
+  assert.deepEqual(rowOf(fragmentOf('pox', 'addDORequestV2')), [changed.signature, changed.now]);
+});
+
+for (const name of ['bidQuoteFor', 'escrowFor']) {
+  test(`the reader's ${name} is its now form`, () => {
+    assert.deepEqual(rowOf(fragmentOf('reader', name)), [CHANGED[name].signature, CHANGED[name].now]);
+  });
+}
+
+test('the generation signals are the selectors the runner reads', () => {
+  assert.equal(fragmentOf('pox', 'VERSION').selector, SELECTORS.signals.version.selector);
+  assert.equal(fragmentOf('pricing', 'matching').selector, SELECTORS.signals.matching.selector);
+  assert.deepEqual(Object.keys(V2_ADD_ABI).sort(), SELECTORS.signals.version.answers.map((a) => a.value).sort());
+});
 
 for (const [group, where] of Object.entries(ABI_SOURCES)) {
   test(`the ${group} ABI entries are the source commit's`, (t) => {
