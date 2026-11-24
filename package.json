@@ -1,6 +1,6 @@
 {
   "name": "@ethernity-cloud/runner",
-  "version": "0.6.35",
+  "version": "2.0.0-beta.1",
   "description": "Ethernity Cloud Runner",
   "type": "module",
   "homepage": "https://github.com/ethernity-cloud/ethernity-cloud-runner-js#readme",
