@@ -14,9 +14,11 @@
 // the setting; or names a refusal, thrown with a message that holds the
 // case's message before anything is sent. A metadata bound is tested after
 // the approval (D206), so a metadata refusal follows the approval and no add
-// is sent. runner-terms-reads.json, which both runners hold byte for byte,
-// names the quote and the escrow each adding case reads before its add (none
-// off the claims path).
+// is sent. The claims path is taken only on a PoX answering "2.0" (D206),
+// where runner-terms.json at 2f600f6 takes it on "1.2" too: DECIDED holds that
+// case's outcome. runner-terms-reads.json, which both runners hold byte for
+// byte, names the quote and the escrow each adding case reads before its add
+// (none off the claims path).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,6 +43,9 @@ const APPROVAL = 'token.approve(pox, escrowWei)';
 const ADD = 'addDORequestV2';
 const BOUNDS = { gflopsMax: TERMS.rules.bounds.gflopsMax, maxOrderHours: TERMS.rules.bounds.maxOrderHours };
 const METADATA_REFUSALS = new Set(['metadata1 too long', 'metadata too long']);
+// The outcomes the owner's decisions set where runner-terms.json at 2f600f6
+// states another: D206, the claims path only on a PoX answering "2.0".
+const DECIDED = { 'version-1.2': { claimsPath: false } };
 const FORMS = Object.values(V2_ADD_ABI).map((abi) => new ethers.Interface(abi));
 
 // The runner's signer: the add's call answers request 5, its estimate and its
@@ -156,7 +161,7 @@ const decodeAdd = (data) => {
 for (const c of TERMS.cases) {
   test(`runner-terms.json: ${c.name}`, async () => {
     const { runner, sends, added, chain, refusal } = await replay(c);
-    const expected = c.expected;
+    const expected = { ...c.expected, ...(DECIDED[c.name] || {}) };
     if (expected.refused) {
       assert.ok(refusal, 'the request was not refused');
       assert.ok(refusal.message.includes(expected.refused.message), refusal.message);
@@ -191,6 +196,20 @@ for (const c of TERMS.cases) {
       [escrow]);
   });
 }
+
+test('a "1.2" PoX whose pricing names a PoxMatching serves no claims (D206)', async () => {
+  const v12 = await replay(TERMS.cases.find((k) => k.name === 'version-1.2'));
+  assert.equal(v12.refusal, null);
+  assert.equal(v12.runner.claims, null);
+  assert.equal(v12.runner.termed.version, '1.2');
+  assert.equal(v12.chain.claimsOnReads, 0);
+  assert.deepEqual([v12.chain.quotes, v12.chain.escrows], [[], []]);
+  assert.ok(v12.runner.matchingNotices.some((n) => n.includes('served by claims only on a PoX answering "2.0"')));
+  assert.equal(decodeAdd(v12.added[0])[0], TERMS.selectors['addDORequestV2 before']);
+  const v20 = await replay(TERMS.cases.find((k) => k.name === 'defaults'));
+  assert.ok(v20.runner.claims instanceof ClaimsPath);
+  assert.equal(v20.chain.claimsOnReads, 1);
+});
 
 test('every adding case has its reads', () => {
   const adding = TERMS.cases.filter((c) => c.expected.add).map((c) => c.name).sort();

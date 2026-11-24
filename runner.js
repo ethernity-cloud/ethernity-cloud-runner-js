@@ -643,8 +643,10 @@ class EthernityCloudRunner extends EventTarget {
   // (RUN-11). The PoX's generation is read first (readPoxGeneration) and kept
   // in this.generation; where its pricing names a PoxMatching,
   // this.matchingChain holds the network's MatchingContracts, a request
-  // pinned to a banned node is refused (D33, 8.11), and while claimsOn()
-  // answers true the request is served by claims (this.claims): the settings
+  // pinned to a banned node is refused (D33, 8.11), and on a PoX answering
+  // VERSION() "2.0" (D206; another answer is told to the client and served
+  // without claims) while claimsOn() answers true the request is served by
+  // claims (this.claims): the settings
   // are read (claims.claimsSettings), the PoxMatchReader PoxMatching names
   // (reader()) is bound, refused while it names none, the work earlier
   // requests left (settleMatching) is sent, the reads before the add are made
@@ -670,7 +672,9 @@ class EthernityCloudRunner extends EventTarget {
         const ban = await pinnedBan(chain, node);
         if (ban) throw new Error(ban);
       }
-      if (await chain.claimsOn()) {
+      if (this.generation.version !== '2.0') {
+        this.matchingNotice(`The PoX answers VERSION() ${JSON.stringify(this.generation.version)}: a request is served by claims only on a PoX answering "2.0", so this one is served without claims.`, ECLog.INFO);
+      } else if (await chain.claimsOn()) {
         const options = this.runOptions || {};
         const settings = claimsSettings(options.v2, options, this.resources);
         await this.checkPricingBounds(settings);
