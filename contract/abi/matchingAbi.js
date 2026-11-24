@@ -30,7 +30,8 @@ export const pox12 = [
 ];
 
 export const pricing = [
-  'function matching() view returns (address)'
+  'function matching() view returns (address)',
+  'function params() view returns (tuple(uint256 baseMinWei, uint256 baseRefWei, uint256 uRef, uint256 alpha, uint256 growth, uint256 decay, uint8 k, uint8 beta, uint32 cRef, uint32 gflopsMax, uint32 epochSeconds, uint32 dpRequestTtl, uint16 maxOrderHours, uint32 gasPerRow, uint32 gasPerCommit, uint32 gasPerResult, uint32 gasEmaWindowEpochs, uint64 priorityFeeWei, uint32 oracleStaleSeconds, uint8 divergenceBoundPercent, uint32 emaWindowEpochs, uint32 gflopsMaxDefault))'
 ];
 
 export const matching = [

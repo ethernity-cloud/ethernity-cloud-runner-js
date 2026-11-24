@@ -69,11 +69,18 @@ const RESULT_FIELD_BOUNDS = [[15, UINT64_MAX], [16, UINT64_MAX], [17, 1n]];
 // average") to MAX_GAS_LEVEL ("gasLevel invalid"); the required GFLOPS at most
 // a stated ceiling ("maxGflops invalid"); one instance ("instance invalid");
 // each of the four metadata strings at most MAX_METADATA_BYTES bytes
-// ("metadata1 too long", "metadata too long").
+// ("metadata1 too long", "metadata too long"); each resource 1 to
+// MAX_RESOURCE (V2_RESOURCES, the resources key and the PoX's revert string
+// of each); a duration of 1 hour to the pricing's maxOrderHours and a GFLOPS
+// ceiling of at most its gflopsMax (checkPricingBounds; "duration invalid",
+// "maxGflops invalid").
 export const MAX_PRICE_WEI = (1n << 128n) - 1n;
 export const MIN_GAS_LEVEL = 10n ** 18n;
 export const MAX_GAS_LEVEL = (1n << 128n) - 1n;
 export const MAX_METADATA_BYTES = 2048;
+export const MAX_RESOURCE = 255;
+export const V2_RESOURCES = [['cpu', 'cpu invalid'], ['memory', 'mem invalid'], ['storage', 'strg invalid'],
+  ['bandwidth', 'bw invalid']];
 // An EPC figure's unit (spec/matching.md section 16, item 33): 64 MiB; a
 // figure is 0 to UINT16_MAX units.
 export const EPC_UNIT_MIB = 64;
@@ -133,7 +140,7 @@ export const epcOf = (maxGflops) => Number((BigInt(maxGflops) >> 32n) & MASK16);
 export const epcUnitsOfMib = (mib) => {
   const units = (BigInt(mib) + BigInt(EPC_UNIT_MIB) - 1n) / BigInt(EPC_UNIT_MIB);
   if (units > BigInt(UINT16_MAX)) {
-    throw new RangeError(`an EPC figure is at most ${UINT16_MAX * EPC_UNIT_MIB} MiB (${UINT16_MAX} units of ${EPC_UNIT_MIB} MiB), not ${mib}`);
+    throw new RangeError(`EPC above 65,535 units: an EPC figure is at most ${UINT16_MAX * EPC_UNIT_MIB} MiB (${UINT16_MAX} units of ${EPC_UNIT_MIB} MiB), not ${mib}`);
   }
   return Number(units);
 };
@@ -155,9 +162,23 @@ export const checkMetadata = (metadata) => {
   metadata.forEach((text, i) => {
     const size = new TextEncoder().encode(String(text)).length;
     if (size > MAX_METADATA_BYTES) {
-      throw new RangeError(`metadata${i + 1} of the request is ${size} bytes, above the ${MAX_METADATA_BYTES} bytes the PoX takes: the request is not sent.`);
+      const revert = i === 0 ? 'metadata1 too long' : 'metadata too long';
+      throw new RangeError(`metadata${i + 1} of the request is ${size} bytes, above the ${MAX_METADATA_BYTES} bytes the PoX takes (${revert}): the request is not sent.`);
     }
   });
+};
+
+// Throws, before anything is sent, for a V2 add the PoX refuses on its
+// pricing's bounds `bounds` ({ gflopsMax, maxOrderHours }, the pricing's
+// params()): a duration above maxOrderHours ("duration invalid") and a
+// GFLOPS ceiling above gflopsMax ("maxGflops invalid").
+export const checkPricingBounds = (hours, ceilingGflops, bounds) => {
+  if (Number(hours) > bounds.maxOrderHours) {
+    throw new RangeError(`The request's duration of ${hours} hours is above the pricing's maxOrderHours of ${bounds.maxOrderHours}: the PoX refuses it (duration invalid).`);
+  }
+  if (Number(ceilingGflops) > bounds.gflopsMax) {
+    throw new RangeError(`The request's GFLOPS ceiling of ${ceilingGflops} is above the pricing's gflopsMax of ${bounds.gflopsMax}: the PoX refuses it (maxGflops invalid).`);
+  }
 };
 
 // [need, ceiling] of a maxGflops argument (4.2, D38): a request that states no

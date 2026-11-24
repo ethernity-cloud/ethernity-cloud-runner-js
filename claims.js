@@ -61,14 +61,17 @@ export const v2TermsOf = (v2) => {
       ? V2_TERM_DEFAULTS[field]
       : integerOf(value, `options.v2.${field}`);
   }
-  if (terms.maxPricePerCuHourWei === 0n) throw new TypeError('options.v2.maxPricePerCuHourWei must be above 0');
+  if (terms.maxPricePerCuHourWei === 0n) throw new TypeError('options.v2.maxPricePerCuHourWei must be above 0: the PoX refuses a bid of 0 (price invalid)');
   if (terms.escrowWei === 0n) throw new TypeError('options.v2.escrowWei must be above 0');
   return terms;
 };
 
-const within = (name, value, low, high) => {
+// `value`, throwing for a value outside `low` to `high` a RangeError that
+// names the PoX's revert string for it: `below` under `low`, `above` (else
+// `below`) over `high`.
+const within = (name, value, low, high, below, above = below) => {
   if (value !== null && (value < low || value > high)) {
-    throw new RangeError(`${name} must be ${low} to ${high}, not ${value}: the PoX refuses a request outside that bound`);
+    throw new RangeError(`${name} must be ${low} to ${high}, not ${value}: the PoX refuses a request outside that bound (${value < low ? below : above})`);
   }
   return value;
 };
@@ -82,29 +85,47 @@ const within = (name, value, low, high) => {
 // 0 switches the test off), recentFailureSlots, allowMarkedImage,
 // expireUnstarted, noteRefund and noteAmbiguous. Each bound the PoX sets on
 // the terms (matching.MAX_PRICE_WEI, MIN_GAS_LEVEL, MAX_GAS_LEVEL,
-// maxGflopsArg) is tested, and a V2 add takes one instance (`resources`'
-// validators, 0 read as 1). Null when options.v2 is not given; throws, before
-// anything is sent, for a setting out of its range or out of the PoX's bound.
+// maxGflopsArg, V2_RESOURCES, a duration of at least one hour) is tested,
+// each refusal naming the PoX's revert string (spec/matching.md section 4),
+// and a V2 add takes one instance (`resources`' validators, 0 read as 1); the
+// pricing's bounds are tested once the generation is read
+// (matching.checkPricingBounds). Null when options.v2 is not given; throws,
+// before anything is sent, in the order of spec/runner-terms.json: for a
+// minNodeScore that is no score, a resource given outside 1 to MAX_RESOURCE
+// (a resource left out takes the legacy add's default), a V2 term of
+// options.v2 that is no integer, a bid of 0 or an escrowWei of 0, a bid, a
+// gas level, a duration given as 0, a required GFLOPS or a ceiling out of the
+// PoX's bound, and an EPC figure above 65,535 units. The instances are
+// tested once the path is chosen: claimsSettings on the claims path,
+// oneInstance off it.
 export const v2Settings = (v2, options = {}, resources = {}) => {
-  const terms = v2TermsOf(v2);
-  if (terms === null) return null;
-  const validators = (resources && resources.validators) || 1;
-  if (Number(validators) !== 1) {
-    throw new RangeError(`A request with V2 terms takes one instance; resources.validators is ${validators}. Give validators 1, or leave options.v2 out for a legacy request.`);
+  if (v2 === undefined || v2 === null) return null;
+  const minScore = options.minNodeScore === undefined || options.minNodeScore === null ? null : matching.scoreUnits(options.minNodeScore);
+  const given = (key) => (resources && resources[key] !== undefined && resources[key] !== null ? resources[key] : null);
+  for (const [key, revert] of matching.V2_RESOURCES) {
+    const value = given(key);
+    if (value !== null && !(Number.isInteger(value) && value >= 1 && value <= matching.MAX_RESOURCE)) {
+      throw new RangeError(`resources.${key} must be 1 to ${matching.MAX_RESOURCE}, not ${value}: the PoX refuses a request outside that bound (${revert})`);
+    }
   }
+  const terms = v2TermsOf(v2);
   const whole = (value, name, fallback) => (value === undefined || value === null ? fallback : integerOf(value, name));
-  within('options.v2.maxPricePerCuHourWei', terms.maxPricePerCuHourWei, 1n, matching.MAX_PRICE_WEI);
-  within('options.v2.gasLevel', terms.gasLevel, matching.MIN_GAS_LEVEL, matching.MAX_GAS_LEVEL);
+  within('options.v2.maxPricePerCuHourWei', terms.maxPricePerCuHourWei, 1n, matching.MAX_PRICE_WEI, 'price invalid');
+  within('options.v2.gasLevel', terms.gasLevel, matching.MIN_GAS_LEVEL, matching.MAX_GAS_LEVEL, 'gasLevel below average',
+    'gasLevel invalid');
+  if (given('duration') === 0) {
+    throw new RangeError('resources.duration of a request with V2 terms must be 1 hour or more, not 0: the PoX refuses it (duration invalid)');
+  }
   const requiredGflops = Number(whole(v2.requiredGflops, 'options.v2.requiredGflops', 0n));
+  matching.maxGflopsArg(requiredGflops, Number(terms.maxGflops));
   const epcUnits = matching.epcUnitsOfMib(whole(v2.epcMiB, 'options.v2.epcMiB', 0n));
-  matching.maxGflopsArg(requiredGflops, Number(terms.maxGflops), epcUnits);
   return {
     terms,
     requiredGflops,
     epcUnits,
     maxBidWei: within('options.v2.maxBidPerCuHourWei', whole(v2.maxBidPerCuHourWei, 'options.v2.maxBidPerCuHourWei', null),
-      1n, matching.MAX_PRICE_WEI),
-    minScore: options.minNodeScore === undefined || options.minNodeScore === null ? null : matching.scoreUnits(options.minNodeScore),
+      1n, matching.MAX_PRICE_WEI, 'price invalid'),
+    minScore,
     recentFailureSlots: Number(whole(options.recentFailureSlots, 'options.recentFailureSlots', BigInt(matching.DEFAULT_RECENT_FAILURE_SLOTS))),
     allowMarkedImage: Boolean(options.allowMarkedImage),
     expireUnstarted: options.expireUnstarted !== false,
@@ -113,9 +134,25 @@ export const v2Settings = (v2, options = {}, resources = {}) => {
   };
 };
 
+// Throws, before anything is sent, for V2 terms with more than one instance
+// (`resources`' validators, 0 read as 1): the V2 add takes one ("instance
+// invalid").
+export const oneInstance = (resources = {}) => {
+  const validators = (resources && resources.validators) || 1;
+  if (Number(validators) !== 1) {
+    throw new RangeError(`A request with V2 terms takes one instance; resources.validators is ${validators} (instance invalid). Give validators 1, or leave options.v2 out for a legacy request.`);
+  }
+};
+
 // The settings of a request served by claims (v2Settings). Throws, before
-// anything is sent, for a request without V2 terms and as v2Settings does.
+// anything is sent, for a minNodeScore that is no score, for more than one
+// instance (OD25), for a request without V2 terms and as v2Settings does.
 export const claimsSettings = (v2, options = {}, resources = {}) => {
+  if (options.minNodeScore !== undefined && options.minNodeScore !== null) matching.scoreUnits(options.minNodeScore);
+  const validators = (resources && resources.validators) || 1;
+  if (Number(validators) !== 1) {
+    throw new RangeError(`validators above 1 under claims: resources.validators is ${validators}, and a request served by claims takes one instance.`);
+  }
   const settings = v2Settings(v2, options, resources);
   if (!settings) {
     throw new Error('This network serves DO requests by claims (PoxMatching\'s claimsOn() is true), so a request is added with V2 terms: pass options.v2 with maxPricePerCuHourWei; its escrowWei, when given, is the most addDORequestV2 may pull.');

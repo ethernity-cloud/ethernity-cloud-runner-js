@@ -43,9 +43,9 @@ import {
 } from './enums.js';
 import PolygonProtocolContract from './contract/operation/polygonProtocolContract.js';
 import BloxbergProtocolContract from './contract/operation/bloxbergProtocolContract.js';
-import MatchingContracts, { NO_GENERATION, V2_ADD_ABI, readGeneration } from './contract/operation/matchingContract.js';
-import { requestEscrow } from './contract/operation/requestTerms.js';
-import { ClaimsPath, TermedRequest, claimsSettings, pinnedBan, settlePending, v2Settings } from './claims.js';
+import MatchingContracts, { NO_GENERATION, V2_ADD_ABI, readGeneration, readTermBounds } from './contract/operation/matchingContract.js';
+import { requestEscrow, requestTerms } from './contract/operation/requestTerms.js';
+import { ClaimsPath, TermedRequest, claimsSettings, oneInstance, pinnedBan, settlePending, v2Settings } from './claims.js';
 import * as matching from './matching.js';
 import { LocalList } from './matching.js';
 import { Buffer } from 'buffer';
@@ -673,6 +673,7 @@ class EthernityCloudRunner extends EventTarget {
       if (await chain.claimsOn()) {
         const options = this.runOptions || {};
         const settings = claimsSettings(options.v2, options, this.resources);
+        await this.checkPricingBounds(settings);
         await chain.bindReader();
         const path = new ClaimsPath(this, chain, settings);
         await settlePending(this);
@@ -683,6 +684,29 @@ class EthernityCloudRunner extends EventTarget {
       }
     }
     this.termed = this.termedRequest();
+    if (this.termed) await this.checkPricingBounds(this.termed.settings);
+  }
+
+  // The bounds a PoX answering VERSION() "2.0" reads from its pricing at a V2
+  // add (readTermBounds, read as the reads before a request are): the
+  // request's duration at most maxOrderHours and its GFLOPS ceiling at most
+  // gflopsMax (matching.checkPricingBounds). Throws, before anything is sent,
+  // for a term above its bound. Nothing is read on another generation or
+  // without a pricing.
+  async checkPricingBounds(settings) {
+    const generation = this.generation || NO_GENERATION;
+    if (generation.version !== '2.0' || BigInt(generation.pricingAddress || ethers.ZeroAddress) === 0n) return;
+    const bounds = await this.readTermBounds(generation.pricingAddress);
+    matching.checkPricingBounds(requestTerms(this.resources).duration, Number(settings.terms.maxGflops), bounds);
+  }
+
+  // The pricing's bounds on a V2 add's terms (matchingContract.readTermBounds),
+  // read as the reads before a request are (utils.retryRead).
+  async readTermBounds(pricingAddress) {
+    return retryRead(() => readTermBounds(pricingAddress, this.protocolContract.getProvider()), {
+      onError: (error, attempt) =>
+        this.dispatchECEvent(`Pricing bounds read failed (try ${attempt} of ${READ_ATTEMPTS}), retrying: ${providerMessage(error)}`, ECLog.WARNING)
+    });
   }
 
   // The generation of the network's PoX (matchingContract.readGeneration: its
@@ -703,10 +727,12 @@ class EthernityCloudRunner extends EventTarget {
   // the form the PoX's VERSION() names (V2_ADD_ABI); without terms
   // (_addDORequest) when it gives none, and when it gives no escrowWei,
   // which is told to the client. Throws, before anything is sent, for V2
-  // terms with an escrowWei on a PoX that takes no V2 request.
+  // terms with more than one instance (claims.oneInstance) and for V2 terms
+  // with an escrowWei on a PoX that takes no V2 request.
   termedRequest() {
     const settings = this.v2Settings;
     if (!settings) return null;
+    oneInstance(this.resources);
     if (settings.terms.escrowWei === null) {
       this.matchingNotice('options.v2 gives V2 terms without escrowWei and the request is not served by claims: it is added without terms, at its taskPrice.');
       return null;

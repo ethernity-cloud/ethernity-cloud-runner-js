@@ -169,13 +169,17 @@ const unanswered = () => Object.assign(new Error('request timeout'), { code: 'TI
 
 test('the generation is read from the PoX and its pricing', async () => {
   const provider = providerAnswering({ [POX.toLowerCase()]: { VERSION: '2.0', pricingAddress: PRICING }, [PRICING]: { matching: MATCHING } });
-  assert.deepEqual(await readGeneration(POX, provider), { version: '2.0', matchingAddress: ethers.getAddress(MATCHING) });
+  assert.deepEqual(await readGeneration(POX, provider), {
+    version: '2.0', matchingAddress: ethers.getAddress(MATCHING), pricingAddress: ethers.getAddress(PRICING)
+  });
   assert.deepEqual(provider.reads, ['VERSION', 'pricingAddress', 'matching']);
   const v12 = providerAnswering({ [POX.toLowerCase()]: { VERSION: '1.2', pricingAddress: PRICING }, [PRICING]: { matching: revert() } });
-  assert.deepEqual(await readGeneration(POX, v12), { version: '1.2', matchingAddress: ethers.ZeroAddress });
+  assert.deepEqual(await readGeneration(POX, v12), { version: '1.2', matchingAddress: ethers.ZeroAddress, pricingAddress: ethers.getAddress(PRICING) });
   for (const answer of ['1.1', revert()]) {
     const older = providerAnswering({ [POX.toLowerCase()]: { VERSION: answer } });
-    assert.deepEqual(await readGeneration(POX, older), { version: answer instanceof Error ? null : answer, matchingAddress: ethers.ZeroAddress });
+    assert.deepEqual(await readGeneration(POX, older), {
+      version: answer instanceof Error ? null : answer, matchingAddress: ethers.ZeroAddress, pricingAddress: ethers.ZeroAddress
+    });
     assert.deepEqual(older.reads, ['VERSION']);
   }
   await assert.rejects(readGeneration(POX, providerAnswering({ [POX.toLowerCase()]: { VERSION: unanswered() } })), /request timeout/);
@@ -213,13 +217,16 @@ test('V2 terms with an escrow are added with terms in the form of a "2.0" or "1.
   }
 });
 
-test('a V2 add takes one instance', async () => {
+test('a V2 add takes one instance, tested once the path is chosen', async () => {
   const runner = await runnerOn(TOKEN, 8995);
   runner.resources = { ...RESOURCES, validators: 2 };
-  assert.throws(() => runner.selectRequestTerms(TERMS), /takes one instance/);
+  runner.selectRequestTerms(TERMS);
+  runner.generation = { version: '2.0', matchingAddress: ethers.ZeroAddress };
+  assert.throws(() => runner.termedRequest(), /takes one instance; resources\.validators is 2 \(instance invalid\)/);
   runner.resources = { ...RESOURCES, validators: 0 };
   runner.selectRequestTerms(TERMS);
   assert.equal(runner.v2Terms.maxGflops, 10n);
+  assert.ok(runner.termedRequest() instanceof TermedRequest);
 });
 
 test('with V2 terms the balance is checked in wei against the escrow and the allowance raised to the exact escrow; without them against the legacy escrow', async () => {

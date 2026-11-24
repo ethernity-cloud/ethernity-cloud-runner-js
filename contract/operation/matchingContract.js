@@ -15,8 +15,9 @@ const MASK32 = (1n << 32n) - 1n;
 // What a network's PoX answers before a request (OD18): { version, its
 // VERSION() answer (null when it has none), matchingAddress, the PoxMatching
 // its pricing names (pricingAddress(), then the pricing's matching()), the
-// zero address when it names none }.
-export const NO_GENERATION = Object.freeze({ version: null, matchingAddress: ethers.ZeroAddress });
+// zero address when it names none, pricingAddress, the pricing
+// pricingAddress() names, the zero address when none was read }.
+export const NO_GENERATION = Object.freeze({ version: null, matchingAddress: ethers.ZeroAddress, pricingAddress: ethers.ZeroAddress });
 
 // `read()`, or `refused` when the contract refuses the call
 // (utils.callRefused); any other failure is thrown.
@@ -36,11 +37,20 @@ const refusedAs = async (read, refused) => {
 export const readGeneration = async (poxAddress, provider) => {
   const pox = new ethers.Contract(poxAddress, poxAbi, provider);
   const version = await refusedAs(() => pox.VERSION(), null);
-  if (!Object.hasOwn(V2_ADD_ABI, String(version))) return { version, matchingAddress: ethers.ZeroAddress };
+  if (!Object.hasOwn(V2_ADD_ABI, String(version))) {
+    return { version, matchingAddress: ethers.ZeroAddress, pricingAddress: ethers.ZeroAddress };
+  }
   const pricingAddress = await refusedAs(() => pox.pricingAddress(), ethers.ZeroAddress);
-  if (BigInt(pricingAddress) === 0n) return { version, matchingAddress: ethers.ZeroAddress };
+  if (BigInt(pricingAddress) === 0n) return { version, matchingAddress: ethers.ZeroAddress, pricingAddress };
   const pricing = new ethers.Contract(pricingAddress, pricingAbi, provider);
-  return { version, matchingAddress: await refusedAs(() => pricing.matching(), ethers.ZeroAddress) };
+  return { version, matchingAddress: await refusedAs(() => pricing.matching(), ethers.ZeroAddress), pricingAddress };
+};
+
+// The pricing's bounds on a V2 add's terms, { gflopsMax, maxOrderHours } of
+// the params() of the pricing at `pricingAddress`, read on `provider`.
+export const readTermBounds = async (pricingAddress, provider) => {
+  const params = await new ethers.Contract(pricingAddress, pricingAbi, provider).params();
+  return { gflopsMax: Number(params.gflopsMax), maxOrderHours: Number(params.maxOrderHours) };
 };
 
 // addDORequestV2 in the form of the PoX's VERSION() (V2_ADD_ABI) at
